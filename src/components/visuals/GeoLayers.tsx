@@ -1,5 +1,3 @@
-import Image from "next/image";
-import { asset } from "@/lib/asset";
 import { scene, W, H, elevColor, ndviColor } from "./scene";
 
 const svgProps = {
@@ -582,13 +580,12 @@ export function RealTile({
         : "bg-[rgba(217,119,6,0.92)]";
   return (
     <div className={`relative h-full w-full ${bgClass}`}>
-      <Image
-        src={asset(src)}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
         alt={label}
-        fill
-        sizes="(max-width: 1024px) 100vw, 50vw"
         draggable={false}
-        className="select-none object-cover"
+        className="h-full w-full select-none object-cover"
       />
       <span
         className={`absolute left-4 top-4 rounded-md px-3 py-1 text-xs font-bold uppercase tracking-wider text-white ${badge}`}

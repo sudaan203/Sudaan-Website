@@ -1,6 +1,5 @@
 import Link from "next/link";
 import Image from "next/image";
-import { asset } from "@/lib/asset";
 
 export default function Logo({
   className = "",
@@ -17,7 +16,7 @@ export default function Logo({
     >
       <span className="relative flex h-11 w-11 shrink-0 items-center justify-center sm:h-12 sm:w-12">
         <Image
-          src={asset("/logo-mark.png")}
+          src="/logo-mark.png"
           alt="Sudaan Geo-Analytics logo"
           width={96}
           height={96}

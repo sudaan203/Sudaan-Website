@@ -5,7 +5,6 @@ import SectionHeading from "@/components/SectionHeading";
 import CTASection from "@/components/CTASection";
 import Reveal, { StaggerGroup, StaggerItem } from "@/components/Reveal";
 import StatsCounter from "@/components/StatsCounter";
-import { asset } from "@/lib/asset";
 
 export const metadata: Metadata = {
   title: "About",
@@ -213,7 +212,7 @@ export default function AboutPage() {
                 <div className="surface surface-hover flex h-full flex-col gap-5 p-8 sm:flex-row sm:items-start">
                   <div className="relative shrink-0">
                     <Image
-                      src={asset(p.photo)}
+                      src={p.photo}
                       alt={p.name}
                       width={96}
                       height={96}
