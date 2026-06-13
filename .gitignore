@@ -45,3 +45,6 @@ next-env.d.ts
 /SS/
 /SS.zip
 *.zip
+
+# raw deliverable screenshots set (processed copies go in public/)
+/Ortho1/
