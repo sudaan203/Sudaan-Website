@@ -5,6 +5,7 @@ import CompareSlider from "@/components/CompareSlider";
 import PointCloudViewer from "@/components/PointCloudViewer";
 import CTASection from "@/components/CTASection";
 import Reveal, { StaggerGroup, StaggerItem } from "@/components/Reveal";
+import { asset } from "@/lib/asset";
 import {
   RawImagery,
   Orthomosaic,
@@ -281,7 +282,7 @@ export default function DataInsightsPage() {
             {deliverables.map((d) => (
               <StaggerItem key={d.title}>
                 <a
-                  href={d.href}
+                  href={asset(d.href)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="surface surface-hover group flex h-full flex-col p-6"

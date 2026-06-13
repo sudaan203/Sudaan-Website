@@ -5,6 +5,7 @@ import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
 import { industries, projects, type Industry } from "@/data/projects";
 import { ProjectThumb } from "@/components/visuals/ProjectThumb";
+import { asset } from "@/lib/asset";
 
 type Filter = Industry | "All";
 
@@ -50,7 +51,7 @@ export default function ProjectsExplorer() {
               <div className="relative aspect-[16/9] overflow-hidden border-b border-ink/10 bg-mist">
                 {p.image ? (
                   <Image
-                    src={p.image}
+                    src={asset(p.image)}
                     alt={`${p.name} deliverable`}
                     fill
                     sizes="(max-width: 768px) 100vw, 50vw"

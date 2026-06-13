@@ -21,6 +21,14 @@ const projectTypes = [
 const inputClass =
   "w-full rounded-lg border border-ink/10 bg-ink/[0.03] px-4 py-3 text-sm text-ink-900 placeholder:text-ink/50 transition-colors focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent";
 
+// Static-site form backend. Set NEXT_PUBLIC_FORMSPREE_ID to your Formspree
+// form id (the part after /f/ in https://formspree.io/f/XXXX).
+// NOTE: on a server deploy (e.g. Vercel) rewire this back to /api/contact.
+const FORMSPREE_ID = process.env.NEXT_PUBLIC_FORMSPREE_ID || "";
+const FORMSPREE_ENDPOINT = FORMSPREE_ID
+  ? `https://formspree.io/f/${FORMSPREE_ID}`
+  : "";
+
 export default function ContactForm() {
   const [status, setStatus] = useState<
     "idle" | "submitting" | "success" | "error"
@@ -31,22 +39,31 @@ export default function ContactForm() {
     e.preventDefault();
     const form = e.currentTarget;
     const payload = Object.fromEntries(new FormData(form).entries());
+
+    if (!FORMSPREE_ENDPOINT) {
+      setErrorMsg(
+        "The contact form is not configured yet. Please email us directly in the meantime."
+      );
+      setStatus("error");
+      return;
+    }
+
     setStatus("submitting");
     setErrorMsg("");
     try {
-      const res = await fetch("/api/contact", {
+      const res = await fetch(FORMSPREE_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        const firstError =
-          data?.errors && Object.values(data.errors)[0];
+        const firstError = data?.errors?.[0]?.message as string | undefined;
         throw new Error(
-          (firstError as string) ||
-            data?.error ||
-            "Something went wrong. Please try again."
+          firstError || "Something went wrong. Please try again."
         );
       }
       form.reset();
