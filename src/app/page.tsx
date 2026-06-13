@@ -6,7 +6,7 @@ import ServiceCard from "@/components/ServiceCard";
 import CTASection from "@/components/CTASection";
 import Reveal, { StaggerGroup, StaggerItem } from "@/components/Reveal";
 import CompareSlider from "@/components/CompareSlider";
-import { RawImagery, Orthomosaic } from "@/components/visuals/GeoLayers";
+import { RealTile } from "@/components/visuals/GeoLayers";
 import { services } from "@/data/services";
 import { sectors } from "@/lib/site";
 
@@ -51,8 +51,8 @@ export default function HomePage() {
           <div>
             <SectionHeading
               eyebrow="From pixels to precision"
-              title="Raw imagery in. Engineering-grade intelligence out."
-              description="Drag the slider to see how unstitched drone frames become a single, georeferenced orthomosaic ready for measurement and design."
+              title="Orthomosaic in. Engineering-grade intelligence out."
+              description="Drag the slider to see a real field's georeferenced orthomosaic become a colourised digital surface model, ready for measurement and design."
             />
             <Reveal delay={0.1} className="mt-8">
               <Link href="/data-insights" className="btn-primary">
@@ -62,10 +62,10 @@ export default function HomePage() {
           </div>
           <Reveal direction="left">
             <CompareSlider
-              before={<RawImagery />}
-              after={<Orthomosaic />}
-              beforeLabel="Raw drone imagery"
-              afterLabel="Orthomosaic"
+              before={<RealTile src="/insights/ortho1.webp" label="ORTHOMOSAIC" bgClass="bg-white" />}
+              after={<RealTile src="/insights/dsm1.webp" label="DSM" tone="amber" bgClass="bg-white" />}
+              beforeLabel="Orthomosaic"
+              afterLabel="DSM"
             />
           </Reveal>
         </div>

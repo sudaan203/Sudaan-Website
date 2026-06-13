@@ -6,14 +6,7 @@ import PointCloudViewer from "@/components/PointCloudViewer";
 import CTASection from "@/components/CTASection";
 import Reveal, { StaggerGroup, StaggerItem } from "@/components/Reveal";
 import {
-  RawImagery,
-  Orthomosaic,
-  DSM,
-  DTM,
-  Contours,
   NDVI,
-  LidarCloud,
-  SurfaceModel,
   ForestMap,
   SolarFarm,
   TransmissionCorridor,
@@ -51,53 +44,33 @@ const examples = [
 const comparisons = [
   {
     eyebrow: "Section 01",
-    title: "Raw Drone Imagery → Orthomosaic",
-    description:
-      "Hundreds of overlapping, distorted frames are stitched and georeferenced into a single measurable basemap.",
-    before: <RawImagery />,
-    after: <Orthomosaic />,
-    beforeLabel: "Raw imagery",
-    afterLabel: "Orthomosaic",
-  },
-  {
-    eyebrow: "Section 02",
     title: "Orthomosaic → Digital Surface Model",
     description:
-      "A real Kotba site DSM, colourised and hill-shaded from our processed elevation model, showing every surface encoded as height. (Orthomosaic export pending.)",
-    before: <Orthomosaic />,
-    after: <RealTile src="/insights/kotba-dsm.webp" label="DSM · KOTBA" tone="amber" />,
+      "Real processed deliverables from the same field: the orthomosaic gains a third dimension as a colourised DSM, with every surface (canopy and structures included) encoded as elevation.",
+    before: <RealTile src="/insights/ortho1.webp" label="ORTHOMOSAIC" bgClass="bg-white" />,
+    after: <RealTile src="/insights/dsm1.webp" label="DSM" tone="amber" bgClass="bg-white" />,
     beforeLabel: "Orthomosaic",
     afterLabel: "DSM (real data)",
   },
   {
-    eyebrow: "Section 03",
+    eyebrow: "Section 02",
     title: "DSM → Digital Terrain Model",
     description:
-      "Above-ground features are classified out, leaving a clean bare-earth model for engineering design.",
-    before: <DSM />,
-    after: <DTM />,
+      "Above-ground features are classified out, leaving a clean bare-earth terrain model of the same field for engineering design.",
+    before: <RealTile src="/insights/dsm1.webp" label="DSM" tone="amber" bgClass="bg-white" />,
+    after: <RealTile src="/insights/dtm1.webp" label="DTM" tone="green" bgClass="bg-white" />,
     beforeLabel: "DSM",
-    afterLabel: "DTM",
+    afterLabel: "DTM (real data)",
   },
   {
-    eyebrow: "Section 04",
+    eyebrow: "Section 03",
     title: "Orthomosaic → Contours",
     description:
-      "Terrain is distilled into labelled contour lines, ready to drop straight into CAD and GIS workflows.",
-    before: <Orthomosaic />,
-    after: <Contours overOrtho />,
+      "The same field distilled into labelled contour lines with spot heights, ready to drop straight into CAD and GIS workflows.",
+    before: <RealTile src="/insights/ortho1.webp" label="ORTHOMOSAIC" bgClass="bg-white" />,
+    after: <RealTile src="/insights/contour1.webp" label="CONTOURS" bgClass="bg-white" />,
     beforeLabel: "Orthomosaic",
-    afterLabel: "Contours",
-  },
-  {
-    eyebrow: "Section 05",
-    title: "LiDAR Point Cloud → Surface Model",
-    description:
-      "Millions of classified LiDAR returns are interpolated into a continuous, engineering-ready surface model.",
-    before: <LidarCloud />,
-    after: <SurfaceModel />,
-    beforeLabel: "LiDAR point cloud",
-    afterLabel: "Surface model",
+    afterLabel: "Contours (real data)",
   },
 ];
 
@@ -185,7 +158,7 @@ export default function DataInsightsPage() {
       <section className="section-py border-b border-ink/[0.06]">
         <div className="container-px">
           <SectionHeading
-            eyebrow="Section 06"
+            eyebrow="Section 04"
             title="Vegetation Analysis (NDVI)"
             description="Near-infrared capture reveals crop health, encroachment and rehabilitation progress that the eye cannot see."
           />
@@ -226,7 +199,7 @@ export default function DataInsightsPage() {
       <section className="section-py border-b border-ink/[0.06]">
         <div className="container-px">
           <SectionHeading
-            eyebrow="Section 07"
+            eyebrow="Section 05"
             title="Application Examples"
             description="The same pipeline, applied across industries, each output engineered around a specific decision."
           />
@@ -259,7 +232,7 @@ export default function DataInsightsPage() {
       <section className="section-py border-b border-ink/[0.06]">
         <div className="container-px">
           <SectionHeading
-            eyebrow="Section 08"
+            eyebrow="Section 06"
             title="Interactive Point Cloud Viewer"
             description="A dense 3D reconstruction you can explore in the browser. Rotate, zoom and inspect the terrain and structures."
           />
@@ -273,7 +246,7 @@ export default function DataInsightsPage() {
       <section className="section-py">
         <div className="container-px">
           <SectionHeading
-            eyebrow="Section 09"
+            eyebrow="Section 07"
             title="Project Deliverables"
             description="Download representative sample reports to see the structure and detail of our standard outputs."
           />
