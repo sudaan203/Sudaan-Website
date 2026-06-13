@@ -1,0 +1,85 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 1028 >>
+stream
+0.118 0.533 0.898 RG
+2 w
+72 740 m 523 740 l S
+0.85 0.88 0.92 RG
+0.5 w
+72 690 m 523 690 l S
+BT
+/F2 22 Tf
+0.118 0.533 0.898 rg
+72 720 Td
+(Orthomosaic Report) Tj
+/F1 12 Tf
+0.3 0.34 0.4 rg
+0 -22 Td
+(Sudaan Geo-Analytics  |  Sample Deliverable) Tj
+/F1 11 Tf
+0.15 0.18 0.22 rg
+0 -34 Td
+14 TL
+(Project:        Sample Site - Khartoum State) Tj
+T*
+(Deliverable:    Georeferenced Orthomosaic \(GeoTIFF\)) Tj
+T*
+(Ground sample distance:   1.8 cm / pixel) Tj
+T*
+(Coordinate system:        UTM Zone 36N / WGS84) Tj
+T*
+(Total area mapped:        640 hectares) Tj
+T*
+(Ground control points:    24 \(RTK surveyed\)) Tj
+T*
+(Checkpoint RMSE \(horiz\):  0.021 m) Tj
+T*
+() Tj
+T*
+(Notes:) Tj
+T*
+(This orthomosaic was produced from 1,420 overlapping aerial) Tj
+T*
+(frames, radiometrically balanced and georeferenced against) Tj
+T*
+(independent ground control. Every pixel carries an accurate) Tj
+T*
+(real-world coordinate suitable for measurement and design.) Tj
+T*
+() Tj
+T*
+(This is a representative sample for demonstration purposes only.) Tj
+T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000001331 00000 n 
+0000001401 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1476
+%%EOF

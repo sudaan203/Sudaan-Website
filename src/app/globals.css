@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-inter: "Inter", system-ui, sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-paper text-ink antialiased;
+  background-image:
+    radial-gradient(circle at 12% -8%, rgba(229, 142, 58, 0.1), transparent 42%),
+    radial-gradient(circle at 92% 0%, rgba(245, 200, 155, 0.18), transparent 40%);
+  background-attachment: fixed;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #f1ede6;
+}
+::-webkit-scrollbar-thumb {
+  background: #d8d2c8;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c2a987;
+}
+
+::selection {
+  background: rgba(229, 142, 58, 0.28);
+  color: #111111;
+}
+
+@layer components {
+  .container-px {
+    @apply mx-auto w-full max-w-7xl px-6 sm:px-8 lg:px-12;
+  }
+
+  .section-py {
+    @apply py-20 sm:py-28;
+  }
+
+  .eyebrow {
+    @apply inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-accent-600;
+  }
+
+  .heading-xl {
+    @apply text-4xl font-bold leading-[1.05] tracking-tight text-ink-900 sm:text-5xl lg:text-6xl;
+  }
+
+  .heading-lg {
+    @apply text-3xl font-bold leading-tight tracking-tight text-ink-900 sm:text-4xl;
+  }
+
+  .heading-md {
+    @apply text-2xl font-semibold tracking-tight text-ink-900 sm:text-3xl;
+  }
+
+  .lead {
+    @apply text-lg leading-relaxed text-ink/75;
+  }
+
+  .surface {
+    @apply rounded-2xl border border-ink/[0.08] bg-panel shadow-card;
+  }
+
+  .surface-hover {
+    @apply transition-all duration-300 hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-glow;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3 text-sm font-semibold transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:ring-offset-2 focus-visible:ring-offset-paper;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent-600 text-white shadow-glow hover:bg-accent-700 hover:-translate-y-0.5;
+  }
+
+  .btn-secondary {
+    @apply btn border border-ink/15 bg-panel text-ink-900 hover:border-accent/50 hover:bg-accent-50;
+  }
+
+  .grid-overlay {
+    background-image:
+      linear-gradient(rgba(46, 46, 46, 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(46, 46, 46, 0.06) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
