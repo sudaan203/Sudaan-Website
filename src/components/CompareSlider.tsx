@@ -96,7 +96,7 @@ export default function CompareSlider({
           aria-valuemin={0}
           aria-valuemax={100}
           role="slider"
-          className="pointer-events-auto absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize touch-none items-center justify-center rounded-full border-2 border-white bg-accent text-white shadow-glow transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          className="pointer-events-none absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-accent text-white shadow-glow transition-transform group-hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
         >
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
             <path d="M9 6l-4 6 4 6V6zM15 6v12l4-6-4-6z" />
