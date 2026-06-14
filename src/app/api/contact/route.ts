@@ -65,8 +65,8 @@ export async function POST(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: "Sudaan Geo-Analytics <noreply@sudaangeoanalytics.com>",
-          to: process.env.CONTACT_TO || "info@sudaangeoanalytics.com",
+          from: "Sudaan Geo-Analytics <noreply@sudaangeo.in>",
+          to: process.env.CONTACT_TO || "sudaan203@gmail.com",
           subject: `New consultation request from ${lead.name}`,
           text: JSON.stringify(lead, null, 2),
           reply_to: lead.email,

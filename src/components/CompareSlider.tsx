@@ -28,16 +28,20 @@ export default function CompareSlider({
     setPos(Math.min(100, Math.max(0, pct)));
   }, []);
 
+  // Drag from anywhere on the slider. Pointer capture on the container keeps
+  // tracking even if the finger/cursor leaves the bounds. touch-action: pan-y
+  // (set in className) lets the page still scroll vertically over the slider
+  // while horizontal drags smoothly move the handle.
   const onPointerDown = (e: React.PointerEvent) => {
     dragging.current = true;
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    containerRef.current?.setPointerCapture?.(e.pointerId);
     update(e.clientX);
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (!dragging.current) return;
     update(e.clientX);
   };
-  const onPointerUp = () => {
+  const stop = () => {
     dragging.current = false;
   };
 
@@ -49,13 +53,15 @@ export default function CompareSlider({
   return (
     <div
       ref={containerRef}
-      className={`group relative aspect-[4/3] w-full select-none overflow-hidden rounded-2xl border border-ink/10 bg-navy ${className}`}
+      className={`group relative aspect-[4/3] w-full cursor-ew-resize touch-pan-y select-none overflow-hidden rounded-2xl border border-ink/10 bg-navy ${className}`}
+      onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerLeave={onPointerUp}
+      onPointerUp={stop}
+      onPointerCancel={stop}
+      onPointerLeave={stop}
     >
       {/* After (full, underneath) */}
-      <div className="absolute inset-0">
+      <div className="pointer-events-none absolute inset-0">
         {after}
         {afterLabel && (
           <span className="absolute bottom-4 right-4 rounded-full bg-black/55 px-3 py-1 text-xs font-semibold text-white backdrop-blur-sm">
@@ -66,7 +72,7 @@ export default function CompareSlider({
 
       {/* Before (clipped to left of handle) */}
       <div
-        className="absolute inset-0 overflow-hidden"
+        className="pointer-events-none absolute inset-0 overflow-hidden"
         style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
       >
         {before}
@@ -79,19 +85,18 @@ export default function CompareSlider({
 
       {/* Handle */}
       <div
-        className="absolute inset-y-0 z-10 w-0.5 bg-white/90 shadow-[0_0_12px_rgba(217,119,6,0.85)]"
+        className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-white/90 shadow-[0_0_12px_rgba(217,119,6,0.85)]"
         style={{ left: `${pos}%` }}
       >
         <button
           type="button"
-          onPointerDown={onPointerDown}
           onKeyDown={onKeyDown}
           aria-label="Drag to compare"
           aria-valuenow={Math.round(pos)}
           aria-valuemin={0}
           aria-valuemax={100}
           role="slider"
-          className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize items-center justify-center rounded-full border-2 border-white bg-accent text-white shadow-glow transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          className="pointer-events-auto absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize touch-none items-center justify-center rounded-full border-2 border-white bg-accent text-white shadow-glow transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
         >
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
             <path d="M9 6l-4 6 4 6V6zM15 6v12l4-6-4-6z" />

@@ -17,11 +17,11 @@ const points = [
     value: siteConfig.email,
     href: `mailto:${siteConfig.email}`,
   },
-  {
+  ...siteConfig.phones.map((phone) => ({
     label: "Phone",
-    value: siteConfig.phone,
-    href: `tel:${siteConfig.phone.replace(/\s/g, "")}`,
-  },
+    value: phone,
+    href: `tel:${phone.replace(/\s/g, "")}`,
+  })),
   { label: "Location", value: siteConfig.address },
 ];
 
@@ -60,7 +60,7 @@ export default function ContactPage() {
 
             <div className="mt-10 space-y-4">
               {points.map((p) => (
-                <Reveal key={p.label}>
+                <Reveal key={`${p.label}-${p.value}`}>
                   <div className="surface flex items-center justify-between p-5">
                     <span className="text-xs font-medium uppercase tracking-wide text-ink/50">
                       {p.label}

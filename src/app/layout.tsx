@@ -75,10 +75,14 @@ const jsonLd = {
   url: siteConfig.url,
   description: siteConfig.description,
   email: siteConfig.email,
+  telephone: siteConfig.phones,
   address: {
     "@type": "PostalAddress",
-    addressLocality: "Khartoum",
-    addressCountry: "SD",
+    streetAddress: "405 Ugati Complex, Randesan",
+    addressLocality: "Gandhinagar",
+    addressRegion: "Gujarat",
+    postalCode: "382419",
+    addressCountry: "IN",
   },
   sameAs: [siteConfig.social.linkedin, siteConfig.social.twitter],
 };

@@ -1,13 +1,13 @@
 export const siteConfig = {
   name: "Sudaan Geo-Analytics",
   shortName: "SGA",
-  url: "https://sudaangeoanalytics.com",
+  url: "https://sudaangeo.in",
   tagline: "Transforming Survey Data Into Actionable Intelligence",
   description:
     "Engineering-grade geospatial analytics, orthomosaics, LiDAR processing, DSM/DTM modeling, contour generation and GIS intelligence solutions for infrastructure, renewable energy, mining, construction, forestry, utilities and government projects.",
-  email: "info@sudaangeoanalytics.com",
-  phone: "+249 100 000 000",
-  address: "Khartoum, Sudan",
+  email: "sudaan203@gmail.com",
+  phones: ["+91 79907 88245", "+91 79990 01472"],
+  address: "405 Ugati Complex, Randesan, Gandhinagar, Gujarat 382419, India",
   social: {
     linkedin: "https://www.linkedin.com/company/sudaan-geo-analytics",
     twitter: "https://twitter.com/sudaangeo",
