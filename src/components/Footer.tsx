@@ -80,14 +80,16 @@ export default function Footer() {
                   {siteConfig.email}
                 </a>
               </li>
-              <li>
-                <a
-                  href={`tel:${siteConfig.phone.replace(/\s/g, "")}`}
-                  className="transition-colors hover:text-accent-600"
-                >
-                  {siteConfig.phone}
-                </a>
-              </li>
+              {siteConfig.phones.map((phone) => (
+                <li key={phone}>
+                  <a
+                    href={`tel:${phone.replace(/\s/g, "")}`}
+                    className="transition-colors hover:text-accent-600"
+                  >
+                    {phone}
+                  </a>
+                </li>
+              ))}
               <li>{siteConfig.address}</li>
             </ul>
             <Link href="/contact" className="btn-secondary mt-5 text-xs">
