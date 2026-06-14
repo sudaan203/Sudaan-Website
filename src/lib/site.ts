@@ -1,11 +1,11 @@
 export const siteConfig = {
   name: "Sudaan Geo-Analytics",
   shortName: "SGA",
-  url: "https://sudaangeoanalytics.com",
+  url: "https://sudaangeo.in",
   tagline: "Transforming Survey Data Into Actionable Intelligence",
   description:
     "Engineering-grade geospatial analytics, orthomosaics, LiDAR processing, DSM/DTM modeling, contour generation and GIS intelligence solutions for infrastructure, renewable energy, mining, construction, forestry, utilities and government projects.",
-  email: "info@sudaangeoanalytics.com",
+  email: "info@sudaangeo.in",
   phone: "+249 100 000 000",
   address: "Khartoum, Sudan",
   social: {
