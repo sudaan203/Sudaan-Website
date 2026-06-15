@@ -49,14 +49,14 @@ export default function HomePage() {
       <section className="border-y border-ink/[0.06] bg-mist/50 py-16">
         <div className="container-px">
           <Reveal className="text-center">
-            <h2 className="text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">
+            <h2 className="bg-gradient-to-r from-accent-500 via-accent-600 to-signal bg-clip-text text-3xl font-bold tracking-tight text-transparent sm:text-4xl">
               Trusted By Leading Organisations
             </h2>
             <div className="mt-10 flex flex-wrap items-center justify-center gap-x-12 gap-y-5">
               {clients.map((client) => (
                 <span
                   key={client}
-                  className="bg-gradient-to-r from-accent-500 via-accent-600 to-signal bg-clip-text text-2xl font-bold tracking-tight text-transparent sm:text-3xl lg:text-4xl"
+                  className="text-2xl font-bold tracking-tight text-ink-900 sm:text-3xl lg:text-4xl"
                 >
                   {client}
                 </span>
