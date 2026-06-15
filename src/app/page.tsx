@@ -46,17 +46,17 @@ export default function HomePage() {
       </section>
 
       {/* Trusted by */}
-      <section className="pb-4">
+      <section className="border-y border-ink/[0.06] bg-mist/50 py-14">
         <div className="container-px">
           <Reveal className="text-center">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-ink/45">
+            <p className="text-sm font-bold uppercase tracking-[0.22em] text-accent-600">
               Trusted by leading organisations
             </p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-4">
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-12 gap-y-5">
               {clients.map((client) => (
                 <span
                   key={client}
-                  className="text-base font-bold uppercase tracking-wide text-ink/40 transition-colors hover:text-ink/70 sm:text-lg"
+                  className="text-2xl font-extrabold uppercase tracking-tight text-ink-900 transition-colors hover:text-accent-600 sm:text-3xl lg:text-4xl"
                 >
                   {client}
                 </span>
