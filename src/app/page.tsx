@@ -46,17 +46,17 @@ export default function HomePage() {
       </section>
 
       {/* Trusted by */}
-      <section className="border-y border-ink/[0.06] bg-mist/50 py-14">
+      <section className="border-y border-ink/[0.06] bg-mist/50 py-16">
         <div className="container-px">
           <Reveal className="text-center">
-            <p className="text-sm font-bold uppercase tracking-[0.22em] text-accent-600">
-              Trusted by leading organisations
-            </p>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-12 gap-y-5">
+            <h2 className="text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">
+              Trusted By Leading Organisations
+            </h2>
+            <div className="mt-10 flex flex-wrap items-center justify-center gap-x-12 gap-y-5">
               {clients.map((client) => (
                 <span
                   key={client}
-                  className="text-2xl font-extrabold uppercase tracking-tight text-ink-900 transition-colors hover:text-accent-600 sm:text-3xl lg:text-4xl"
+                  className="bg-gradient-to-r from-accent-500 via-accent-600 to-signal bg-clip-text text-2xl font-bold tracking-tight text-transparent sm:text-3xl lg:text-4xl"
                 >
                   {client}
                 </span>
