@@ -8,7 +8,7 @@ import Reveal, { StaggerGroup, StaggerItem } from "@/components/Reveal";
 import CompareSlider from "@/components/CompareSlider";
 import { RealTile } from "@/components/visuals/GeoLayers";
 import { services } from "@/data/services";
-import { sectors } from "@/lib/site";
+import { sectors, clients } from "@/lib/site";
 
 const workflow = [
   {
@@ -42,6 +42,27 @@ export default function HomePage() {
       <section className="section-py">
         <div className="container-px">
           <StatsCounter />
+        </div>
+      </section>
+
+      {/* Trusted by */}
+      <section className="border-y border-ink/[0.06] bg-mist/50 py-14">
+        <div className="container-px">
+          <Reveal className="text-center">
+            <p className="text-sm font-bold uppercase tracking-[0.22em] text-accent-600">
+              Trusted by leading organisations
+            </p>
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-12 gap-y-5">
+              {clients.map((client) => (
+                <span
+                  key={client}
+                  className="text-2xl font-extrabold uppercase tracking-tight text-ink-900 transition-colors hover:text-accent-600 sm:text-3xl lg:text-4xl"
+                >
+                  {client}
+                </span>
+              ))}
+            </div>
+          </Reveal>
         </div>
       </section>
 

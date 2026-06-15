@@ -81,6 +81,7 @@ export default function PointCloudViewer({
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
     let raf = 0;
+    let visible = true;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
     const resize = () => {
@@ -144,12 +145,24 @@ export default function PointCloudViewer({
         ctx.fillRect(q.sx - size / 2, q.sy - size / 2, size, size);
       }
 
-      raf = requestAnimationFrame(render);
+      if (visible) raf = requestAnimationFrame(render);
     };
     render();
 
+    // Pause the render loop while the viewer is scrolled out of view.
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        const wasVisible = visible;
+        visible = entry.isIntersecting;
+        if (visible && !wasVisible) render(); // resume
+      },
+      { threshold: 0 }
+    );
+    io.observe(canvas);
+
     return () => {
       cancelAnimationFrame(raf);
+      io.disconnect();
       window.removeEventListener("resize", resize);
       canvas.removeEventListener("wheel", onWheelNative);
     };

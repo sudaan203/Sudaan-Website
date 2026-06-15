@@ -59,8 +59,17 @@ export const sectors = [
 ];
 
 export const stats = [
-  { value: 100, suffix: "+", label: "Projects Processed" },
-  { value: 1000, suffix: "+", label: "Hectares Mapped" },
-  { value: 99, suffix: "%", label: "Data Accuracy" },
-  { value: 48, suffix: "h", label: "Average Turnaround" },
+  { value: 100, suffix: "+", label: "Projects Delivered" },
+  { value: 650, suffix: "+", label: "km² Surveyed" },
+  { value: 7, suffix: "", label: "Sectors Served" },
+  { value: 99, suffix: "%", label: "Survey Accuracy" },
+];
+
+// Notable clients (shown as a "trusted by" strip on the home page).
+export const clients = [
+  "Reliance",
+  "Adani",
+  "Mahindra & Mahindra",
+  "Dalmia",
+  "Nirma",
 ];
