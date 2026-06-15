@@ -5,6 +5,8 @@ import { siteConfig } from "@/lib/site";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import BackgroundDecor from "@/components/BackgroundDecor";
+import ScrollProgress from "@/components/ScrollProgress";
+import BackToTop from "@/components/BackToTop";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -100,9 +102,11 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         <BackgroundDecor />
+        <ScrollProgress />
         <Navbar />
         <main className="relative min-h-screen pt-20">{children}</main>
         <Footer />
+        <BackToTop />
       </body>
     </html>
   );
