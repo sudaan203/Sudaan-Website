@@ -14,7 +14,8 @@ type PortalEvent =
   | "logout"
   | "view_site"
   | "view_asset"
-  | "denied";
+  | "denied"
+  | "admin_change";
 
 export function logPortalEvent(event: PortalEvent, detail: Record<string, unknown>) {
   const line = { at: new Date().toISOString(), event, ...detail };

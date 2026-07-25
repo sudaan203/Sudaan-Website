@@ -172,9 +172,24 @@ moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-pl
   usually just means retry.
 - Verified end to end against Supabase on 26 Jul 2026: 33 HTTP checks green (isolation,
   view-only streaming, admin view, marketing routes untouched).
-- Still blocked on `AUTH_GOOGLE_SECRET` before Google sign in and the owner console can be
-  built. Google client id exists ("Sudaan-Geo"); the `www` redirect URI and publishing the
-  consent screen are still outstanding (see plan doc 12b).
+- **Google sign in + owner console BUILT 26 Jul 2026.** `src/lib/portal/google.ts` (OAuth code
+  flow, hand-rolled on the existing session cookie, no Auth.js), `/api/auth/google/start` +
+  `/api/auth/callback/google`, `users-db.ts` (the allowlist: Google proves identity, a users
+  row grants access; `PORTAL_OWNER_EMAILS` bootstraps owners), `/portal/admin` owner console
+  with `admin-actions.ts` (create client, invite, deactivate, create site, publish, grants).
+- Password login still exists as a **staff fallback** behind a details toggle, so a Google
+  problem cannot lock the owners out. Remove it by clearing `PORTAL_USERS` and deleting
+  `portal-data/users.json`.
+- **Pooler ports matter:** Vercel uses the transaction pooler (6543); a long-lived `next dev`
+  must use the session pooler (5432). A persistent client on 6543 wedges after a few requests
+  and every later query hangs. Also cache the db client on `globalThis` (done) or hot reload
+  leaks a pool per edit and exhausts the pooler.
+- Verified 26 Jul 2026 against real Supabase: 33 portal checks, 18 console checks, and a
+  16 step owner workflow (create site, publish, grant, revoke, unpublish, deactivate) where
+  the client's dashboard changed correctly at every step.
+- **Still outstanding:** add `https://www.sudaangeo.in/api/auth/callback/google` in Google
+  Cloud, publish the consent screen, set the env vars in Vercel, and have a human complete
+  one real Google sign in (cannot be automated from here).
 
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until

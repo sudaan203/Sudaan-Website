@@ -20,6 +20,14 @@ export default async function PortalHeader({ session }: { session: PortalSession
         </div>
 
         <div className="flex items-center gap-3 sm:gap-5">
+          {session.role !== "client" ? (
+            <Link
+              href="/portal/admin"
+              className="text-xs font-semibold text-accent-600 transition-colors hover:text-accent-700"
+            >
+              Owner console
+            </Link>
+          ) : null}
           <div className="hidden text-right sm:block">
             <p className="text-sm font-semibold leading-tight text-ink-900">{org}</p>
             <p className="text-xs leading-tight text-ink/60">{session.email}</p>

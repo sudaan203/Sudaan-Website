@@ -81,6 +81,15 @@ export async function verifyCredentials(
   return ok && user ? user : null;
 }
 
+/** Whether any password login exists, which decides if the staff form is shown. */
+export function passwordLoginAvailable(): boolean {
+  try {
+    return loadUsers().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function findUserById(id: string) {
   return loadUsers().find((u) => u.id === id) ?? null;
 }

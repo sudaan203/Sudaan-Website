@@ -43,7 +43,7 @@ export async function verifySessionToken(
     if (
       typeof payload.userId !== "string" ||
       typeof payload.email !== "string" ||
-      (payload.role !== "admin" && payload.role !== "client")
+      (payload.role !== "admin" && payload.role !== "owner" && payload.role !== "client")
     ) {
       return null;
     }
@@ -53,6 +53,7 @@ export async function verifySessionToken(
       fullName: typeof payload.fullName === "string" ? payload.fullName : payload.email,
       role: payload.role,
       clientId: typeof payload.clientId === "string" ? payload.clientId : null,
+      via: payload.via === "google" ? "google" : "password",
     };
   } catch {
     return null;

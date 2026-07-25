@@ -5,7 +5,13 @@
  * browser, they never get a download link. See docs/client-portal-plan.md.
  */
 
-export type PortalRole = "admin" | "client";
+/**
+ * "owner" is the Google era name for Sudaan staff. "admin" is the Phase 1 name and
+ * means the same thing; it is still accepted so password logins keep working
+ * during the switchover. Everything that branches on this treats non-client as
+ * owner, see store-sql.ts viewerFor.
+ */
+export type PortalRole = "owner" | "admin" | "client";
 
 export type AssetCategory =
   | "report"
@@ -16,7 +22,7 @@ export type AssetCategory =
   | "control_area"
   | "misc";
 
-/** A login. Client users belong to exactly one client, admins to none. */
+/** A password login (transitional). Google users live in the database instead. */
 export type PortalUser = {
   id: string;
   email: string;
@@ -34,6 +40,8 @@ export type PortalSession = {
   fullName: string;
   role: PortalRole;
   clientId: string | null;
+  /** How this session was obtained. Only Google sessions are re-checked against the database. */
+  via?: "google" | "password";
 };
 
 export type PortalClient = {

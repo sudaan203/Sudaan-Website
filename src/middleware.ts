@@ -22,7 +22,7 @@ export async function middleware(request: NextRequest) {
 
   if (session) {
     // Only admins reach the admin area.
-    if (pathname.startsWith("/portal/admin") && session.role !== "admin") {
+    if (pathname.startsWith("/portal/admin") && session.role === "client") {
       return NextResponse.rewrite(new URL("/portal/not-found", request.url), {
         status: 404,
       });
