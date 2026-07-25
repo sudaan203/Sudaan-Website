@@ -9,21 +9,38 @@ import { passwordLoginAvailable } from "@/lib/portal/users";
 import { siteConfig } from "@/lib/site";
 
 /**
- * Messages are deliberately specific about invitations but never about accounts:
- * "not invited" is safe to say because it reveals nothing beyond what the person
- * already knows, while a wrong password stays generic (see the login route).
+ * Messages are deliberately specific about access but never about accounts:
+ * saying an account has no access reveals nothing the person does not already
+ * know, while a wrong password stays generic (see the login route).
  */
 const ERRORS: Record<string, string> = {
   not_invited:
-    "That Google account is not on the access list for this portal. Ask your Sudaan Geo-Analytics contact to invite it.",
+    "That Google account does not have access yet. Send the address to your Sudaan Geo-Analytics contact and they will enable it.",
   deactivated: "Access for that account has been turned off. Contact your project manager.",
-  unverified_email: "That Google account has an unverified email address, so we cannot use it to sign in.",
+  unverified_email:
+    "That Google account has an unverified email address, so we cannot use it to sign in.",
   no_database: "Sign in is temporarily unavailable. Please try again shortly.",
   google_unavailable: "Google sign in is not configured yet. Please contact us.",
   google_error: "Google could not complete the sign in. Please try again.",
   cancelled: "Sign in was cancelled.",
   expired: "That sign in attempt expired. Please try again.",
 };
+
+/** What clients get once they are in. Sets expectations before the click. */
+const HIGHLIGHTS = [
+  {
+    title: "Every deliverable in one place",
+    body: "Orthomosaics, DSM and DTM previews, contour sheets, survey reports and drawings for each of your sites.",
+  },
+  {
+    title: "Private to your organisation",
+    body: "You only ever see the sites we have processed for you, and nothing belonging to any other client.",
+  },
+  {
+    title: "Always the current version",
+    body: "When we publish a revision it appears here, so there is no chasing files over email.",
+  },
+];
 
 export default async function PortalLoginPage({
   searchParams,
@@ -44,72 +61,110 @@ export default async function PortalLoginPage({
   const passwordLoginEnabled = passwordLoginAvailable();
 
   return (
-    <div className="flex flex-1 items-center justify-center px-6 py-16">
-      <div className="w-full max-w-md">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <Link href="/" className="mb-6 inline-flex">
+    <div className="relative flex flex-1 items-center justify-center overflow-hidden px-6 py-14 sm:py-20">
+      {/* Warm wash behind the panel, same family as the marketing pages. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 bg-radial-accent" />
+
+      <div className="relative grid w-full max-w-5xl items-center gap-12 lg:grid-cols-[1.05fr_minmax(0,420px)] lg:gap-16">
+        {/* Left: what this is. Hidden on small screens where the form matters most. */}
+        <section className="hidden lg:block">
+          <Link href="/" className="inline-flex">
             <Logo />
           </Link>
-          <span className="eyebrow">Client Portal</span>
-          <h1 className="mt-3 text-3xl font-bold tracking-tight text-ink-900">
-            Sign in to your dashboard
+          <span className="eyebrow mt-8 block">Client Portal</span>
+          <h1 className="mt-3 text-4xl font-bold leading-[1.1] tracking-tight text-ink-900">
+            Your survey data,
+            <br />
+            ready when you are.
           </h1>
-          <p className="mt-3 text-sm leading-relaxed text-ink/70">
-            View the survey deliverables we have processed for your sites.
+          <p className="lead mt-5 max-w-lg">
+            Sign in to view everything we have processed for your sites, straight
+            in the browser.
           </p>
-        </div>
 
-        {message ? (
-          <p
-            role="alert"
-            className="mb-6 rounded-xl border border-signal/30 bg-signal/5 px-4 py-3 text-sm leading-relaxed text-signal-600"
-          >
-            {message}
-          </p>
-        ) : null}
+          <ul className="mt-10 space-y-6">
+            {HIGHLIGHTS.map((item) => (
+              <li key={item.title} className="flex gap-4">
+                <span
+                  aria-hidden
+                  className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent-600"
+                />
+                <div>
+                  <h2 className="text-sm font-semibold text-ink-900">{item.title}</h2>
+                  <p className="mt-1 max-w-md text-sm leading-relaxed text-ink/70">{item.body}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-        <div className="surface p-6 sm:p-8">
-          {googleConfigured() ? (
-            <>
-              <GoogleSignInButton next={safeNext} />
-              <p className="mt-4 text-center text-xs leading-relaxed text-ink/55">
-                Use the Google account your Sudaan Geo-Analytics contact invited.
-              </p>
-            </>
-          ) : (
-            <p className="text-center text-sm text-ink/70">
-              Google sign in is not configured yet.
+        {/* Right: the actual sign in. */}
+        <section className="mx-auto w-full max-w-md">
+          <div className="mb-8 flex flex-col items-center text-center lg:hidden">
+            <Link href="/" className="mb-6 inline-flex">
+              <Logo />
+            </Link>
+            <span className="eyebrow">Client Portal</span>
+          </div>
+
+          <div className="surface p-7 sm:p-9">
+            <h2 className="text-center text-2xl font-bold tracking-tight text-ink-900">
+              Sign in
+            </h2>
+            <p className="mt-2 text-center text-sm leading-relaxed text-ink/70">
+              Use your Google account to continue.
             </p>
-          )}
 
-          {passwordLoginEnabled ? (
-            <details className="mt-6 border-t border-ink/[0.08] pt-5">
-              <summary className="cursor-pointer text-xs font-semibold text-ink/60 hover:text-accent-600">
-                Sudaan staff sign in
-              </summary>
-              <div className="mt-4">
-                <LoginForm next={safeNext} />
-              </div>
-            </details>
-          ) : null}
-        </div>
+            {message ? (
+              <p
+                role="alert"
+                className="mt-6 rounded-xl border border-signal/25 bg-signal/[0.06] px-4 py-3 text-sm leading-relaxed text-signal-600"
+              >
+                {message}
+              </p>
+            ) : null}
 
-        <p className="mt-6 text-center text-xs leading-relaxed text-ink/60">
-          Access is provisioned by Sudaan Geo-Analytics. If you need a login,
-          contact{" "}
-          <a
-            className="font-semibold text-accent-600 hover:text-accent-700"
-            href={`mailto:${siteConfig.email}`}
-          >
-            {siteConfig.email}
-          </a>
-          .
-        </p>
-        <p className="mt-4 text-center text-xs text-ink/50">
-          <Link href="/" className="hover:text-accent-600">
-            Back to sudaangeo.in
-          </Link>
-        </p>
+            <div className="mt-7">
+              {googleConfigured() ? (
+                <GoogleSignInButton next={safeNext} />
+              ) : (
+                <p className="text-center text-sm text-ink/70">
+                  Google sign in is not configured yet.
+                </p>
+              )}
+            </div>
+
+            <p className="mt-5 text-center text-xs leading-relaxed text-ink/55">
+              New here? Signing in creates your account, then your Sudaan
+              Geo-Analytics contact enables access to your sites.
+            </p>
+
+            {passwordLoginEnabled ? (
+              <details className="mt-7 border-t border-ink/[0.08] pt-5">
+                <summary className="cursor-pointer text-xs font-semibold text-ink/55 hover:text-accent-600">
+                  Sudaan staff sign in
+                </summary>
+                <div className="mt-4">
+                  <LoginForm next={safeNext} />
+                </div>
+              </details>
+            ) : null}
+          </div>
+
+          <p className="mt-6 text-center text-xs leading-relaxed text-ink/55">
+            Need help? Contact{" "}
+            <a
+              className="font-semibold text-accent-600 hover:text-accent-700"
+              href={`mailto:${siteConfig.email}`}
+            >
+              {siteConfig.email}
+            </a>
+            <span className="mx-2 text-ink/25">|</span>
+            <Link href="/" className="hover:text-accent-600">
+              Back to sudaangeo.in
+            </Link>
+          </p>
+        </section>
       </div>
     </div>
   );
