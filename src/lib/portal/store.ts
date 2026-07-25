@@ -1,12 +1,19 @@
 /**
- * Tenant scoped data access for the portal.
+ * Tenant scoped data access for the portal, and the only module pages may import
+ * for portal data. Pages must never touch seed.ts or the database directly.
  *
- * Every read takes the caller's session and filters by client. Nothing here
- * accepts a bare slug or id and trusts it: ownership is always proven through
- * the site, exactly as the SQL version will (docs/client-portal-plan.md, 7.2).
- * Functions are async so the Postgres swap does not change any call site.
+ * Two backends sit behind this interface:
+ *   Postgres  when DATABASE_URL is set (store-sql.ts, visibility in db/queries.ts)
+ *   seed file otherwise                (store-seed.ts, Phase 1 with no database)
+ *
+ * Both enforce the same rule: a caller only ever reaches their own client's data,
+ * and a miss returns null so the page can answer 404 rather than confirm that a
+ * slug or id exists.
  */
 
+import { getDb } from "./db/client";
+import { createSqlStore, type SqlStore } from "./store-sql";
+import * as seedStore from "./store-seed";
 import type {
   AssetCategory,
   PortalAsset,
@@ -16,78 +23,63 @@ import type {
   PortalSurvey,
   PortalVideo,
 } from "./types";
-import * as seed from "./seed";
 
-function canSeeClient(session: PortalSession, clientId: string) {
-  return session.role === "admin" || session.clientId === clientId;
+let sqlStore: SqlStore | null | undefined;
+
+function backend() {
+  if (sqlStore === undefined) {
+    const db = getDb();
+    sqlStore = db ? createSqlStore(db) : null;
+  }
+  return sqlStore ?? seedStore;
 }
 
-export async function getClient(clientId: string): Promise<PortalClient | null> {
-  return seed.clients.find((c) => c.id === clientId) ?? null;
+/** Which backend is live. Useful in logs and on the owner console. */
+export function storeBackend(): "postgres" | "seed" {
+  return backend() === seedStore ? "seed" : "postgres";
 }
 
-/** Sites the caller is allowed to see. Admins see all of them. */
-export async function listSites(session: PortalSession): Promise<PortalSite[]> {
-  return seed.sites
-    .filter((s) => canSeeClient(session, s.clientId))
-    .sort((a, b) => a.name.localeCompare(b.name));
+export function getClient(clientId: string): Promise<PortalClient | null> {
+  return backend().getClient(clientId);
 }
 
-/**
- * A single site by slug, or null when it does not exist OR belongs to another
- * client. Callers return 404 for null so we never confirm that a slug exists.
- */
-export async function getSite(
+export function listSites(session: PortalSession): Promise<PortalSite[]> {
+  return backend().listSites(session);
+}
+
+export function getSite(session: PortalSession, slug: string): Promise<PortalSite | null> {
+  return backend().getSite(session, slug);
+}
+
+export function listSurveys(siteId: string): Promise<PortalSurvey[]> {
+  return backend().listSurveys(siteId);
+}
+
+export function listAssets(
   session: PortalSession,
-  slug: string,
-): Promise<PortalSite | null> {
-  // Match on slug AND visibility together. Slugs are only unique per client, so
-  // filtering by slug first would hand back another client's row and 404 a site
-  // the caller legitimately owns.
-  return seed.sites.find((s) => s.slug === slug && canSeeClient(session, s.clientId)) ?? null;
-}
-
-export async function listSurveys(siteId: string): Promise<PortalSurvey[]> {
-  return seed.surveys
-    .filter((s) => s.siteId === siteId)
-    .sort((a, b) => b.flownOn.localeCompare(a.flownOn));
-}
-
-export async function listAssets(
   siteId: string,
   category?: AssetCategory,
 ): Promise<PortalAsset[]> {
-  return seed.assets
-    .filter((a) => a.siteId === siteId && (!category || a.category === category))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title));
+  return backend().listAssets(session, siteId, category);
 }
 
-/** Categories that actually have content for this site, for the sidebar. */
-export async function listAssetCounts(
+export function listAssetCounts(
+  session: PortalSession,
   siteId: string,
 ): Promise<Record<AssetCategory, number>> {
-  const counts = {} as Record<AssetCategory, number>;
-  for (const asset of seed.assets) {
-    if (asset.siteId !== siteId) continue;
-    counts[asset.category] = (counts[asset.category] ?? 0) + 1;
-  }
-  return counts;
+  return backend().listAssetCounts(session, siteId);
 }
 
-/** An asset plus its site, only if the caller's client owns that site. */
-export async function getAssetForSession(
+export function getAssetForSession(
   session: PortalSession,
   assetId: string,
 ): Promise<{ asset: PortalAsset; site: PortalSite } | null> {
-  const asset = seed.assets.find((a) => a.id === assetId);
-  if (!asset) return null;
-  const site = seed.sites.find((s) => s.id === asset.siteId);
-  if (!site || !canSeeClient(session, site.clientId)) return null;
-  return { asset, site };
+  return backend().getAssetForSession(session, assetId);
 }
 
-export async function listVideos(siteId: string): Promise<PortalVideo[]> {
-  return seed.videos
-    .filter((v) => v.siteId === siteId)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+export function listVideos(
+  session: PortalSession,
+  siteId: string,
+): Promise<PortalVideo[]> {
+  return backend().listVideos(session, siteId);
 }

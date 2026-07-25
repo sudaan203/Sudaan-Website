@@ -19,7 +19,7 @@ export default async function CategoryPage({
   const category = categoryBySlug(categorySlug);
   if (!category) notFound();
 
-  const assets = await listAssets(site.id, category.key);
+  const assets = await listAssets(session, site.id, category.key);
 
   return (
     <div className="space-y-6">

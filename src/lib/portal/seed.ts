@@ -8,6 +8,9 @@
  * Schema to migrate to: docs/client-portal-plan.md section 5.
  *
  * Logins are NOT here. They live outside git, see users.ts.
+ *
+ * Client ids match the uuids that scripts/portal-db-seed.mjs writes to Postgres,
+ * so one set of logins works against either backend during the migration.
  */
 
 import type {
@@ -19,14 +22,14 @@ import type {
 } from "./types";
 
 export const clients: PortalClient[] = [
-  { id: "cl_demo", slug: "demo-client", name: "Demo Client" },
-  { id: "cl_second", slug: "second-client", name: "Second Client" },
+  { id: "11111111-1111-4111-8111-111111111111", slug: "demo-client", name: "Demo Client" },
+  { id: "22222222-2222-4222-8222-222222222222", slug: "second-client", name: "Second Client" },
 ];
 
 export const sites: PortalSite[] = [
   {
     id: "st_kotba",
-    clientId: "cl_demo",
+    clientId: "11111111-1111-4111-8111-111111111111",
     slug: "kotba-survey",
     name: "Kotba Site Survey",
     location: "Kotba, Gujarat",
@@ -40,7 +43,7 @@ export const sites: PortalSite[] = [
   },
   {
     id: "st_ambaji",
-    clientId: "cl_second",
+    clientId: "22222222-2222-4222-8222-222222222222",
     slug: "ambaji-corridor",
     name: "Ambaji Corridor Survey",
     location: "Ambaji, Gujarat",

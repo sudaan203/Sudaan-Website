@@ -24,8 +24,8 @@ export default async function SiteLayout({
     notFound();
   }
 
-  const counts = await listAssetCounts(site.id);
-  const videos = await listVideos(site.id);
+  const counts = await listAssetCounts(session, site.id);
+  const videos = await listVideos(session, site.id);
 
   const tabs = [
     { href: `/portal/${site.slug}`, label: "Overview", count: null as number | null },

@@ -12,7 +12,7 @@
  * Client slugs come from src/lib/portal/seed.ts.
  */
 
-import { randomBytes, randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import bcrypt from "bcryptjs";
@@ -92,7 +92,9 @@ const normalisedEmail = email.trim().toLowerCase();
 const existing = users.findIndex((u) => u.email?.toLowerCase() === normalisedEmail);
 
 const record = {
-  id: existing >= 0 ? users[existing].id : `usr_${randomBytes(6).toString("hex")}`,
+  // A uuid, because the Postgres backend stores user ids as uuid and a session
+  // carrying anything else is refused at the SQL boundary.
+  id: existing >= 0 ? users[existing].id : randomUUID(),
   email: normalisedEmail,
   fullName,
   role: isAdmin ? "admin" : "client",

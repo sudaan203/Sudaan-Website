@@ -20,7 +20,7 @@ export default async function PortalDashboard() {
     sites.map(async (site) => ({
       site,
       surveys: await listSurveys(site.id),
-      counts: await listAssetCounts(site.id),
+      counts: await listAssetCounts(session, site.id),
       owner: session.role === "admin" ? await getClient(site.clientId) : null,
     })),
   );

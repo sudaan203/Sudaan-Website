@@ -13,7 +13,7 @@ export default async function SiteVideosPage({
   const site = await getSite(session, siteSlug);
   if (!site) notFound();
 
-  const videos = await listVideos(site.id);
+  const videos = await listVideos(session, site.id);
 
   return (
     <div className="space-y-6">

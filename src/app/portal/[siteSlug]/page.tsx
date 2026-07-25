@@ -31,7 +31,7 @@ export default async function SiteOverview({
   });
 
   const surveys = await listSurveys(site.id);
-  const counts = await listAssetCounts(site.id);
+  const counts = await listAssetCounts(session, site.id);
   const available = assetCategories.filter((c) => (counts[c.key] ?? 0) > 0);
 
   const facts = [
