@@ -17,8 +17,11 @@ import { and, asc, desc, eq, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import * as schema from "./schema";
 
-/** Structural type so the same functions run on postgres-js and on PGlite in tests. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+/**
+ * Structural type so the same functions run on postgres-js and on PGlite in tests.
+ * The driver specific result type is deliberately loose: both drivers satisfy this
+ * shape, and pinning it to one of them would stop the tests sharing this code.
+ */
 export type Db = PgDatabase<any, typeof schema, any>;
 
 export type Viewer = {

@@ -39,6 +39,7 @@ export default function AssetViewer({
       <figure className="surface overflow-hidden">
         <div className={zoomed ? "max-h-[75vh] overflow-auto bg-mist" : "bg-mist"}>
           {/* Plain img on purpose: next/image would cache private data on a shared CDN. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={src}
             alt={title}

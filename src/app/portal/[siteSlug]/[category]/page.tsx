@@ -45,6 +45,7 @@ export default async function CategoryPage({
                   imagery on a shared CDN, and this data is private.
                 */}
                 <span className="block aspect-[4/3] overflow-hidden bg-mist">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={`/api/portal/assets/${asset.id}/view`}
                     alt={asset.title}

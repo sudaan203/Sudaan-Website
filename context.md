@@ -122,10 +122,16 @@ lib/
   - Default Homebrew `node` is now v26, too new for Next 15.5 (`next dev` starts but never
     binds a port). Run the app with the Node 22 keg instead:
     `PATH="/opt/homebrew/opt/node@22/bin:$PATH" /opt/homebrew/opt/node@22/bin/node node_modules/next/dist/bin/next dev -p 3100`
-  - `npm run lint` / `next lint` / bare `eslint` **hang forever**: the repo has a legacy
-    `.eslintrc.json` but ESLint 9 wants a flat `eslint.config.js`. Since `next build` lints
-    after compiling, a plain build hangs too. Build locally with `next build --no-lint`.
-    Migrating the ESLint config is unfinished work. Vercel is unaffected.
+  - **Lint works, it is just slow.** An earlier note here claimed ESLint hung; that was
+    wrong. A full `next build` takes about 7 minutes locally, most of it the lint and
+    typecheck step, and it passes. `next build --no-lint` is fine for a quick check but
+    **always run the full build before pushing**, because Vercel runs lint and a lint error
+    fails the deployment. One real example: an `eslint-disable` comment naming a rule this
+    config does not load (`@typescript-eslint/*`, not part of `next/core-web-vitals`) is a
+    hard error, not a warning.
+  - A bare `eslint` CLI run still fails: ESLint 9 wants a flat `eslint.config.js` while the
+    repo has `.eslintrc.json`. Next supplies its own config internally, which is why the
+    build works. Migrating the config is unfinished work.
   - Typecheck on its own is fast and reliable: `npx tsc --noEmit`.
   - `outputFileTracingIncludes` patterns must stay narrow and anchored (e.g.
     `portal-data/files/**`). A broad glob walks the gitignored multi-hundred-MB survey data
