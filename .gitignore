@@ -54,3 +54,9 @@ next-env.d.ts
 
 # client portal logins (bcrypt hashes, never committed; see scripts/portal-user.mjs)
 /portal-data/users.json
+
+# iCloud sync conflict copies. This project lives in ~/Documents, which syncs,
+# and a conflict leaves a "<name> 2.ts" beside the original. 35 of them were
+# committed once, including stale copies of the auth and session code. They are
+# never wanted in the repository.
+* [0-9].*
