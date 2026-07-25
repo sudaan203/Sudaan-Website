@@ -116,14 +116,86 @@ lib/
 - Keep procedural SVG/canvas visuals deterministic (rounded values) to avoid hydration mismatches.
 
 ## 8. Dev commands
-- `npm run dev` (localhost:3000) · `npm run build` (static-checks, 19 routes) · `npm run lint`
+- `npm run dev` (localhost:3000) · `npm run build` (static-checks) · `npm run lint`
 - Regenerate sample PDFs: `node scripts/generate-reports.mjs`
+- **Local toolchain gotchas found 25 Jul 2026 (this machine, not CI):**
+  - Default Homebrew `node` is now v26, too new for Next 15.5 (`next dev` starts but never
+    binds a port). Run the app with the Node 22 keg instead:
+    `PATH="/opt/homebrew/opt/node@22/bin:$PATH" /opt/homebrew/opt/node@22/bin/node node_modules/next/dist/bin/next dev -p 3100`
+  - **Lint works, it is just slow.** An earlier note here claimed ESLint hung; that was
+    wrong. A full `next build` takes about 7 minutes locally, most of it the lint and
+    typecheck step, and it passes. `next build --no-lint` is fine for a quick check but
+    **always run the full build before pushing**, because Vercel runs lint and a lint error
+    fails the deployment. One real example: an `eslint-disable` comment naming a rule this
+    config does not load (`@typescript-eslint/*`, not part of `next/core-web-vitals`) is a
+    hard error, not a warning.
+  - A bare `eslint` CLI run still fails: ESLint 9 wants a flat `eslint.config.js` while the
+    repo has `.eslintrc.json`. Next supplies its own config internally, which is why the
+    build works. Migrating the config is unfinished work.
+  - Typecheck on its own is fast and reliable: `npx tsc --noEmit`.
+  - `outputFileTracingIncludes` patterns must stay narrow and anchored (e.g.
+    `portal-data/files/**`). A broad glob walks the gitignored multi-hundred-MB survey data
+    and hangs the build at trace collection.
 
-## 8b. Planned: client data portal
-A private, per-client dashboard (login + password per client user, each client sees only
-their own sites) for delivering orthomaps, DSM/DTM, contours, point clouds, video, reports,
-drawings and raw data. Concept approved, not built. Full plan (schema, routes, phases,
-security rules, cost): **`docs/client-portal-plan.md`**. Read it before starting portal work.
+## 8b. Client data portal (Phase 1 BUILT, 25 Jul 2026)
+Private per-client dashboard at **`/portal`**: each client user logs in and sees only their
+own sites and deliverables. **View only, no downloads** (owner decision). Runs with **no
+database and no paid services** so it fits the Vercel Hobby plan.
+
+- **Read `docs/client-portal-plan.md` before touching portal code.** Section 2b explains the
+  v1 storage choices and what to swap when moving to Postgres; section 10 has the ops runbook.
+- Code: `src/middleware.ts` (deny by default over `/portal` + `/api/portal`),
+  `src/lib/portal/*` (session, users, store, seed, files, log, rate-limit),
+  `src/app/portal/**`, `src/app/api/portal/**`, `src/components/portal/*`.
+- Catalogue = `src/lib/portal/seed.ts` (typed seed). Sample files = `portal-data/files/**`
+  (committed, ~700 KB, outside `public/` on purpose). Logins = `PORTAL_USERS` env var on
+  Vercel or gitignored `portal-data/users.json` locally, both created by
+  `node scripts/portal-user.mjs`. Needs `PORTAL_AUTH_SECRET` set in Vercel to work in prod.
+- Pages never import `seed.ts` directly, always go through `src/lib/portal/store.ts`, which
+  is async and tenant-scoped so the Postgres swap does not touch the UI.
+- Marketing chrome is suppressed on `/portal` by `src/components/SiteChrome.tsx`, which
+  receives the navbar/footer as props so those stay server components.
+
+## 8c. Portal Phase 1b: Google sign in + owner-managed access (IN PROGRESS)
+Owners (Malhar, Prakhar) will control which client sees which data from their own logins.
+**Google-only sign in** (decided 25 Jul 2026). Needs a real database, which is why Postgres
+moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-plan.md` §12b.
+- Already built and verified: `drizzle/0001_init.sql` (schema), `src/lib/portal/db/*`
+  (drizzle schema, lazy client, and `queries.ts` = the single place that decides visibility),
+  `scripts/portal-db-migrate.mjs` (applies SQL migrations, tracks them in
+  `portal_schema_migrations`), `scripts/portal-db-test.mts` (25 authorisation checks on
+  embedded Postgres: `npm install --no-save @electric-sql/pglite tsx` then
+  `npx tsx scripts/portal-db-test.mts`).
+- Visibility rule (owners bypass it): site belongs to your client AND is published AND
+  (you have no per-user grants OR the site is one of your grants); assets additionally
+  must be published.
+- **Supabase is LIVE** (project ref `azyyimhspvatxesnbjzi`, region ap-southeast-2). Schema
+  migrated and demo data seeded, 26 Jul 2026. Connect with the **transaction pooler**
+  (`aws-0-ap-southeast-2.pooler.supabase.com:6543`, user `postgres.<ref>`), never the direct
+  `db.<ref>.supabase.co` host, which is IPv6-only and unreachable from IPv4 networks.
+  Percent-encode the password. `DATABASE_URL` lives in the gitignored `.env.local`.
+  Note: a password reset takes up to a minute to propagate; a 28P01 straight after a reset
+  usually just means retry.
+- Verified end to end against Supabase on 26 Jul 2026: 33 HTTP checks green (isolation,
+  view-only streaming, admin view, marketing routes untouched).
+- **Google sign in + owner console BUILT 26 Jul 2026.** `src/lib/portal/google.ts` (OAuth code
+  flow, hand-rolled on the existing session cookie, no Auth.js), `/api/auth/google/start` +
+  `/api/auth/callback/google`, `users-db.ts` (the allowlist: Google proves identity, a users
+  row grants access; `PORTAL_OWNER_EMAILS` bootstraps owners), `/portal/admin` owner console
+  with `admin-actions.ts` (create client, invite, deactivate, create site, publish, grants).
+- Password login still exists as a **staff fallback** behind a details toggle, so a Google
+  problem cannot lock the owners out. Remove it by clearing `PORTAL_USERS` and deleting
+  `portal-data/users.json`.
+- **Pooler ports matter:** Vercel uses the transaction pooler (6543); a long-lived `next dev`
+  must use the session pooler (5432). A persistent client on 6543 wedges after a few requests
+  and every later query hangs. Also cache the db client on `globalThis` (done) or hot reload
+  leaks a pool per edit and exhausts the pooler.
+- Verified 26 Jul 2026 against real Supabase: 33 portal checks, 18 console checks, and a
+  16 step owner workflow (create site, publish, grant, revoke, unpublish, deactivate) where
+  the client's dashboard changed correctly at every step.
+- **Still outstanding:** add `https://www.sudaangeo.in/api/auth/callback/google` in Google
+  Cloud, publish the consent screen, set the env vars in Vercel, and have a human complete
+  one real Google sign in (cannot be automated from here).
 
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until

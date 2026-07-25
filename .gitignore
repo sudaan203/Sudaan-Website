@@ -51,3 +51,6 @@ next-env.d.ts
 
 # reference / demo videos (large, kept locally only)
 *.mp4
+
+# client portal logins (bcrypt hashes, never committed; see scripts/portal-user.mjs)
+/portal-data/users.json
