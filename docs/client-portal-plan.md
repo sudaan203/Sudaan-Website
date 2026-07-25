@@ -677,6 +677,59 @@ designed but unbuilt. Two consequences to keep in mind rather than rediscover:
 4. Uploads to Supabase Storage, and move the sample files out of the repo.
 5. Magic link fallback for clients who cannot use Google.
 
+## 12c. Vercel deployment checklist
+
+Do these in order. Setting the variables first means the deploy triggered by the
+merge already has them, so there is only one deployment.
+
+### 1. Finish the Google setup first
+
+Sign in will fail without both of these:
+
+- Add `https://www.sudaangeo.in/api/auth/callback/google` to the OAuth client's
+  authorised redirect URIs. The live site serves `www`, the apex 308s to it.
+- Publish the OAuth consent screen ("In production"). While it is in Testing,
+  only listed test users can sign in.
+
+### 2. Environment variables
+
+Vercel dashboard, project `sudaan-website`, Settings, Environment Variables. Tick
+**Production** for each. Preview is optional and Google sign in cannot work on
+preview URLs anyway, because their hostnames are random.
+
+| Key | Value |
+| --- | --- |
+| `DATABASE_URL` | the Supabase **transaction pooler** string, port **6543**, password percent encoded |
+| `PORTAL_AUTH_SECRET` | generate with `openssl rand -base64 32`, never reuse the local one |
+| `AUTH_GOOGLE_ID` | the OAuth client id ending `.apps.googleusercontent.com` |
+| `AUTH_GOOGLE_SECRET` | the `GOCSPX-...` secret |
+| `AUTH_URL` | `https://www.sudaangeo.in` (the `www` host, not the apex) |
+| `PORTAL_OWNER_EMAILS` | the owners' real Google addresses, comma separated |
+
+Leave `PORTAL_USERS` unset. That is what makes production Google only: with no
+password users configured the staff form does not render.
+
+### 3. Merge and deploy
+
+Merge the portal PR. Vercel deploys automatically and picks up the variables.
+
+### 4. Check it
+
+1. Open `https://www.sudaangeo.in/portal`. Expect the login page with
+   "Continue with Google" and no staff password form.
+2. Sign in with an owner address. Expect the dashboard plus an "Owner console"
+   link in the header.
+3. In the console, create a client, invite a colleague's Google address, and have
+   them sign in. They should see that client's published sites and nothing else.
+4. Try signing in with an uninvited Google account. Expect a clear refusal.
+
+### If the portal hangs in production
+
+Symptom: pages load slowly then time out, and it gets worse rather than better.
+That is pooler starvation. Switch `DATABASE_URL` to the **session pooler** (port
+`5432`, same host) and redeploy. Transaction mode suits short lived functions and
+is the right default, but session mode is the safe fallback.
+
 ## 13. Reference material
 
 - Walkthrough video of the portal we are modelling: `05. Dashboard_Overview_video.mp4`
