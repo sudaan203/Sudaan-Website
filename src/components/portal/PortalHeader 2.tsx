@@ -14,7 +14,7 @@ export default async function PortalHeader({ session }: { session: PortalSession
       <div className="container-px flex h-16 items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <Link href="/portal" className="flex items-center" aria-label="Client portal home">
-            <Logo asLink={false} />
+            <Logo />
           </Link>
           <span className="hidden text-xs font-semibold uppercase tracking-[0.18em] text-accent-600 sm:inline">
             Client Portal
