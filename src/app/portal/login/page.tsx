@@ -68,9 +68,7 @@ export default async function PortalLoginPage({
       <div className="relative grid w-full max-w-5xl items-center gap-12 lg:grid-cols-[1.05fr_minmax(0,420px)] lg:gap-16">
         {/* Left: what this is. Hidden on small screens where the form matters most. */}
         <section className="hidden lg:block">
-          <Link href="/" className="inline-flex">
-            <Logo />
-          </Link>
+          <Logo />
           <span className="eyebrow mt-8 block">Client Portal</span>
           <h1 className="mt-3 text-4xl font-bold leading-[1.1] tracking-tight text-ink-900">
             Your survey data,
@@ -101,9 +99,7 @@ export default async function PortalLoginPage({
         {/* Right: the actual sign in. */}
         <section className="mx-auto w-full max-w-md">
           <div className="mb-8 flex flex-col items-center text-center lg:hidden">
-            <Link href="/" className="mb-6 inline-flex">
-              <Logo />
-            </Link>
+            <Logo className="mb-6" />
             <span className="eyebrow">Client Portal</span>
           </div>
 
