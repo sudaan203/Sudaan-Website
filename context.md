@@ -119,6 +119,12 @@ lib/
 - `npm run dev` (localhost:3000) · `npm run build` (static-checks, 19 routes) · `npm run lint`
 - Regenerate sample PDFs: `node scripts/generate-reports.mjs`
 
+## 8b. Planned: client data portal
+A private, per-client dashboard (login + password per client user, each client sees only
+their own sites) for delivering orthomaps, DSM/DTM, contours, point clouds, video, reports,
+drawings and raw data. Concept approved, not built. Full plan (schema, routes, phases,
+security rules, cost): **`docs/client-portal-plan.md`**. Read it before starting portal work.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)

@@ -48,3 +48,6 @@ next-env.d.ts
 
 # raw deliverable screenshots set (processed copies go in public/)
 /Ortho1/
+
+# reference / demo videos (large, kept locally only)
+*.mp4
