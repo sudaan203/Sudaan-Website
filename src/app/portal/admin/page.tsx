@@ -14,7 +14,7 @@ import {
   setUserActiveAction,
   toggleGrantAction,
 } from "@/lib/portal/admin-actions";
-import { isDatabaseConfigured } from "@/lib/portal/db/client";
+import { isDatabaseConfigured, queryDb } from "@/lib/portal/db/client";
 import { ownerEmails } from "@/lib/portal/users-db";
 import ActionForm, { Field } from "@/components/portal/admin/ActionForm";
 
@@ -56,12 +56,18 @@ export default async function OwnerConsole() {
     );
   }
 
-  const [clients, users, sites, activity] = await Promise.all([
-    listAdminClients(),
-    listAdminUsers(),
-    listAdminSites(),
-    listRecentAccessChanges(),
-  ]);
+  // One retry point for the whole page. A warm Vercel instance can wake up
+  // holding a pooled socket Supabase already dropped, and these four reads then
+  // fail together with "Connection closed"; queryDb reconnects and runs them
+  // again rather than leaving an owner staring at an error page.
+  const [clients, users, sites, activity] = await queryDb("owner console", () =>
+    Promise.all([
+      listAdminClients(),
+      listAdminUsers(),
+      listAdminSites(),
+      listRecentAccessChanges(),
+    ]),
+  );
 
   const clientOptions = clients.map((c) => ({ value: c.id, label: c.name }));
 
