@@ -399,6 +399,12 @@ with unlisted YouTube embeds, 3D model tab if we have web ready meshes.
 Done when: the Kotba cloud loads, spins smoothly, and a distance measured in
 Potree matches the map tab to within tolerance.
 
+### Phase 1b: Google sign in and owner managed access, NEXT UP
+
+Requested 25 Jul 2026, specified in section 12b. Brings the database forward from
+Phase 4 because owner controlled permissions need writes. Blocked until the owners
+create a Google OAuth client and a Supabase project (section 12b checklist).
+
 ### Phase 4: hardening and polish
 
 Cloudflare Worker tile auth, Postgres RLS as defence in depth, email password
@@ -480,6 +486,152 @@ Realistic run rate for v1: about 20 to 25 USD per month, dominated by Vercel Pro
    keep read access?
 6. Who inside Sudaan gets admin logins? One admin account exists in local
    development only, nothing is provisioned in production yet.
+
+## 12b. Owner managed access with Google sign in (requested 25 Jul 2026)
+
+New requirement from the owners: **clients sign in with Google**, and **Malhar and
+Prakhar decide from their own logins which client sees which data**, without a
+developer editing files and redeploying.
+
+This is the right end state, and it changes one earlier decision: it **requires a
+database**. Owners changing permissions at runtime means writes, and Vercel's
+filesystem is read only, so the v1 seed file cannot express it. The good news is
+that the database is free at our size (Supabase or Neon free tier), so this does
+not conflict with staying off paid plans. Vercel Hobby's non commercial licensing
+is still the thing to fix before a real client relies on this.
+
+### Auth design
+
+- **Google OAuth via Auth.js v5**, with a strict allowlist: signing in with Google
+  proves who someone is, it does not grant access. The `signIn` callback looks the
+  email up in `portal_users` and **rejects any address an owner has not invited**.
+  Default deny, exactly as now.
+- **Owners are bootstrapped from an env var** (`PORTAL_OWNER_EMAILS`, the two owner
+  Google addresses) so the first sign in works on an empty database. After that
+  owners are rows like anyone else.
+- **Not every client can use Google.** Large clients often run Microsoft 365, and
+  those addresses cannot complete a Google sign in. Plan for both: keep Google as
+  the primary path and add **email magic links** (Auth.js Resend provider, which
+  reuses the Resend setup already pending in `context.md`) as the fallback. Do not
+  make Google the only door, or an Adani or Reliance user will be locked out.
+- Password logins from v1 are then retired. Fewer secrets to manage and no reset
+  flow to build.
+
+### Permission model
+
+Three levels, in increasing specificity. Owners work mostly at level 1.
+
+1. **User belongs to a client.** By default a client user sees every published
+   site of that client. This covers the common case.
+2. **Per user site grants (optional).** When a client wants a contractor limited
+   to one site, owners tick specific sites for that user. Empty grant list means
+   "all sites of my client", which keeps level 1 simple.
+3. **Publish flags.** Every site and every asset has `is_published`. Owners stage
+   data privately and flip it visible when the deliverable is signed off. Nothing
+   is visible to a client until it is published, so a half uploaded site cannot
+   leak.
+
+```sql
+-- Replaces the users table in section 5. No password column: identity comes from
+-- the OAuth provider or a magic link.
+create table portal_users (
+  id          uuid primary key default gen_random_uuid(),
+  email       citext not null unique,
+  full_name   text,
+  role        text not null default 'client'
+              check (role in ('owner','client')),
+  client_id   uuid references clients(id) on delete cascade,
+  invited_by  uuid references portal_users(id),
+  is_active   boolean not null default true,
+  last_login_at timestamptz,
+  created_at  timestamptz not null default now(),
+  constraint owners_have_no_client
+    check ((role = 'owner' and client_id is null) or (role = 'client' and client_id is not null))
+);
+
+-- Level 2. No rows for a user means "every published site of their client".
+create table user_site_grants (
+  user_id uuid not null references portal_users(id) on delete cascade,
+  site_id uuid not null references sites(id) on delete cascade,
+  granted_by uuid references portal_users(id),
+  granted_at timestamptz not null default now(),
+  primary key (user_id, site_id)
+);
+
+-- Level 3, added to the section 5 tables.
+alter table sites  add column is_published boolean not null default false;
+alter table assets add column is_published boolean not null default true;
+
+-- Auth.js needs its own tables (accounts, sessions, verification_token) when
+-- using the Drizzle adapter. Take them from the Auth.js schema as is.
+
+-- Every owner action on access is recorded, so "who gave them that" is answerable.
+create table access_changes (
+  id         bigserial primary key,
+  actor_id   uuid references portal_users(id),
+  action     text not null,   -- invite_user, deactivate_user, grant_site, revoke_site, publish_site, unpublish_asset
+  subject    text not null,   -- email, site slug or asset id
+  detail     jsonb,
+  created_at timestamptz not null default now()
+);
+```
+
+The single authorisation question every read must answer stays the same shape as
+today's `store.ts`, just sourced from SQL:
+
+```
+visible_sites(user) =
+  sites where client_id = user.client_id
+    and is_published
+    and (user has no grants  or  site in user's grants)
+```
+
+Owners bypass the client filter and see unpublished data, which is what makes the
+staging workflow work.
+
+### Owner console (`/portal/admin`, owners only)
+
+- **Clients:** create, rename, deactivate.
+- **People:** invite by email (choose client, optionally tick specific sites),
+  deactivate, see last sign in. Inviting only writes a row, the person then signs
+  in with Google or a magic link on their own.
+- **Sites:** create a site for a client, publish or unpublish it.
+- **Data:** upload files to a site, set category, publish or unpublish individual
+  assets, reorder. Uploads need object storage, so this arrives with Supabase
+  Storage (free tier, 1 GB, replaces the committed `portal-data/files` samples).
+- **Activity:** recent sign ins and access changes from `access_log` and
+  `access_changes`.
+
+### What the owners have to provision first
+
+Both are free and take about 15 minutes total. Nothing can be wired up until
+these exist, because the credentials are the inputs.
+
+1. **Google OAuth client:** Google Cloud Console, create a project, configure the
+   OAuth consent screen (External, app name "Sudaan Geo-Analytics Client Portal",
+   support email, add the two owner emails as test users while it is unverified),
+   then Credentials, Create OAuth client ID, Web application, with authorised
+   redirect URIs `https://sudaangeo.in/api/auth/callback/google` and
+   `http://localhost:3000/api/auth/callback/google`. Yields `AUTH_GOOGLE_ID` and
+   `AUTH_GOOGLE_SECRET`.
+2. **Postgres:** create a free Supabase project (also gives Storage for uploads),
+   copy the pooled connection string as `DATABASE_URL`.
+
+New environment variables: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_URL`,
+`AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `PORTAL_OWNER_EMAILS`, plus
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` when uploads land. The v1
+`PORTAL_AUTH_SECRET` and `PORTAL_USERS` are then removed.
+
+### Build order
+
+1. Postgres schema plus Drizzle, and port `store.ts` to SQL behind its existing
+   async interface. The UI should not change at all in this step, which is the
+   proof that the interface was worth keeping.
+2. Auth.js with Google, the allowlist `signIn` callback, and owner bootstrap.
+   Retire the password login and `scripts/portal-user.mjs`.
+3. Owner console: clients, people, invites, grants, publish toggles.
+4. Uploads to Supabase Storage, and move the sample files out of the repo.
+5. Magic link fallback for clients who cannot use Google.
 
 ## 13. Reference material
 
