@@ -69,6 +69,27 @@ try {
   }
 } catch (err) {
   console.error("\nMigration failed:", err.message);
+
+  // The direct Supabase host (db.<ref>.supabase.co) resolves to IPv6 only on new
+  // projects, so it is unreachable from IPv4 only networks. The pooler has IPv4.
+  const network = ["ENETUNREACH", "EHOSTUNREACH", "ENOTFOUND", "ETIMEDOUT", "ECONNREFUSED"];
+  if (network.includes(err.code) || network.includes(err.errno)) {
+    console.error(
+      [
+        "",
+        "Could not reach the database host. Two usual causes:",
+        "  1. You are using the direct connection string (db.<ref>.supabase.co), which is",
+        "     IPv6 only. Use the Session pooler string instead: host aws-<n>-<region>.pooler.supabase.com,",
+        "     port 5432, user postgres.<project-ref>.",
+        "  2. A special character in the password is not percent encoded (@ becomes %40, and so on).",
+      ].join("\n"),
+    );
+  } else if (/password authentication failed|SASL/i.test(err.message)) {
+    console.error(
+      "\nThe host answered but rejected the credentials. Check the password, and percent encode special characters.",
+    );
+  }
+
   process.exitCode = 1;
 } finally {
   await sql.end({ timeout: 5 });
