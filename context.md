@@ -163,8 +163,18 @@ moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-pl
 - Visibility rule (owners bypass it): site belongs to your client AND is published AND
   (you have no per-user grants OR the site is one of your grants); assets additionally
   must be published.
-- Blocked on the owners creating a Google OAuth client and a Supabase project. Until
-  `DATABASE_URL` is set the portal keeps running on the Phase 1 seed store.
+- **Supabase is LIVE** (project ref `azyyimhspvatxesnbjzi`, region ap-southeast-2). Schema
+  migrated and demo data seeded, 26 Jul 2026. Connect with the **transaction pooler**
+  (`aws-0-ap-southeast-2.pooler.supabase.com:6543`, user `postgres.<ref>`), never the direct
+  `db.<ref>.supabase.co` host, which is IPv6-only and unreachable from IPv4 networks.
+  Percent-encode the password. `DATABASE_URL` lives in the gitignored `.env.local`.
+  Note: a password reset takes up to a minute to propagate; a 28P01 straight after a reset
+  usually just means retry.
+- Verified end to end against Supabase on 26 Jul 2026: 33 HTTP checks green (isolation,
+  view-only streaming, admin view, marketing routes untouched).
+- Still blocked on `AUTH_GOOGLE_SECRET` before Google sign in and the owner console can be
+  built. Google client id exists ("Sudaan-Geo"); the `www` redirect URI and publishing the
+  consent screen are still outstanding (see plan doc 12b).
 
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
