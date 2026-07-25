@@ -18,7 +18,8 @@ import postgres from "postgres";
 const MIGRATIONS_DIR = path.join(process.cwd(), "drizzle");
 const dryRun = process.argv.includes("--dry-run");
 
-const url = process.env.DATABASE_URL;
+// POSTGRES_URL is what the Supabase integration for Vercel creates.
+const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 if (!url) {
   console.error("DATABASE_URL is not set. Copy the pooled connection string from Supabase.");
   process.exit(1);

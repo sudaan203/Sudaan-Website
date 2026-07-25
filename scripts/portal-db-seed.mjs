@@ -12,9 +12,10 @@
 
 import postgres from "postgres";
 
-const url = process.env.DATABASE_URL;
+// POSTGRES_URL is what the Supabase integration for Vercel creates.
+const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
 if (!url) {
-  console.error("DATABASE_URL is not set.");
+  console.error("Neither DATABASE_URL nor POSTGRES_URL is set.");
   process.exit(1);
 }
 

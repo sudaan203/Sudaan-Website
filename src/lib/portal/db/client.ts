@@ -1,8 +1,8 @@
 /**
  * Postgres connection for the portal. Node runtime only.
  *
- * Returns null when DATABASE_URL is not configured, which is how the portal keeps
- * working on the seed store until the database exists. Call sites use
+ * Returns null when no connection string is configured, which is how the portal
+ * keeps working on the seed store until the database exists. Call sites use
  * `isDatabaseConfigured()` to choose, so there is never a half configured state
  * that throws at request time.
  */
@@ -24,17 +24,61 @@ export type PortalDb = ReturnType<typeof drizzle<typeof schema>>;
  */
 const globalForDb = globalThis as unknown as { portalDb?: PortalDb | null };
 
+/**
+ * Prisma and the Vercel integration add flags to the URL that Postgres itself
+ * does not understand. postgres.js forwards unknown query parameters as server
+ * startup options, and the pooler rejects them, so strip them.
+ */
+const NON_POSTGRES_PARAMS = [
+  "pgbouncer",
+  "connection_limit",
+  "pool_timeout",
+  "connect_timeout",
+  "schema",
+  "supa",
+];
+
+/**
+ * Accepts either name, so the Supabase integration for Vercel works with no
+ * extra configuration:
+ *   DATABASE_URL   set by hand, wins when present
+ *   POSTGRES_URL   created automatically by the Supabase Vercel integration
+ * Deliberately NOT POSTGRES_URL_NON_POOLING: that is the direct host, which is
+ * IPv6 only on new projects and unreachable from many networks.
+ */
+export function connectionString(): string | null {
+  const raw = process.env.DATABASE_URL || process.env.POSTGRES_URL || null;
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw);
+    for (const param of NON_POSTGRES_PARAMS) url.searchParams.delete(param);
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
 export function isDatabaseConfigured(): boolean {
-  return Boolean(process.env.DATABASE_URL);
+  return connectionString() !== null;
 }
 
 export function getDb(): PortalDb | null {
   if (globalForDb.portalDb !== undefined) return globalForDb.portalDb;
 
-  const url = process.env.DATABASE_URL;
+  const url = connectionString();
   if (!url) {
     globalForDb.portalDb = null;
     return null;
+  }
+
+  // A direct host cannot be reached from IPv4 only networks, so say so loudly
+  // rather than letting every request fail with a DNS error.
+  if (/db\.[a-z0-9]+\.supabase\.co/.test(url)) {
+    console.warn(
+      "[portal] the connection string points at the direct Supabase host, which is IPv6 only. " +
+        "Use the pooler host (aws-N-region.pooler.supabase.com) instead.",
+    );
   }
 
   // prepare: false is required for Supabase's transaction mode pooler.

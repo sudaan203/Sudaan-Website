@@ -699,7 +699,7 @@ preview URLs anyway, because their hostnames are random.
 
 | Key | Value |
 | --- | --- |
-| `DATABASE_URL` | the Supabase **transaction pooler** string, port **6543**, password percent encoded |
+| `DATABASE_URL` | **skip this if the Supabase integration for Vercel is installed**, it already provides `POSTGRES_URL` and the code reads either. Otherwise the Supabase **transaction pooler** string, port **6543**, password percent encoded |
 | `PORTAL_AUTH_SECRET` | generate with `openssl rand -base64 32`, never reuse the local one |
 | `AUTH_GOOGLE_ID` | the OAuth client id ending `.apps.googleusercontent.com` |
 | `AUTH_GOOGLE_SECRET` | the `GOCSPX-...` secret |
@@ -708,6 +708,17 @@ preview URLs anyway, because their hostnames are random.
 
 Leave `PORTAL_USERS` unset. That is what makes production Google only: with no
 password users configured the staff form does not render.
+
+**If the Supabase integration for Vercel is installed** it creates `POSTGRES_URL`,
+`POSTGRES_URL_NON_POOLING`, `SUPABASE_*` and `NEXT_PUBLIC_SUPABASE_*` for you.
+The portal reads `DATABASE_URL` first and falls back to `POSTGRES_URL`, so there
+is nothing to add for the database, and rotating the password in Supabase updates
+the integration variable automatically. Check once that `POSTGRES_URL` points at
+`...pooler.supabase.com` rather than `db.<ref>.supabase.co`: the direct host is
+IPv6 only and unreachable from many networks. Prisma style flags in that URL
+(`pgbouncer`, `connection_limit`) are stripped before connecting, because
+postgres.js would otherwise forward them to the server as startup options.
+The `SUPABASE_*` keys are unused today and will matter for Storage uploads later.
 
 ### 3. Merge and deploy
 
