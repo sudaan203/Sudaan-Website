@@ -150,6 +150,22 @@ database and no paid services** so it fits the Vercel Hobby plan.
 - Marketing chrome is suppressed on `/portal` by `src/components/SiteChrome.tsx`, which
   receives the navbar/footer as props so those stay server components.
 
+## 8c. Portal Phase 1b: Google sign in + owner-managed access (IN PROGRESS)
+Owners (Malhar, Prakhar) will control which client sees which data from their own logins.
+**Google-only sign in** (decided 25 Jul 2026). Needs a real database, which is why Postgres
+moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-plan.md` §12b.
+- Already built and verified: `drizzle/0001_init.sql` (schema), `src/lib/portal/db/*`
+  (drizzle schema, lazy client, and `queries.ts` = the single place that decides visibility),
+  `scripts/portal-db-migrate.mjs` (applies SQL migrations, tracks them in
+  `portal_schema_migrations`), `scripts/portal-db-test.mts` (25 authorisation checks on
+  embedded Postgres: `npm install --no-save @electric-sql/pglite tsx` then
+  `npx tsx scripts/portal-db-test.mts`).
+- Visibility rule (owners bypass it): site belongs to your client AND is published AND
+  (you have no per-user grants OR the site is one of your grants); assets additionally
+  must be published.
+- Blocked on the owners creating a Google OAuth client and a Supabase project. Until
+  `DATABASE_URL` is set the portal keeps running on the Phase 1 seed store.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)

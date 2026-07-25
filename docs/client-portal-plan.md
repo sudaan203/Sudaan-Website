@@ -622,11 +622,29 @@ New environment variables: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_URL`,
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` when uploads land. The v1
 `PORTAL_AUTH_SECRET` and `PORTAL_USERS` are then removed.
 
+### Decision: Google only (25 Jul 2026)
+
+The owners chose Google as the single sign in method for now, on the basis that
+every client contact will have some Google identity. The magic link fallback stays
+designed but unbuilt. Two consequences to keep in mind rather than rediscover:
+
+- If a client's IT restricts third party Google OAuth, or the person only has a
+  Microsoft work address, their way in is a personal Gmail. That works, but it
+  means business deliverables reach a personal account, so invite the address the
+  client actually asks for and keep the invite list tidy.
+- Adding the magic link provider later is a small change (one Auth.js provider
+  plus a verification token table). Nothing here paints us into a corner.
+
 ### Build order
 
 1. Postgres schema plus Drizzle, and port `store.ts` to SQL behind its existing
    async interface. The UI should not change at all in this step, which is the
    proof that the interface was worth keeping.
+   **Done ahead of provisioning (25 Jul 2026):** `drizzle/0001_init.sql`,
+   `src/lib/portal/db/{schema,client,queries}.ts`,
+   `scripts/portal-db-migrate.mjs`, and `scripts/portal-db-test.mts`, which proves
+   the visibility rules on embedded Postgres (25 checks). The store port itself
+   waits for a real `DATABASE_URL` so it can be verified end to end.
 2. Auth.js with Google, the allowlist `signIn` callback, and owner bootstrap.
    Retire the password login and `scripts/portal-user.mjs`.
 3. Owner console: clients, people, invites, grants, publish toggles.
