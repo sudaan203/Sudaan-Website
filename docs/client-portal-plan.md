@@ -609,18 +609,44 @@ these exist, because the credentials are the inputs.
 
 1. **Google OAuth client:** Google Cloud Console, create a project, configure the
    OAuth consent screen (External, app name "Sudaan Geo-Analytics Client Portal",
-   support email, add the two owner emails as test users while it is unverified),
-   then Credentials, Create OAuth client ID, Web application, with authorised
-   redirect URIs `https://sudaangeo.in/api/auth/callback/google` and
-   `http://localhost:3000/api/auth/callback/google`. Yields `AUTH_GOOGLE_ID` and
-   `AUTH_GOOGLE_SECRET`.
+   support email), then Credentials, Create OAuth client ID, Web application.
+   Yields `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`. Created 25 Jul 2026 as
+   client "Sudaan-Geo".
+
+   Two things that bite here, both verified on 25 Jul 2026:
+
+   - **The live site serves `www`, not the apex.** `https://sudaangeo.in` returns a
+     308 to `https://www.sudaangeo.in/`, so the callback Google receives is on the
+     `www` host. The authorised redirect URIs must therefore include
+     `https://www.sudaangeo.in/api/auth/callback/google`, and `AUTH_URL` must be
+     `https://www.sudaangeo.in`. Keeping the apex URI as well is harmless and
+     covers a future switch of canonical host. Missing the `www` entry produces
+     `redirect_uri_mismatch` on the first sign in. Keep
+     `http://localhost:3000/api/auth/callback/google` for development.
+   - **Publish the consent screen to "In production".** While it sits in Testing,
+     only accounts listed as test users can sign in, so every new client contact
+     would need adding by hand, which is exactly the manual work the owners want
+     to stop doing. We request only `openid`, `email` and `profile`, which are non
+     sensitive, so publishing needs no Google verification review. This is safe
+     because Google only proves identity here: access is still gated by the
+     invite allowlist in our own database.
+
+   Preview deployments on `*.vercel.app` get random hostnames and so cannot
+   complete Google sign in. Use localhost for development and the real domain for
+   production, and do not expect the portal login to work on preview URLs.
 2. **Postgres:** create a free Supabase project (also gives Storage for uploads),
    copy the pooled connection string as `DATABASE_URL`.
 
-New environment variables: `DATABASE_URL`, `AUTH_SECRET`, `AUTH_URL`,
+New environment variables: `DATABASE_URL`, `AUTH_SECRET`,
+`AUTH_URL=https://www.sudaangeo.in` (the `www` host, see above),
 `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `PORTAL_OWNER_EMAILS`, plus
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` when uploads land. The v1
 `PORTAL_AUTH_SECRET` and `PORTAL_USERS` are then removed.
+
+Unrelated nit spotted while checking the domain: `siteConfig.url` is the apex
+`https://sudaangeo.in`, which 308s to `www`. Canonical tags, the sitemap and OG
+URLs therefore all point at a redirect. Harmless but untidy for SEO, worth
+switching to the `www` host (or making the apex canonical at Vercel) some time.
 
 ### Decision: Google only (25 Jul 2026)
 
