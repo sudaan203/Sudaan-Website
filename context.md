@@ -116,8 +116,20 @@ lib/
 - Keep procedural SVG/canvas visuals deterministic (rounded values) to avoid hydration mismatches.
 
 ## 8. Dev commands
-- `npm run dev` (localhost:3000) · `npm run build` (static-checks, 19 routes) · `npm run lint`
+- `npm run dev` (localhost:3000) · `npm run build` (static-checks) · `npm run lint`
 - Regenerate sample PDFs: `node scripts/generate-reports.mjs`
+- **Local toolchain gotchas found 25 Jul 2026 (this machine, not CI):**
+  - Default Homebrew `node` is now v26, too new for Next 15.5 (`next dev` starts but never
+    binds a port). Run the app with the Node 22 keg instead:
+    `PATH="/opt/homebrew/opt/node@22/bin:$PATH" /opt/homebrew/opt/node@22/bin/node node_modules/next/dist/bin/next dev -p 3100`
+  - `npm run lint` / `next lint` / bare `eslint` **hang forever**: the repo has a legacy
+    `.eslintrc.json` but ESLint 9 wants a flat `eslint.config.js`. Since `next build` lints
+    after compiling, a plain build hangs too. Build locally with `next build --no-lint`.
+    Migrating the ESLint config is unfinished work. Vercel is unaffected.
+  - Typecheck on its own is fast and reliable: `npx tsc --noEmit`.
+  - `outputFileTracingIncludes` patterns must stay narrow and anchored (e.g.
+    `portal-data/files/**`). A broad glob walks the gitignored multi-hundred-MB survey data
+    and hangs the build at trace collection.
 
 ## 8b. Client data portal (Phase 1 BUILT, 25 Jul 2026)
 Private per-client dashboard at **`/portal`**: each client user logs in and sees only their
