@@ -4,6 +4,7 @@ import {
   createOauthState,
   googleConfigured,
   OAUTH_COOKIE,
+  oauthCookieOptions,
   redirectUri,
 } from "@/lib/portal/google";
 import { logPortalEvent } from "@/lib/portal/log";
@@ -31,13 +32,7 @@ export async function GET(request: NextRequest) {
     });
 
     const response = NextResponse.redirect(url);
-    response.cookies.set(OAUTH_COOKIE, token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 600,
-    });
+    response.cookies.set(OAUTH_COOKIE, token, oauthCookieOptions(request.url));
     return response;
   } catch (err) {
     console.error("[portal] could not start Google sign in", err);

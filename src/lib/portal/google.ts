@@ -25,7 +25,42 @@ const ISSUERS = ["https://accounts.google.com", "accounts.google.com"];
 
 /** Short lived cookie holding the state and nonce while the user is at Google. */
 export const OAUTH_COOKIE = "sga_portal_oauth";
+/** Marks that we already auto retried once, so a bad state cannot loop forever. */
+export const OAUTH_RETRY_COOKIE = "sga_portal_oauth_retry";
 const OAUTH_TTL_SECONDS = 600;
+
+/**
+ * Cookie options for the sign in handshake.
+ *
+ * The domain is widened to the registrable domain (".sudaangeo.in") so the state
+ * cookie survives a hop between the apex and www. The apex redirects to www, but
+ * a cookie written on one host is not sent to the other, and that mismatch shows
+ * up as a failed sign in that works on the second attempt.
+ */
+export function oauthCookieOptions(requestUrl: string, maxAge = OAUTH_TTL_SECONDS) {
+  const base = process.env.AUTH_URL ?? new URL(requestUrl).origin;
+  let domain: string | undefined;
+
+  try {
+    const host = new URL(base).hostname;
+    const looksLikeIp = /^[\d.]+$/.test(host);
+    if (host !== "localhost" && !looksLikeIp) {
+      const parts = host.split(".");
+      if (parts.length > 2) domain = `.${parts.slice(-2).join(".")}`;
+    }
+  } catch {
+    // fall through with no domain, which scopes the cookie to the exact host
+  }
+
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge,
+    ...(domain ? { domain } : {}),
+  };
+}
 
 export function googleConfigured(): boolean {
   return Boolean(process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET);

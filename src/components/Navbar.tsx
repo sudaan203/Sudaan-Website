@@ -63,11 +63,9 @@ export default function Navbar() {
           })}
         </div>
 
+        {/* Two matching pill buttons: secondary then primary, same shape and rhythm. */}
         <div className="hidden items-center gap-3 lg:flex">
-          <Link
-            href="/portal"
-            className="rounded-full px-4 py-2 text-sm font-medium text-ink/80 transition-colors hover:text-accent-700"
-          >
+          <Link href="/portal" className="btn-secondary">
             Client Login
           </Link>
           <Link href="/contact" className="btn-primary">
@@ -130,10 +128,7 @@ export default function Navbar() {
                   </Link>
                 );
               })}
-              <Link
-                href="/portal"
-                className="rounded-lg px-4 py-3 text-sm font-medium text-ink/80 hover:bg-ink/[0.04] hover:text-ink-900"
-              >
+              <Link href="/portal" className="btn-secondary mt-2 w-full">
                 Client Login
               </Link>
               <Link href="/contact" className="btn-primary mt-2 w-full">

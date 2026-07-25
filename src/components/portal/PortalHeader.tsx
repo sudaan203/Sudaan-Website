@@ -4,8 +4,10 @@ import { getClient } from "@/lib/portal/store";
 import type { PortalSession } from "@/lib/portal/types";
 
 export default async function PortalHeader({ session }: { session: PortalSession }) {
+  const isOwner = session.role !== "client";
   const client = session.clientId ? await getClient(session.clientId) : null;
-  const org = session.role === "admin" ? "All clients (admin)" : (client?.name ?? "Client");
+  // Owners are not tied to a client, so labelling them "Client" was misleading.
+  const org = isOwner ? "Sudaan owner, all clients" : (client?.name ?? "Your account");
 
   return (
     <header className="sticky top-0 z-40 border-b border-ink/[0.08] bg-panel/95 backdrop-blur">
@@ -20,10 +22,10 @@ export default async function PortalHeader({ session }: { session: PortalSession
         </div>
 
         <div className="flex items-center gap-3 sm:gap-5">
-          {session.role !== "client" ? (
+          {isOwner ? (
             <Link
               href="/portal/admin"
-              className="text-xs font-semibold text-accent-600 transition-colors hover:text-accent-700"
+              className="rounded-full border border-accent-600/30 px-4 py-2 text-xs font-semibold text-accent-600 transition-colors hover:border-accent-600 hover:bg-accent-50"
             >
               Owner console
             </Link>
