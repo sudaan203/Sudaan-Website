@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireSession } from "@/lib/portal/auth";
 import { getClient, listAssetCounts, listSites, listSurveys } from "@/lib/portal/store";
+import { queryDb } from "@/lib/portal/db/client";
 import { categoryByKey, type AssetCategory } from "@/lib/portal/types";
 
 /** Fail fast instead of hanging at Vercel's 300 second ceiling. */
@@ -16,17 +17,23 @@ function formatDate(iso: string) {
 
 export default async function PortalDashboard() {
   const session = await requireSession();
-  const sites = await listSites(session);
-  const client = session.clientId ? await getClient(session.clientId) : null;
 
-  const cards = await Promise.all(
-    sites.map(async (site) => ({
-      site,
-      surveys: await listSurveys(site.id),
-      counts: await listAssetCounts(session, site.id),
-      owner: session.role === "admin" ? await getClient(site.clientId) : null,
-    })),
-  );
+  // Wrapped as one unit so a pooled connection that died between requests costs
+  // a reconnect rather than an error page. See queryDb.
+  const { client, cards } = await queryDb("portal dashboard", async () => {
+    const sites = await listSites(session);
+    return {
+      client: session.clientId ? await getClient(session.clientId) : null,
+      cards: await Promise.all(
+        sites.map(async (site) => ({
+          site,
+          surveys: await listSurveys(site.id),
+          counts: await listAssetCounts(session, site.id),
+          owner: session.role === "admin" ? await getClient(site.clientId) : null,
+        })),
+      ),
+    };
+  });
 
   return (
     <div className="container-px py-10 sm:py-14">

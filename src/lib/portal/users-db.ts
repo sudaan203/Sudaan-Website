@@ -11,7 +11,7 @@
  */
 
 import { and, eq, sql } from "drizzle-orm";
-import { getDb } from "./db/client";
+import { getDb, queryDb } from "./db/client";
 import * as schema from "./db/schema";
 import type { PortalSession } from "./types";
 
@@ -160,11 +160,18 @@ export async function sessionStillValid(session: PortalSession): Promise<boolean
   if (!db) return true; // seed backend, nothing to check against
 
   try {
-    const rows = await db
-      .select({ isActive: schema.users.isActive, clientId: schema.users.clientId, role: schema.users.role })
-      .from(schema.users)
-      .where(and(eq(schema.users.id, session.userId), eq(schema.users.isActive, true)))
-      .limit(1);
+    // Through queryDb: this is the first query of most portal requests, so it is
+    // where a connection the pooler dropped between requests gets discovered.
+    // Reconnecting here spares every later read on the page.
+    // getDb() is re-read inside the closure on purpose: after a reconnect the
+    // old handle points at a pool that has been ended.
+    const rows = await queryDb("session check", async () =>
+      (getDb() ?? db)
+        .select({ isActive: schema.users.isActive, clientId: schema.users.clientId, role: schema.users.role })
+        .from(schema.users)
+        .where(and(eq(schema.users.id, session.userId), eq(schema.users.isActive, true)))
+        .limit(1),
+    );
 
     const row = rows[0];
     if (!row) return false;

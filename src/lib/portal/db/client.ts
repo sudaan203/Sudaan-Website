@@ -22,13 +22,19 @@ export type PortalDb = ReturnType<typeof drizzle<typeof schema>>;
  * starts queueing until it hits the statement timeout. Observed and fixed on
  * 26 Jul 2026, do not "simplify" this back to a local variable.
  */
-const globalForDb = globalThis as unknown as { portalDb?: PortalDb | null };
+const globalForDb = globalThis as unknown as {
+  portalDb?: PortalDb | null;
+  portalSql?: ReturnType<typeof postgres>;
+};
 
 /**
  * Prisma and the Vercel integration add flags to the URL that Postgres itself
  * does not understand. postgres.js forwards unknown query parameters as server
  * startup options, and the pooler rejects them, so strip them.
  */
+/** How long any one attempt gets before we give up on it. */
+const QUERY_TIMEOUT_MS = 7000;
+
 const NON_POSTGRES_PARAMS = [
   "pgbouncer",
   "connection_limit",
@@ -106,14 +112,106 @@ export function getDb(): PortalDb | null {
     max: 1,
     idle_timeout: 20,
     connect_timeout: 10,
+    // Recycle a connection well before the pooler decides to drop it. Supabase
+    // closes pooled connections on its own schedule, and a socket that the
+    // pooler has already discarded looks fine to us until the next query fails
+    // with "Connection closed". Retiring them ourselves keeps that rare.
+    max_lifetime: 60 * 5,
     // Server side ceiling on any single query. Without it a query that never
     // returns holds the request until Vercel kills the function minutes later,
-    // which is what the production logs showed. Failing in 8 seconds gives the
-    // page a chance to show an error instead of a gateway timeout.
-    connection: { statement_timeout: 8000 },
+    // which is what the production logs showed. Failing fast gives the page a
+    // chance to show an error instead of a gateway timeout.
+    connection: { statement_timeout: QUERY_TIMEOUT_MS - 1000 },
   });
+  globalForDb.portalSql = sql;
   globalForDb.portalDb = drizzle(sql, { schema });
   return globalForDb.portalDb;
+}
+
+/**
+ * Throws away the cached pool so the next getDb() dials a fresh connection.
+ * Ending the old one is best effort: it is already broken, and waiting on a
+ * broken socket is the very thing we are escaping.
+ */
+async function resetDb(): Promise<void> {
+  const sql = globalForDb.portalSql;
+  globalForDb.portalDb = undefined;
+  globalForDb.portalSql = undefined;
+  if (!sql) return;
+  try {
+    await sql.end({ timeout: 1 });
+  } catch {
+    // Nothing useful to do; the handle is being discarded either way.
+  }
+}
+
+/**
+ * A pooled socket that the other end has closed, or a hung connect. These are
+ * transport failures rather than anything wrong with the query, so they are
+ * worth one clean retry. Anything else (bad SQL, constraint violation) is a real
+ * bug and must surface instead of being retried into a longer wait.
+ */
+function isConnectionFault(err: unknown): boolean {
+  // Walk the cause chain. Drizzle wraps every failure in a DrizzleQueryError
+  // whose own message is just the SQL, so the postgres.js code that identifies a
+  // dead socket is one or more levels down. Reading only the top level error
+  // silently misses the case this whole mechanism exists for.
+  for (let cursor = err, depth = 0; cursor && depth < 5; depth += 1) {
+    const code = (cursor as { code?: string }).code ?? "";
+    const message = cursor instanceof Error ? cursor.message : String(cursor);
+    if (
+      /^(CONNECTION_|ECONNRESET|EPIPE|ETIMEDOUT|ENOTFOUND|ECONNREFUSED)/.test(code) ||
+      /connection closed|connection ended|connection destroyed|socket hang up|timed out after/i.test(
+        message,
+      )
+    ) {
+      return true;
+    }
+    cursor = (cursor as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+function withDeadline<T>(label: string, work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${QUERY_TIMEOUT_MS}ms`)),
+      QUERY_TIMEOUT_MS,
+    );
+  });
+  // Clearing the timer matters on a serverless function: a pending timer keeps
+  // the instance awake after the response has already been sent.
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+/**
+ * Runs portal reads with a deadline and one retry on a dead connection.
+ *
+ * Vercel keeps a function instance warm and we cache the pool on globalThis, so
+ * an instance can come back to life holding a socket the Supabase pooler threw
+ * away minutes ago. The first query on that socket fails, and without this the
+ * page rendered a bare "Application error" or sat there until Vercel killed it
+ * at 30 seconds. Observed in production on 26 Jul 2026.
+ *
+ * Wrap a whole page's reads in one call rather than each query separately, so
+ * there is a single place that reconnects and no chance of parallel queries
+ * resetting the pool underneath each other. Safe to wrap reads that fall back to
+ * the seed catalogue: without a database there is simply nothing to reconnect.
+ */
+export async function queryDb<T>(label: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await withDeadline(label, run());
+  } catch (err) {
+    if (!isConnectionFault(err)) throw err;
+
+    // First line only: Drizzle's message is the entire failed statement, which
+    // buries the actual cause in the Vercel log.
+    const why = (err instanceof Error ? err.message : String(err)).split("\n")[0].slice(0, 120);
+    console.warn(`[portal] ${label}: ${why} — reconnecting and retrying once`);
+    await resetDb();
+    return withDeadline(`${label} (retry)`, run());
+  }
 }
 
 export { schema };
