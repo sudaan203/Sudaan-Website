@@ -63,7 +63,13 @@ export default function Navbar() {
           })}
         </div>
 
-        <div className="hidden lg:block">
+        <div className="hidden items-center gap-3 lg:flex">
+          <Link
+            href="/portal"
+            className="rounded-full px-4 py-2 text-sm font-medium text-ink/80 transition-colors hover:text-accent-700"
+          >
+            Client Login
+          </Link>
           <Link href="/contact" className="btn-primary">
             Request Consultation
           </Link>
@@ -124,6 +130,12 @@ export default function Navbar() {
                   </Link>
                 );
               })}
+              <Link
+                href="/portal"
+                className="rounded-lg px-4 py-3 text-sm font-medium text-ink/80 hover:bg-ink/[0.04] hover:text-ink-900"
+              >
+                Client Login
+              </Link>
               <Link href="/contact" className="btn-primary mt-2 w-full">
                 Request Consultation
               </Link>

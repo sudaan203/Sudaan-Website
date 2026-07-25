@@ -119,11 +119,24 @@ lib/
 - `npm run dev` (localhost:3000) · `npm run build` (static-checks, 19 routes) · `npm run lint`
 - Regenerate sample PDFs: `node scripts/generate-reports.mjs`
 
-## 8b. Planned: client data portal
-A private, per-client dashboard (login + password per client user, each client sees only
-their own sites) for delivering orthomaps, DSM/DTM, contours, point clouds, video, reports,
-drawings and raw data. Concept approved, not built. Full plan (schema, routes, phases,
-security rules, cost): **`docs/client-portal-plan.md`**. Read it before starting portal work.
+## 8b. Client data portal (Phase 1 BUILT, 25 Jul 2026)
+Private per-client dashboard at **`/portal`**: each client user logs in and sees only their
+own sites and deliverables. **View only, no downloads** (owner decision). Runs with **no
+database and no paid services** so it fits the Vercel Hobby plan.
+
+- **Read `docs/client-portal-plan.md` before touching portal code.** Section 2b explains the
+  v1 storage choices and what to swap when moving to Postgres; section 10 has the ops runbook.
+- Code: `src/middleware.ts` (deny by default over `/portal` + `/api/portal`),
+  `src/lib/portal/*` (session, users, store, seed, files, log, rate-limit),
+  `src/app/portal/**`, `src/app/api/portal/**`, `src/components/portal/*`.
+- Catalogue = `src/lib/portal/seed.ts` (typed seed). Sample files = `portal-data/files/**`
+  (committed, ~700 KB, outside `public/` on purpose). Logins = `PORTAL_USERS` env var on
+  Vercel or gitignored `portal-data/users.json` locally, both created by
+  `node scripts/portal-user.mjs`. Needs `PORTAL_AUTH_SECRET` set in Vercel to work in prod.
+- Pages never import `seed.ts` directly, always go through `src/lib/portal/store.ts`, which
+  is async and tenant-scoped so the Postgres swap does not touch the UI.
+- Marketing chrome is suppressed on `/portal` by `src/components/SiteChrome.tsx`, which
+  receives the navbar/footer as props so those stay server components.
 
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until

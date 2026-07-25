@@ -7,6 +7,7 @@ import Footer from "@/components/Footer";
 import BackgroundDecor from "@/components/BackgroundDecor";
 import ScrollProgress from "@/components/ScrollProgress";
 import BackToTop from "@/components/BackToTop";
+import SiteChrome from "@/components/SiteChrome";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -101,12 +102,23 @@ export default function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
-        <BackgroundDecor />
-        <ScrollProgress />
-        <Navbar />
-        <main className="relative min-h-screen pt-20">{children}</main>
-        <Footer />
-        <BackToTop />
+        <SiteChrome
+          top={
+            <>
+              <BackgroundDecor />
+              <ScrollProgress />
+              <Navbar />
+            </>
+          }
+          bottom={
+            <>
+              <Footer />
+              <BackToTop />
+            </>
+          }
+        >
+          {children}
+        </SiteChrome>
       </body>
     </html>
   );

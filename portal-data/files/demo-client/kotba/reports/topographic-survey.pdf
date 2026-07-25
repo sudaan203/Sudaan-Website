@@ -1,0 +1,85 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 916 >>
+stream
+0.118 0.533 0.898 RG
+2 w
+72 740 m 523 740 l S
+0.85 0.88 0.92 RG
+0.5 w
+72 690 m 523 690 l S
+BT
+/F2 22 Tf
+0.118 0.533 0.898 rg
+72 720 Td
+(Topographic Survey) Tj
+/F1 12 Tf
+0.3 0.34 0.4 rg
+0 -22 Td
+(Sudaan Geo-Analytics  |  Sample Deliverable) Tj
+/F1 11 Tf
+0.15 0.18 0.22 rg
+0 -34 Td
+14 TL
+(Project:        Sample Site - Northern State) Tj
+T*
+(Deliverable:    Digital Terrain Model + Spot Heights) Tj
+T*
+(Vertical datum:           EGM2008) Tj
+T*
+(Coordinate system:        UTM Zone 36N / WGS84) Tj
+T*
+(DTM grid resolution:      0.25 m) Tj
+T*
+(Checkpoint RMSE \(vert\):   0.034 m) Tj
+T*
+(Surveyed area:            480 hectares) Tj
+T*
+() Tj
+T*
+(Contents:) Tj
+T*
+(  - Bare-earth digital terrain model) Tj
+T*
+(  - Classified ground point cloud) Tj
+T*
+(  - Spot heights and breaklines) Tj
+T*
+(  - Survey control summary and residuals) Tj
+T*
+() Tj
+T*
+(This is a representative sample for demonstration purposes only.) Tj
+T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000001218 00000 n 
+0000001288 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1363
+%%EOF

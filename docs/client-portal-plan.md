@@ -20,10 +20,12 @@ Control Area and Walkthrough.
 
 ### Non goals for v1
 
-- No client self signup. We create every login by hand in an admin screen.
+- No client self signup. We create every login by hand.
 - No billing, invoicing or ticketing.
-- No editing of geodata in the browser. It is a viewer plus a download centre.
+- No editing of geodata in the browser.
 - No public sharing links.
+- **No downloads.** Decided 25 Jul 2026: clients view deliverables in the browser
+  and there is no download link anywhere in the portal. See section 2b.
 
 ## 2. Access model (decided)
 
@@ -39,6 +41,43 @@ Control Area and Walkthrough.
 - Passwords: we generate a strong initial password, hand it over, and force a
   change on first login. Reset is admin driven for v1 (we set a new one), email
   based reset arrives with Phase 4.
+
+## 2b. What v1 actually ships (built 25 Jul 2026)
+
+Two owner decisions shaped the first build:
+
+1. **View only, no downloads.** Assets are streamed with
+   `Content-Disposition: inline`, the portal renders no download button, and PDFs
+   open with the browser toolbar suppressed where the browser honours it. Be
+   straight with clients about what this is: a deterrent and a clear policy
+   signal, not DRM. Anyone who can view a file can screenshot it, and a technical
+   user can pull the bytes out of the network tab. If a deliverable genuinely must
+   not leave our control, do not publish it to the portal at all.
+2. **Stay on the Vercel Hobby plan for the pilot**, with small sample data, and
+   revisit paid plans once the portal has proved itself. That rules out paid
+   services for now, so v1 uses **no database and no object storage**:
+
+| Concern | v1 as built | Swap to when scaling up |
+| --- | --- | --- |
+| Catalogue (clients, sites, assets) | Typed seed in `src/lib/portal/seed.ts`, read through the async, tenant scoped API in `store.ts` | Drizzle plus Supabase Postgres, same `store.ts` signatures, schema in section 5 |
+| Logins | `PORTAL_USERS` env var on Vercel, or gitignored `portal-data/users.json` locally, created by `scripts/portal-user.mjs` | `users` table plus an admin screen |
+| Files | `portal-data/files/**`, outside `public/`, read by an authorised route handler and bundled into the function via `outputFileTracingIncludes` | Supabase Storage or R2 with short lived signed URLs, only `files.ts` changes |
+| Access log | `console.log`, readable in Vercel logs | `access_log` table, only `log.ts` changes |
+| Login throttling | In memory per instance, 5 failures per 15 minutes | Shared counter in Postgres or Redis |
+
+Everything the client facing UI touches goes through `store.ts`, `files.ts` and
+`log.ts`, so the Postgres migration is a change behind those three modules rather
+than a rewrite. Keep it that way: pages must never read `seed.ts` directly.
+
+**Consequences of the no database choice**, all deliberate:
+
+- Publishing new client data means editing `seed.ts`, adding files under
+  `portal-data/files/`, and deploying. There is no admin upload screen yet.
+- A client cannot change their own password. We generate a new one with the
+  script and hand it over.
+- Suitable for tens of sites and small documents. Do not put a 351 MB GeoTIFF in
+  `portal-data/files`, the repo and the function bundle are the wrong home for it.
+  That is what Phase 2 and R2 are for.
 
 ## 3. Where it lives
 
@@ -324,17 +363,22 @@ always go through `/api/portal/assets/[assetId]` with a real ownership check.
 
 Each phase is independently shippable and useful.
 
-### Phase 1: auth plus document portal (the 70 percent)
+### Phase 1: auth plus document portal, SHIPPED 25 Jul 2026
 
-Supabase project, schema migration, Drizzle setup, Auth.js credentials login,
-middleware, forced password change, portal shell, dashboard site cards, site
-overview, the file list tabs (reports, drawings, UAV/DGPS, LiDAR, photos, data)
-with secure download and in browser PDF and image view, admin screens for
-clients, users, sites and uploads, access logging, seed script.
+Built without a database, per section 2b: session cookie auth (`jose` signed JWT
+plus `bcryptjs`), deny by default middleware over `/portal` and `/api/portal`,
+login throttling, portal shell, dashboard site cards, site overview with
+acquisitions, category tabs (Reports, Drawings and Maps, Imagery, UAV & DGPS,
+LiDAR, Control Area, Other Data) driven by what each site actually has, in browser
+PDF and image viewing through an authorised route, video tab ready for when
+YouTube ids exist, access logging to stdout, `scripts/portal-user.mjs` for logins.
 
-Done when: we create a real client, upload the Kotba deliverables to it, log in as
-that client from a different browser, download a report, and confirm a second test
-client sees nothing of theirs and gets a 404 on a guessed slug.
+Not in Phase 1, deferred with the database: admin CRUD screens, self service
+password change, uploads through the browser.
+
+Verified: two seeded clients, each sees only its own site, cross client site slugs
+and asset ids both return 404, unauthenticated requests are redirected or get 401,
+and the marketing site renders unchanged.
 
 ### Phase 2: the map tab
 
@@ -365,8 +409,31 @@ when new data is published to a client.
 
 ## 10. Environment variables
 
-Add to Vercel (Production and Preview) and to `.env.local` for development. All
-server only, none prefixed `NEXT_PUBLIC_`.
+### Needed now (v1)
+
+```
+PORTAL_AUTH_SECRET=   # required, session signing key: openssl rand -base64 32
+PORTAL_USERS=         # required on Vercel, the JSON array printed by scripts/portal-user.mjs
+                      # locally you can use portal-data/users.json instead (gitignored)
+```
+
+Without `PORTAL_AUTH_SECRET` the login endpoint returns "Sign in is temporarily
+unavailable" and logs the reason, it does not fail open.
+
+### Operations runbook (v1)
+
+- **Add a login:** `node scripts/portal-user.mjs "Full Name" email@company.com <client-slug|admin>`
+  then copy the printed password to the client over a channel they already trust,
+  and paste the printed `PORTAL_USERS` line into Vercel before deploying.
+- **Rotate a password:** run the same command again for that email, it replaces the
+  entry and keeps the user id.
+- **Revoke access:** delete the user's entry from `PORTAL_USERS` and redeploy.
+  Their existing session cookie stays valid for up to 8 hours, so rotate
+  `PORTAL_AUTH_SECRET` too if the revocation is urgent, which signs everyone out.
+- **Publish new data:** add files under `portal-data/files/<client>/<site>/<category>/`,
+  add the matching rows to `src/lib/portal/seed.ts`, commit and deploy.
+
+### Needed later (Phase 2 onwards)
 
 ```
 DATABASE_URL=                 # Supabase Postgres pooled connection string
@@ -386,9 +453,11 @@ R2_PUBLIC_BASE=https://tiles.sudaangeo.in    # R2 custom domain for tiles
 
 ## 11. Cost and plan changes
 
-- **Vercel:** the Hobby plan is for non commercial use, and a paying client portal
-  is commercial. Move the project to **Pro, about 20 USD per month**. Serving
-  geodata would exceed Hobby limits anyway.
+- **Vercel:** staying on **Hobby** for the pilot, by owner decision on 25 Jul 2026,
+  with sample sized data only. Two things to know when this stops being a pilot:
+  Vercel's Hobby plan is licensed for non commercial use, and Hobby bandwidth will
+  not survive real tile serving. Budget **Pro, about 20 USD per month**, before the
+  portal is handed to a paying client or Phase 2 tiles go live.
 - **Supabase:** free tier covers 500 MB database and 1 GB storage, which is
   plenty for documents at first. Pro is 25 USD per month when we outgrow it.
 - **Cloudflare R2:** 0.015 USD per GB per month of storage, **zero egress**. Twenty
@@ -400,16 +469,17 @@ Realistic run rate for v1: about 20 to 25 USD per month, dominated by Vercel Pro
 
 ## 12. Open questions for Sudaan
 
-1. Should clients be able to **download raw data** (GeoTIFF, LAS, DWG), or only
-   view it online with PDF export? The reference portal allows full download. This
-   is a commercial decision about protecting deliverables, and it changes whether
-   Phase 1 shows DOWNLOAD buttons for the heavy categories.
-2. Do we **watermark** exported PDFs and screenshots with the client name and date?
-3. Is `sudaangeo.in/portal` fine for v1, or do we want `portal.sudaangeo.in`
-   from the start for a cleaner client facing story?
-4. How long do we retain data for a finished project, and does an archived client
+1. ~~Download or view only?~~ **Answered 25 Jul 2026: view only, no downloads.**
+2. ~~Hobby or Pro?~~ **Answered 25 Jul 2026: Hobby for the pilot, sample data only.**
+3. Do we **watermark** viewed PDFs and imagery with the client name and date? This
+   is the natural next step for a view only policy, and it is the only measure here
+   that survives a screenshot.
+4. Is `sudaangeo.in/portal` fine long term, or do we move to `portal.sudaangeo.in`
+   for a cleaner client facing story?
+5. How long do we retain data for a finished project, and does an archived client
    keep read access?
-5. Who inside Sudaan gets admin logins?
+6. Who inside Sudaan gets admin logins? One admin account exists in local
+   development only, nothing is provisioned in production yet.
 
 ## 13. Reference material
 
