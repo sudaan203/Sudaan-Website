@@ -9,7 +9,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/portal/session";
 
-const PUBLIC_PATHS = ["/portal/login", "/api/portal/login"];
+// /api/portal/health is deliberately public: it reports whether the database is
+// reachable and carries no credentials, and it has to work when sign in does not.
+const PUBLIC_PATHS = ["/portal/login", "/api/portal/login", "/api/portal/health"];
 
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;

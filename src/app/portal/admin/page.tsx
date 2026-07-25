@@ -130,9 +130,18 @@ export default async function OwnerConsole() {
                   <li key={user.id} className="px-5 py-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-ink-900">{user.email}</p>
+                        <p className="truncate text-sm font-semibold text-ink-900">
+                          {user.email}
+                          {user.role === "client" && !user.clientId ? (
+                            <span className="ml-2 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent-700">
+                              Waiting for access
+                            </span>
+                          ) : null}
+                        </p>
                         <p className="text-xs text-ink/55">
-                          {user.role === "owner" ? "Sudaan owner" : (user.clientName ?? "no client")}
+                          {user.role === "owner"
+                            ? "Sudaan owner"
+                            : (user.clientName ?? "signed in, no access yet")}
                           {" | last signed in "}
                           {when(user.lastLoginAt)}
                           {user.isActive ? "" : " | deactivated"}
@@ -153,7 +162,27 @@ export default async function OwnerConsole() {
                       )}
                     </div>
 
-                    {user.role === "client" && theirSites.length > 0 ? (
+                    {user.role === "client" && !user.clientId && clients.length > 0 ? (
+                      // Anyone can sign in, so this is where an owner turns a
+                      // signed in stranger into a client user with real access.
+                      <div className="mt-3 rounded-xl bg-paper p-3">
+                        <p className="mb-2 text-xs leading-relaxed text-ink/60">
+                          This person signed in and can see nothing. Choose the client
+                          they belong to, or leave them as they are.
+                        </p>
+                        <ActionForm
+                          action={inviteUserAction}
+                          hidden={{ email: user.email }}
+                          submitLabel="Give access"
+                          variant="ghost"
+                          className="flex flex-wrap items-end gap-2"
+                        >
+                          <Field label="Client" name="clientId" required options={clientOptions} />
+                        </ActionForm>
+                      </div>
+                    ) : null}
+
+                    {user.role === "client" && user.clientId && theirSites.length > 0 ? (
                       <div className="mt-3 rounded-xl bg-paper p-3">
                         <p className="mb-2 text-xs leading-relaxed text-ink/60">
                           {user.grantedSiteIds.length === 0
