@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireSession } from "@/lib/portal/auth";
 import { getClient, listAssetCounts, listSites, listSurveys } from "@/lib/portal/store";
-import { queryDb } from "@/lib/portal/db/client";
+import { mapPooled, queryDb } from "@/lib/portal/db/client";
 import { categoryByKey, type AssetCategory } from "@/lib/portal/types";
 
 /** Fail fast instead of hanging at Vercel's 300 second ceiling. */
@@ -24,14 +24,13 @@ export default async function PortalDashboard() {
     const sites = await listSites(session);
     return {
       client: session.clientId ? await getClient(session.clientId) : null,
-      cards: await Promise.all(
-        sites.map(async (site) => ({
-          site,
-          surveys: await listSurveys(site.id),
-          counts: await listAssetCounts(session, site.id),
-          owner: session.role === "admin" ? await getClient(site.clientId) : null,
-        })),
-      ),
+      // Three reads per site, so the fan out has to stay inside the pool.
+      cards: await mapPooled(sites, async (site) => ({
+        site,
+        surveys: await listSurveys(site.id),
+        counts: await listAssetCounts(session, site.id),
+        owner: session.role === "admin" ? await getClient(site.clientId) : null,
+      })),
     };
   });
 
