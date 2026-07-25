@@ -20,6 +20,13 @@ import ActionForm, { Field } from "@/components/portal/admin/ActionForm";
 
 export const metadata = { title: "Owner console" };
 
+/**
+ * Fail fast rather than sitting at Vercel's 300 second ceiling. If the database
+ * is unreachable this page should error in half a minute so the person can retry,
+ * not hang for five minutes with a spinner.
+ */
+export const maxDuration = 30;
+
 function when(date: Date | null) {
   if (!date) return "never";
   return new Date(date).toLocaleString("en-IN", {

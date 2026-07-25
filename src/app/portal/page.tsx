@@ -3,6 +3,9 @@ import { requireSession } from "@/lib/portal/auth";
 import { getClient, listAssetCounts, listSites, listSurveys } from "@/lib/portal/store";
 import { categoryByKey, type AssetCategory } from "@/lib/portal/types";
 
+/** Fail fast instead of hanging at Vercel's 300 second ceiling. */
+export const maxDuration = 30;
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-IN", {
     day: "numeric",

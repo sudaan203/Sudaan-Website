@@ -90,7 +90,23 @@ export function getDb(): PortalDb | null {
   //   A long lived server such as `next dev` -> session pooler, port 5432.
   // A persistent client on 6543 wedges after a few requests: queries stop
   // returning at all and every later request hangs waiting for a connection.
-  const sql = postgres(url, { prepare: false, max: 3, idle_timeout: 20, connect_timeout: 15 });
+  const sql = postgres(url, {
+    // Required by Supabase's transaction mode pooler: it cannot keep prepared
+    // statements across pooled connections.
+    prepare: false,
+    // The one that actually caused 300 second timeouts in production. On its
+    // first query postgres.js interrogates pg_catalog for custom type OIDs. Under
+    // the transaction pooler that round trip can hang, and because Vercel reuses
+    // a warm function instance, the wedged pool is reused for every later request
+    // on that instance, so the whole page just times out. Skipping type discovery
+    // removes the hang. Custom types are not used by this schema.
+    fetch_types: false,
+    // One connection per function instance: Vercel handles a single request per
+    // instance, and a bigger pool only multiplies connections against the pooler.
+    max: 1,
+    idle_timeout: 20,
+    connect_timeout: 10,
+  });
   globalForDb.portalDb = drizzle(sql, { schema });
   return globalForDb.portalDb;
 }

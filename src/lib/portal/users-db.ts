@@ -133,14 +133,24 @@ export async function sessionStillValid(session: PortalSession): Promise<boolean
   const db = getDb();
   if (!db) return true; // seed backend, nothing to check against
 
-  const rows = await db
-    .select({ isActive: schema.users.isActive, clientId: schema.users.clientId, role: schema.users.role })
-    .from(schema.users)
-    .where(and(eq(schema.users.id, session.userId), eq(schema.users.isActive, true)))
-    .limit(1);
+  try {
+    const rows = await db
+      .select({ isActive: schema.users.isActive, clientId: schema.users.clientId, role: schema.users.role })
+      .from(schema.users)
+      .where(and(eq(schema.users.id, session.userId), eq(schema.users.isActive, true)))
+      .limit(1);
 
-  const row = rows[0];
-  if (!row) return false;
-  if (row.clientId !== session.clientId) return false;
-  return true;
+    const row = rows[0];
+    if (!row) return false;
+    if (row.clientId !== session.clientId) return false;
+    return true;
+  } catch (err) {
+    // A database hiccup must not sign everybody out. The cookie is already
+    // cryptographically valid and expires within 8 hours; this check is
+    // best effort revocation, so on an error keep the session and say so.
+    // The alternative, failing closed, turns a brief database blip into an
+    // apparently random logout loop, which is what it did in production.
+    console.error("[portal] could not re-check session, keeping it", err);
+    return true;
+  }
 }
