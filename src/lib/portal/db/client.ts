@@ -106,6 +106,11 @@ export function getDb(): PortalDb | null {
     max: 1,
     idle_timeout: 20,
     connect_timeout: 10,
+    // Server side ceiling on any single query. Without it a query that never
+    // returns holds the request until Vercel kills the function minutes later,
+    // which is what the production logs showed. Failing in 8 seconds gives the
+    // page a chance to show an error instead of a gateway timeout.
+    connection: { statement_timeout: 8000 },
   });
   globalForDb.portalDb = drizzle(sql, { schema });
   return globalForDb.portalDb;

@@ -43,7 +43,18 @@ export default async function PortalDashboard() {
         </p>
       </div>
 
-      {cards.length === 0 ? (
+      {session.role === "client" && !session.clientId ? (
+        // Signed in, but no owner has attached this person to a client yet.
+        <div className="surface p-8 text-center">
+          <h2 className="text-lg font-semibold text-ink-900">Your account is not linked yet</h2>
+          <p className="mx-auto mt-3 max-w-lg text-sm leading-relaxed text-ink/70">
+            You are signed in as {session.email}, but this account has not been
+            connected to a project yet. Send that email address to your Sudaan
+            Geo-Analytics contact and they will give it access. Nothing else is
+            needed from you, and this page will show your sites once they do.
+          </p>
+        </div>
+      ) : cards.length === 0 ? (
         <div className="surface p-8 text-center">
           <p className="text-sm text-ink/70">
             No sites have been published to your account yet. We will let you know

@@ -98,10 +98,36 @@ export async function signInWithEmail(identity: {
     };
   }
 
-  if (!existing) return { ok: false, reason: "not_invited" };
+  // Anyone may sign in. A first time visitor is recorded as a pending person
+  // with no client, which means they can see nothing at all until an owner
+  // attaches them to one from the console. Signing in is not access.
+  if (!existing) {
+    const [created] = await db
+      .insert(schema.users)
+      .values({
+        email,
+        fullName: identity.name ?? email,
+        imageUrl: identity.picture,
+        role: "client",
+        clientId: null,
+        lastLoginAt: new Date(),
+      })
+      .returning();
+
+    return {
+      ok: true,
+      session: {
+        userId: created.id,
+        email: created.email,
+        fullName: created.fullName ?? created.email,
+        role: "client",
+        clientId: null,
+      },
+    };
+  }
+
+  // Deactivating someone is an explicit owner decision, so it still refuses.
   if (!existing.isActive) return { ok: false, reason: "deactivated" };
-  // A client row with no client is unusable, treat it as not invited yet.
-  if (existing.role === "client" && !existing.clientId) return { ok: false, reason: "not_invited" };
 
   await db
     .update(schema.users)
