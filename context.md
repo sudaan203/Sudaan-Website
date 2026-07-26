@@ -233,6 +233,50 @@ reads as a dead button.
   attribution on the cards. Use `isOwnerRole()` from types.ts, never a bare
   comparison.
 
+## 8e. Security review (26 Jul 2026)
+
+Reviewed as an account-holding app: auth, tenant isolation, the file route, the
+public endpoints and the headers. `scripts/portal-security-test.mjs` runs the
+whole thing against a production build.
+
+What was already sound and should not be "simplified": Google OAuth verifies
+state, nonce, the id_token signature against Google's JWKS, issuer, audience and
+`email_verified`; `next=` is restricted to internal paths at both ends; tenant
+filtering happens in SQL through one function in `db/queries.ts` and answers 404
+rather than 403 so an id is never confirmed; all six server actions go through
+`requireOwner()`; password checks run a dummy bcrypt compare so timing cannot
+reveal which addresses exist; file reads refuse anything resolving outside the
+files root.
+
+Fixed:
+
+- **No CSP at all.** Now set, strict except `script-src`, which still needs
+  `'unsafe-inline'` for Next's hydration bootstrap. `frame-ancestors`,
+  `base-uri`, `object-src` and `form-action` are the real wins today; nonces are
+  the upgrade path.
+- **A header set in `next.config.mjs` overrides one set in a route handler.** The
+  asset route's own tighter CSP was being silently discarded. Anything
+  per-response must be declared in the config. Found by reading the response,
+  not the code.
+- **The asset route served whatever MIME type the catalogue held.** An
+  `image/svg+xml` or `text/html` file served from our origin is same origin
+  script. Now an allowlist, which matters before uploads land.
+- **Password sessions were never re-checked**, so removing someone from
+  `PORTAL_USERS` left them signed in for up to eight hours. Rights are now
+  re-read per request, so a demotion takes effect immediately.
+- **Login throttling keyed on email+IP only**, which permits spraying one
+  password across thousands of addresses from one host. There is now also a per
+  IP ceiling.
+- **`/api/contact` had no throttle**, no length caps, and is on its way to
+  spending money through Resend.
+- The rate limiter grew without bound, and read the *first* `x-forwarded-for`
+  entry, which is the caller supplied end. It reads the last hop now.
+- Portal responses now send `no-store`, so a shared machine's back button cannot
+  reveal the previous person's data.
+
+Known and accepted: rate limiting is per serverless instance, not global; logs
+carry email addresses; `script-src` allows inline.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)
