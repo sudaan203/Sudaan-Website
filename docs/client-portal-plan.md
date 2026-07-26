@@ -319,6 +319,14 @@ portal's teal and green palette.
 
 ### 8.1 Serving big rasters
 
+> **SUPERSEDED 26 Jul 2026 by `portal-map-architecture.md`.** The QGIS "Generate
+> XYZ Tiles" directory approach below was built, shipped, and has since been
+> judged a dead end: it freezes the pixels, so no restyling, no NDVI, no date
+> comparison, and publishing a site means committing about 1,700 files. Replaced
+> by PMTiles for imagery and vectors, COG behind a dynamic tiler for elevation,
+> COPC for point clouds. **Section 8.2 below is still correct** and was right
+> about signed URLs before context.md 8j contradicted it.
+
 `Kotba_Orthomosaic.tif` is 351 MB. A browser cannot open that, so we pre cut each
 raster into an XYZ tile pyramid and serve tiles. There is **no GDAL on this
 machine** (see `context.md` section 6), so tiling is a step in the production
