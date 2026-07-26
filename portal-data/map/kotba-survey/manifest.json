@@ -1,12 +1,20 @@
 {
   "site": "kotba-survey",
-  "generatedAt": "2026-07-26T04:41:22.705Z",
+  "generatedAt": "2026-07-26T05:29:30.981Z",
   "layers": [
     {
-      "key": "dsm",
-      "kind": "raster",
+      "key": "kotba-dem",
+      "kind": "tiles",
       "title": "Surface model (DSM)",
-      "file": "dsm.webp",
+      "tiles": "tiles/kotba-dem/{z}/{x}/{y}.webp",
+      "minZoom": 13,
+      "maxZoom": 19,
+      "bounds": [
+        73.72919024889882,
+        20.840828435783582,
+        73.73244871482906,
+        20.84423729690113
+      ],
       "coordinates": [
         [
           73.72919024889882,
@@ -31,10 +39,18 @@
       }
     },
     {
-      "key": "dtm",
-      "kind": "raster",
+      "key": "kotba-dtm",
+      "kind": "tiles",
       "title": "Terrain model (DTM)",
-      "file": "dtm.webp",
+      "tiles": "tiles/kotba-dtm/{z}/{x}/{y}.webp",
+      "minZoom": 13,
+      "maxZoom": 19,
+      "bounds": [
+        73.72919024889772,
+        20.84082843588185,
+        73.73244872822593,
+        20.844237296902158
+      ],
       "coordinates": [
         [
           73.72919024889772,
@@ -59,10 +75,10 @@
       }
     },
     {
-      "key": "contours",
+      "key": "kotba-contours",
       "kind": "vector",
       "title": "Contours",
-      "file": "contours.geojson",
+      "file": "kotba-contours.geojson",
       "featureCount": 201,
       "elevation": {
         "min": 338,
