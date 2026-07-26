@@ -14,6 +14,7 @@ type PortalEvent =
   | "logout"
   | "view_site"
   | "view_asset"
+  | "view_map"
   | "denied"
   | "admin_change";
 

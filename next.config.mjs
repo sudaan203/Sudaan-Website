@@ -20,10 +20,16 @@ const contentSecurityPolicy = [
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
   // Tailwind's injected styles and Framer Motion's inline transforms.
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
+  // MapLibre renders through WebGL and decodes tiles in a worker it creates
+  // from a blob, so both of these are required for the survey map to draw at
+  // all. tile.openstreetmap.org is the optional basemap, which is off until
+  // someone turns it on; listing it here does not fetch anything.
+  "img-src 'self' data: blob: https://*.tile.openstreetmap.org",
+  "worker-src 'self' blob:",
+  "child-src 'self' blob:",
   // next/font self hosts Inter, so no external font origin is needed.
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' https://*.tile.openstreetmap.org",
   // The PDF viewer frames our own asset route, nothing else.
   "frame-src 'self'",
   "media-src 'self'",
@@ -66,6 +72,11 @@ const nextConfig = {
   // the build at the trace collection step.
   outputFileTracingIncludes: {
     "/api/portal/assets/[assetId]/view/route": ["portal-data/files/**"],
+    // The map layers are read from disk at request time too, by the route that
+    // serves them and by the pages that read the manifest to build the tab.
+    "/api/portal/sites/[siteSlug]/map/[file]/route": ["portal-data/map/**"],
+    "/portal/[siteSlug]/map/page": ["portal-data/map/**"],
+    "/portal/[siteSlug]/layout": ["portal-data/map/**"],
   },
   async headers() {
     return [

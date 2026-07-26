@@ -64,6 +64,28 @@ for (const path of ["/api/portal/assets/whatever/view", "/api/portal/logout"]) {
   const res = await fetch(`${BASE}${path}`, { method: "POST", redirect: "manual" });
   check(`${path} refuses anonymous callers`, res.status === 401, String(res.status));
 }
+{
+  const res = await fetch(`${BASE}/api/portal/sites/kotba-survey/map/dsm.webp`, {
+    redirect: "manual",
+  });
+  check("map layers refuse anonymous callers", res.status === 401, String(res.status));
+}
+
+// The map route takes a site slug and a file name and turns them into a path.
+console.log("\n--- map path traversal ---");
+for (const attempt of [
+  "../../users.json",
+  "..%2F..%2Fusers.json",
+  "....//users.json",
+  "%2e%2e%2fmanifest.json",
+]) {
+  const res = await fetch(
+    `${BASE}/api/portal/sites/kotba-survey/map/${attempt}`,
+    { redirect: "manual" },
+  );
+  // 401 (no session) or 404 (refused) are both fine; 200 would not be.
+  check(`refuses ${attempt}`, res.status !== 200, String(res.status));
+}
 
 console.log("\n--- open redirect ---");
 for (const hostile of [
@@ -156,6 +178,21 @@ console.log("\n--- assets still serve, and only to the right client ---");
     check("asset response carries its own restrictive CSP",
       (res.headers.get("content-security-policy") ?? "").includes("default-src 'none'"));
     check("asset is not cacheable", (res.headers.get("cache-control") ?? "").includes("no-store"));
+
+    // Map layers, with a real session this time.
+    const mapRes = await fetch(`${BASE}/api/portal/sites/kotba-survey/map/dsm.webp`, {
+      headers: { cookie: `sga_portal_session=${ownerToken}` },
+    });
+    check("a map layer serves to an authorised viewer", mapRes.status === 200, String(mapRes.status));
+    check("map layers are not cacheable",
+      (mapRes.headers.get("cache-control") ?? "").includes("no-store"));
+
+    const traversal = await fetch(
+      `${BASE}/api/portal/sites/kotba-survey/map/${encodeURIComponent("../../users.json")}`,
+      { headers: { cookie: `sga_portal_session=${ownerToken}` } },
+    );
+    check("traversal is refused even with a valid session", traversal.status === 404,
+      String(traversal.status));
 
     // Tenant isolation. The session has to be one the server will actually
     // accept, so it is built from a real active client user: a made up userId is
