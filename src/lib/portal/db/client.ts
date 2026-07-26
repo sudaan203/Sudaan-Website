@@ -27,14 +27,42 @@ const globalForDb = globalThis as unknown as {
   portalSql?: ReturnType<typeof postgres>;
 };
 
+/** How long any one attempt gets before we give up on it. */
+const QUERY_TIMEOUT_MS = 7000;
+
+/** Connections in the pool. See the comment on `max` below before changing it. */
+const POOL_MAX = 8;
+
+/**
+ * Like Promise.all over map, but never more than the pool can serve at once.
+ *
+ * A page that fans out per row (the dashboard does three reads per site) grows
+ * its concurrency with the data. Past the pool size those queries queue behind
+ * the transaction pooler and the page stalls, so the limit is a correctness
+ * requirement rather than politeness.
+ */
+export async function mapPooled<In, Out>(
+  items: readonly In[],
+  fn: (item: In) => Promise<Out>,
+  limit = Math.max(1, POOL_MAX - 2),
+): Promise<Out[]> {
+  const results = new Array<Out>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * Prisma and the Vercel integration add flags to the URL that Postgres itself
  * does not understand. postgres.js forwards unknown query parameters as server
  * startup options, and the pooler rejects them, so strip them.
  */
-/** How long any one attempt gets before we give up on it. */
-const QUERY_TIMEOUT_MS = 7000;
-
 const NON_POSTGRES_PARAMS = [
   "pgbouncer",
   "connection_limit",
@@ -87,15 +115,15 @@ export function getDb(): PortalDb | null {
     );
   }
 
-  // prepare: false is required for Supabase's transaction mode pooler.
-  // max keeps a serverless instance from opening a pool per invocation, and
-  // idle_timeout hands connections back rather than holding them open.
-  //
-  // Which pooler port to point at (measured 26 Jul 2026):
+  // Which pooler port to point at:
   //   Vercel, short lived functions -> transaction pooler, port 6543.
   //   A long lived server such as `next dev` -> session pooler, port 5432.
-  // A persistent client on 6543 wedges after a few requests: queries stop
-  // returning at all and every later request hangs waiting for a connection.
+  //
+  // The two behave differently under concurrency, and that difference cost days.
+  // A page whose queries ran fine on 5432 hung on 6543, so nothing reproduced
+  // locally while production kept failing. If you are testing pooling behaviour,
+  // test on 6543: `npx tsx scripts/portal-pooler-test.mts` forces that port
+  // whatever .env.local says.
   const sql = postgres(url, {
     // Required by Supabase's transaction mode pooler: it cannot keep prepared
     // statements across pooled connections.
@@ -107,9 +135,21 @@ export function getDb(): PortalDb | null {
     // on that instance, so the whole page just times out. Skipping type discovery
     // removes the hang. Custom types are not used by this schema.
     fetch_types: false,
-    // One connection per function instance: Vercel handles a single request per
-    // instance, and a bigger pool only multiplies connections against the pooler.
-    max: 1,
+    // The pool must be at least as large as the most concurrent queries any one
+    // page issues, and this is not a tuning knob. Supabase's transaction pooler
+    // serves one query at a time per connection, so when postgres.js pipelines
+    // several concurrent queries down a single connection they simply never come
+    // back. Measured against the live transaction pooler on 26 Jul 2026, running
+    // the owner console's four reads together:
+    //   max 1 -> hangs indefinitely
+    //   max 2 -> hangs, survives only because queryDb retries, 9.1s
+    //   max 4 -> 325ms
+    //   max 8 -> 325ms
+    // That hang was the owner console failing in production. The session pooler
+    // on 5432 does not behave this way, which is why it never reproduced locally.
+    // Connections are handed back after idle_timeout, so 8 is a ceiling under
+    // load rather than 8 connections held open.
+    max: POOL_MAX,
     idle_timeout: 20,
     connect_timeout: 10,
     // Recycle a connection well before the pooler decides to drop it. Supabase
