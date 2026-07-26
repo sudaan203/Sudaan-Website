@@ -72,11 +72,38 @@ const nextConfig = {
   // the build at the trace collection step.
   outputFileTracingIncludes: {
     "/api/portal/assets/[assetId]/view/route": ["portal-data/files/**"],
-    // The map layers are read from disk at request time too, by the route that
-    // serves them and by the pages that read the manifest to build the tab.
+
+    // Only the layer route serves tile bytes, so it is the only entry that needs
+    // the whole pyramid.
     "/api/portal/sites/[siteSlug]/map/[...path]/route": ["portal-data/map/**"],
-    "/portal/[siteSlug]/map/page": ["portal-data/map/**"],
-    "/portal/[siteSlug]/layout": ["portal-data/map/**"],
+
+    /**
+     * Every portal page needs manifest.json, because the shared `[siteSlug]`
+     * layout calls readMapManifest to decide whether to show the Map tab.
+     *
+     * Two traps here, both of which produced a silent failure and cost a
+     * production bug that survived two "shipped" claims:
+     *
+     * 1. **There is no layout entry to add.** Next does not emit a trace for a
+     *    layout; a layout is bundled into each page function that renders it. The
+     *    old config keyed on "/portal/[siteSlug]/layout", which matched nothing.
+     *    The map page had its own entry so the map itself worked, while the
+     *    layout's readMapManifest returned null on every other page, so the Map
+     *    tab never rendered in production and nothing linked to the map at all.
+     *
+     * 2. **These keys are globs, so `[` and `]` are character classes.** Keys
+     *    spelled "/portal/[siteSlug]/page" therefore match nothing: the brackets
+     *    are read as "one character from s,i,t,e,S,l,u,g". Verified by building
+     *    with them and finding zero manifests in the trace. Use a wildcard.
+     *
+     * Also kept narrow deliberately: these pages never read a tile, only the
+     * manifest, so including `portal-data/map/**` here would put 2,164 files into
+     * functions that need two.
+     *
+     * scripts/portal-tracing-test.mjs asserts this stays true, because the whole
+     * failure mode is invisible: no error, no warning, just a missing tab.
+     */
+    "/portal/**": ["portal-data/map/*/manifest.json"],
   },
   async headers() {
     return [
