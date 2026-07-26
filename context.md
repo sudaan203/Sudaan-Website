@@ -761,6 +761,106 @@ public bucket URL: a public URL would defeat view only and tenant isolation in
 one step. Aektanagar at 22 MB is under the 50 MB trigger in 8h, so the move is
 not forced yet, though a native resolution ortho would force it immediately.
 
+## 8m. One command per site, and why the old flow produced wrong numbers
+
+Publishing a site is now a single command. Everything in 8k and 8l is still true
+about the individual steps, but nobody should run them one at a time.
+
+```bash
+node scripts/publish-site.mjs ~/surveys/reliance reliance-jamnagar \
+  --client reliance --name "Reliance Jamnagar" \
+  --location "Jamnagar, Gujarat" --flown-on 2025-03-14 --db
+```
+
+It looks at the folder, decides what each file is, and runs the whole pipeline:
+tiles and contours, Terrain-RGB for measurement, imagery previews, the PDF
+deliverables, the catalogue, the database, then the guards. `--dry-run` prints the
+plan. `--skip-tiles` reuses a pyramid already on disk.
+
+### The old flow was six steps and three of them were editing code
+
+That is where every wrong figure came from, and it is worth being specific,
+because none of it was carelessness at a keyboard:
+
+| What the client saw | What the data said |
+|---|---|
+| Contour Map, 0.5 m interval | the shapefile stores `56.000000000000000`, so 1 m |
+| 45,210,480 LiDAR points | the LAS header says 50,183,644 |
+| Ground, Vegetation, Structures, High Noise | only Ground and Unclassified exist |
+| Area 35 ha | the footprint measures about 26 ha |
+| Kotba: 42 ha, 0.5 m contours | 12.8 ha, 201 lines at 1 m |
+| Aektanagar's DSM, DTM and contour previews | byte identical to Kotba's |
+
+The pipeline measured all of those correctly and then asked a person to retype
+them into `seed.ts` and `portal-db-seed.mjs`. So the rule now is that a catalogue
+row is **discovered, not declared**: `scripts/lib/catalogue.mjs` walks the site's
+folder, recognises each file, and describes it from the file itself. A fact that
+cannot be read is left blank rather than guessed.
+
+### Three pieces worth knowing
+
+- **`scripts/lib/manifest.mjs`** is the only thing that writes a manifest.
+  `make-terrain-tiles.mjs` used to print a JSON block for a human to paste in,
+  which is literally how Aektanagar's terrain layer was added. It now registers
+  its own layer and then calls `verify()`, which walks what the manifest claims
+  against the tiles on disk, including the "tiles newer than the manifest" case
+  that left Aektanagar serving 4,096 px overlays with a complete pyramid beside
+  them.
+- **Identity comes from the natural key, not from a generated id.**
+  `portal-db-publish.mjs` matches `clients.slug`, `sites (client_id, slug)` and an
+  asset's storage key, and only uses its uuid v5 when creating something new.
+  Doing it the other way round breaks on the first real run: Kotba already exists
+  as `33333333-...` from the demo seed while the generator produces
+  `567a0eaf-...` for the same slug, and `sites` has a unique constraint on
+  (client_id, slug).
+- **Assets that disappear are unpublished, not deleted.** A client may hold a
+  link, and "no longer available" beats a 404. Republishing Kotba retired its
+  three sample PDFs that way.
+
+### The guard that catches the whole class
+
+`scripts/portal-assets-test.mjs`, run automatically at the end of a publish:
+
+- no deliverable may appear under two sites (hashes every file; this is what found
+  Aektanagar serving Kotba's previews, and Ambaji serving Kotba's ortho and report)
+- none may be a stub, and every file must match the format its extension claims
+  (which catches the fake `.las`)
+- no PDF may contain the marketing sample's text (`Gezira`, `demonstration
+  purposes`), and every survey PDF must name its UTM zone. The exemption is
+  earned, not configured: a document is excused only if it says in its own text
+  that it is not a survey deliverable, which is how the isolation fixture passes.
+
+### Two things this does not do yet
+
+- **`src/lib/portal/seed.ts` is still hand written.** It is only the no database
+  fallback now, so it can drift from what a publish produces. Either generate it
+  from a catalogue or delete it once Postgres is the only backend.
+- **The area label is a bounding box**, computed from the union of every layer's
+  declared bounds. A survey footprint is an irregular quadrilateral, so the label
+  overstates slightly: Aektanagar reads 26.1 ha against a 25.3 ha DTM rectangle.
+  Fine for a card, wrong for a quantity, and it should say "bounding box" or be
+  computed from the real footprint.
+
+## 8n. The OpenStreetMap basemap was blocked by our own CSP
+
+Reported by Malhar, and it had never worked in any environment.
+
+`MapViewer` requests `https://tile.openstreetmap.org`. The CSP listed
+`https://*.tile.openstreetmap.org`. **A CSP wildcard matches subdomains and not
+the bare domain**, so every basemap tile was refused by policy.
+
+Nothing looked broken from inside the app: a CSP violation is not a failed
+request MapLibre can report, so the toggle turned on and simply nothing drew.
+Both forms are listed now, `img-src` and `connect-src`, because the bare host is
+canonical today and the a/b/c subdomains remain for older clients. Verified in a
+real browser on both sites: 20 tiles on Kotba, 12 on Aektanagar, all 200, zero CSP
+violations.
+
+Worth remembering the general shape of this: **the map cannot tell you when the
+browser refuses on its behalf.** If a layer silently does not draw, check the CSP
+before the map code, alongside the MapLibre worker problem in 8g, which fails the
+same silent way.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)

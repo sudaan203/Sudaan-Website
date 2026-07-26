@@ -20,16 +20,28 @@ const contentSecurityPolicy = [
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
   // Tailwind's injected styles and Framer Motion's inline transforms.
   "style-src 'self' 'unsafe-inline'",
-  // MapLibre renders through WebGL and decodes tiles in a worker it creates
-  // from a blob, so both of these are required for the survey map to draw at
-  // all. tile.openstreetmap.org is the optional basemap, which is off until
-  // someone turns it on; listing it here does not fetch anything.
-  "img-src 'self' data: blob: https://*.tile.openstreetmap.org",
+  /**
+   * MapLibre renders through WebGL and decodes tiles in a worker it creates from
+   * a blob, so `blob:` is required for the survey map to draw at all.
+   *
+   * The basemap needs **both** OpenStreetMap forms listed, and getting this wrong
+   * is what broke it:
+   *
+   *   https://tile.openstreetmap.org      <- what we actually request
+   *   https://*.tile.openstreetmap.org    <- what was listed
+   *
+   * A CSP wildcard matches subdomains and **not** the bare domain, so every
+   * basemap tile was blocked by policy. Nothing looked broken in our own code:
+   * MapLibre just drew nothing under the survey, because a CSP violation is not a
+   * failed request the map can report. The bare domain is the canonical host now;
+   * the a/b/c subdomains are kept only for older clients.
+   */
+  "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org",
   "worker-src 'self' blob:",
   "child-src 'self' blob:",
   // next/font self hosts Inter, so no external font origin is needed.
   "font-src 'self' data:",
-  "connect-src 'self' https://*.tile.openstreetmap.org",
+  "connect-src 'self' https://tile.openstreetmap.org https://*.tile.openstreetmap.org",
   // The PDF viewer frames our own asset route, nothing else.
   "frame-src 'self'",
   "media-src 'self'",

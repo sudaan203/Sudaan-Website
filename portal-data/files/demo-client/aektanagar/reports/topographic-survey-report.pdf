@@ -92,25 +92,25 @@ BT
 /F1 9.5 Tf
 0.42 0.42 0.42 rg
 48 671.89 Td
-(Contours) Tj
-ET
-BT
-/F2 9.5 Tf
-0.18 0.18 0.18 rg
-499.924 671.89 Td
-(30 to 97 m) Tj
-ET
-BT
-/F1 9.5 Tf
-0.42 0.42 0.42 rg
-48 657.89 Td
 (Terrain \(elevation data\)) Tj
 ET
 BT
 /F2 9.5 Tf
 0.18 0.18 0.18 rg
-472.061 657.89 Td
+472.061 671.89 Td
 (29.48 to 98.18 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 657.89 Td
+(Contours) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+499.924 657.89 Td
+(30 to 97 m) Tj
 ET
 BT
 /F2 8 Tf

@@ -144,6 +144,64 @@ check(
   liars.length ? liars.join(", ") : "checked pdf, webp, png, jpg, las",
 );
 
+/* ------------------------------------------------ no sample text anywhere --- */
+
+console.log("\n--- no deliverable may carry the marketing sample text ---");
+
+/**
+ * The marketing site's sample PDFs describe a fictional site in Gezira State,
+ * Sudan, in UTM zone 36N, and say "representative sample for demonstration
+ * purposes only". Copies of them were served to two real clients as their contour
+ * map, survey report, volume analysis and orthomosaic sheet.
+ *
+ * These strings appearing under portal-data/files means a sample has been copied
+ * in again. They are safe to look for in /public/reports, where the samples
+ * legitimately live.
+ */
+const SAMPLE_MARKERS = [
+  "Gezira",
+  "demonstration purposes",
+  "Sample Deliverable",
+  "representative sample",
+];
+const contaminated = [];
+for (const f of files) {
+  if (path.extname(f.rel).toLowerCase() !== ".pdf") continue;
+  const text = readFileSync(f.abs).toString("latin1");
+  const hits = SAMPLE_MARKERS.filter((m) => text.includes(m));
+  if (hits.length) contaminated.push(`${f.site}/${f.rel} (${hits.join(", ")})`);
+}
+check(
+  "no PDF contains the sample site's text",
+  contaminated.length === 0,
+  contaminated.length ? contaminated.join("; ") : `${files.filter((f) => f.rel.endsWith(".pdf")).length} PDFs checked`,
+);
+
+/**
+ * A survey PDF should name the projection it was produced in. A sheet with no CRS
+ * is either a placeholder or a sheet nobody can rely on.
+ *
+ * The exemption is earned, not configured: a document is excused only if it says
+ * in its own text that it is not a survey deliverable. That keeps the isolation
+ * fixture passing without giving anyone a path based allowlist to hide behind.
+ */
+const NOT_A_DELIVERABLE = "not a survey deliverable";
+const noCrs = [];
+let exempt = 0;
+for (const f of files) {
+  if (path.extname(f.rel).toLowerCase() !== ".pdf") continue;
+  const text = readFileSync(f.abs).toString("latin1");
+  if (text.includes(NOT_A_DELIVERABLE)) { exempt += 1; continue; }
+  if (!/UTM/.test(text)) noCrs.push(`${f.site}/${f.rel}`);
+}
+check(
+  "every survey PDF states its coordinate system",
+  noCrs.length === 0,
+  noCrs.length
+    ? noCrs.join(", ")
+    : `all name a UTM zone${exempt ? `, ${exempt} declared itself not a deliverable` : ""}`,
+);
+
 /* -------------------------------------------- previews look site specific --- */
 
 console.log("\n--- previews should match their own survey's shape ---");

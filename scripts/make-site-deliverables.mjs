@@ -42,6 +42,7 @@ Usage: node scripts/make-site-deliverables.mjs <site-slug> [options]
 
   --client SLUG    client folder under portal-data/files (default demo-client)
   --las PATH       point cloud, for the real header figures
+  --grid PATH      point grid CSV, if it is not already in the site folder
   --name TEXT      site name for the title block
   --location TEXT  location line for the title block
 `);
@@ -50,6 +51,8 @@ Usage: node scripts/make-site-deliverables.mjs <site-slug> [options]
 
 const clientSlug = flag("client", "demo-client");
 const lasPath = flag("las", null);
+// Explicit only. There is deliberately no search for a grid outside this site.
+const gridPath = flag("grid", null);
 const siteName = flag("name", slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()));
 const location = flag("location", null);
 
@@ -118,11 +121,20 @@ function readContours() {
   return { lines, count: lines.length, interval: interval ? Number(interval) : null, levels: sorted };
 }
 
-/** The 5 m grid, if the CSV is around. */
+/**
+ * The point grid, if this site has one.
+ *
+ * **Only ever from this site's own folder.** An earlier version of this fell back
+ * to a hardcoded `Aektanagar/Grid.csv`, and the first time it ran for another site
+ * it put Aektanagar's 5,449 points into Kotba's report: the same cross site
+ * contamination this script was written to fix, reintroduced by its own
+ * convenience fallback. A missing grid means no grid section, not somebody else's
+ * grid.
+ */
 function readGrid() {
   const candidates = [
     join(outRoot, "drawings", "Grid.csv"),
-    resolve("Aektanagar", "Grid.csv"),
+    ...(gridPath ? [resolve(gridPath)] : []),
   ];
   const p = candidates.find(existsSync);
   if (!p) return null;
