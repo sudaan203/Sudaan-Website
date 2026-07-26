@@ -613,13 +613,26 @@ Once a site exceeds the 50 MB trigger in 8h, it goes to a bucket instead and the
 layer route redirects to a signed URL. The bundle layout does not change, which
 is the point of writing it as a self contained folder.
 
-### Still to wire
+### Wired up (26 Jul 2026)
 
-The portal reads `kind: "raster"` and `kind: "vector"`. This tool emits
-`kind: "tiles"`, which nothing consumes yet, so `prepare-map-data.mjs` remains
-the script that feeds the live map until that lands. Both now share
-`scripts/lib/geo.mjs`, so there is one implementation of the projection and
-shapefile code rather than a copy per script.
+The portal reads `kind: "tiles"` now, and the live Kotba map is served from a
+pyramid: 110 tiles, 1.1 MB, committed to the repo. `prepare-site.mjs` is the
+only script needed to publish a site.
+
+Three things worth knowing about that wiring:
+
+- **The layer route is a catch-all**, `map/[...path]`, because tiles are nested
+  as `tiles/<layer>/{z}/{x}/{y}.webp`. It does not trust the path: a request is
+  served only if it is one file the manifest names, or a tile whose layer key
+  matches a declared `kind: "tiles"` layer with integer z, x and y.
+- **Missing tiles answer 204, not 404.** A survey footprint is a rotated
+  quadrilateral, MapLibre asks for every tile in the rectangle around it, and
+  the corners were never written. 204 keeps the browser console clean.
+- **Raster tiles load on the main thread**, so unlike GeoJSON they carry the
+  session cookie without help. That asymmetry is the same one described in 8g.
+
+Both older scripts share `scripts/lib/geo.mjs`, so there is one implementation
+of the projection and shapefile code rather than a copy per script.
 
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until

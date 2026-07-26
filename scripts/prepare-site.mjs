@@ -103,6 +103,28 @@ function georeferenceFor(file) {
   }
 }
 
+/**
+ * A name a client should see, from a filename they should not.
+ *
+ * "Kotba_DEM" is what the processing software wrote; "Surface model (DSM)" is
+ * what the person paying for the survey calls it. Falls back to a tidied
+ * filename when nothing matches, so an unusual layer still reads sensibly.
+ */
+function friendlyTitle(stem) {
+  // Separators first: "_" is a word character, so \bdem\b never matches
+  // "Kotba_DEM" and every layer falls through to the filename.
+  const n = stem.toLowerCase().replace(/[_-]+/g, " ");
+  if (/\b(dsm|dem|surface)\b/.test(n)) return "Surface model (DSM)";
+  if (/\b(dtm|terrain|bare.?earth)\b/.test(n)) return "Terrain model (DTM)";
+  if (/contour/.test(n)) return "Contours";
+  if (/ortho|mosaic|rgb/.test(n)) return "Orthomosaic";
+  if (/ndvi/.test(n)) return "Vegetation index (NDVI)";
+  if (/hillshade|shade/.test(n)) return "Hillshade";
+  if (/drainage/.test(n)) return "Drainage";
+  if (/gcp|control/.test(n)) return "Ground control";
+  return stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 async function classify(file) {
   let meta;
   try {
@@ -321,7 +343,7 @@ for (const file of rasterFiles) {
     const { rgba, width, height, min, max } = await elevationToRgba(file, info.meta);
     console.log(`  ${basename(file)}: elevation ${width}x${height}, ${min.toFixed(1)} to ${max.toFixed(1)} m`);
     await tileRaster({
-      key, title: basename(file).replace(/\.[^.]+$/, ""), rgba, width, height, geo,
+      key, title: friendlyTitle(basename(file).replace(/\.[^.]+$/, "")), rgba, width, height, geo,
       extra: { elevation: { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) } },
     });
   } else {
@@ -331,7 +353,7 @@ for (const file of rasterFiles) {
       .toBuffer({ resolveWithObject: true });
     console.log(`  ${basename(file)}: imagery ${raw.width}x${raw.height}`);
     await tileRaster({
-      key, title: basename(file).replace(/\.[^.]+$/, ""),
+      key, title: friendlyTitle(basename(file).replace(/\.[^.]+$/, "")),
       rgba: data, width: raw.width, height: raw.height, geo, extra: {},
     });
   }
@@ -429,7 +451,7 @@ for (const shp of shapefiles) {
   manifest.layers.push({
     key,
     kind: "vector",
-    title: basename(stem),
+    title: friendlyTitle(basename(stem)),
     file,
     featureCount: features.length,
     ...(elevations.length

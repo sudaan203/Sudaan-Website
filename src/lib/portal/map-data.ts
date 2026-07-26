@@ -23,10 +23,23 @@ export type LonLat = [number, number];
 
 export type MapLayer = {
   key: string;
-  kind: "raster" | "vector";
+  /**
+   * "tiles" is what scripts/prepare-site.mjs produces and what everything new
+   * should use: a pyramid the browser samples a screenful at a time, so cost is
+   * flat in the size of the deliverable. "raster" is the older single image
+   * overlay, kept because it is simple and fine for something small.
+   */
+  kind: "tiles" | "raster" | "vector";
   title: string;
-  file: string;
-  /** Raster only: top left, top right, bottom right, bottom left. */
+  /** raster and vector layers: a file in the site's folder. */
+  file?: string;
+  /** tiles: a template relative to the site's folder, with {z}/{x}/{y}. */
+  tiles?: string;
+  minZoom?: number;
+  maxZoom?: number;
+  /** tiles: [west, south, east, north], so nothing is requested off the survey. */
+  bounds?: [number, number, number, number];
+  /** raster and tiles: top left, top right, bottom right, bottom left. */
   coordinates?: [LonLat, LonLat, LonLat, LonLat];
   featureCount?: number;
   elevation?: { min: number; max: number };
@@ -45,6 +58,8 @@ export type MapManifest = {
  */
 const SAFE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SAFE_FILE = /^[a-z0-9][a-z0-9._-]*$/i;
+/** Exactly `tiles/<layer-key>/{z}/{x}/{y}.webp`, nothing more inventive. */
+const SAFE_TILE_TEMPLATE = /^tiles\/[a-z0-9][a-z0-9-]*\/\{z\}\/\{x\}\/\{y\}\.webp$/;
 
 function siteDir(siteSlug: string): string {
   if (!SAFE_SLUG.test(siteSlug)) throw new Error(`unsafe site slug: ${siteSlug}`);
@@ -69,8 +84,12 @@ export async function readMapManifest(siteSlug: string): Promise<MapManifest | n
     const raw = await readFile(path.join(dir, "manifest.json"), "utf8");
     const parsed = JSON.parse(raw) as MapManifest;
     if (!Array.isArray(parsed.layers)) return null;
-    // Only expose layers whose file name is safe to put back in a URL.
-    parsed.layers = parsed.layers.filter((layer) => SAFE_FILE.test(layer.file));
+    // Only expose layers we can build a safe URL for.
+    parsed.layers = parsed.layers.filter((layer) =>
+      layer.kind === "tiles"
+        ? typeof layer.tiles === "string" && SAFE_TILE_TEMPLATE.test(layer.tiles)
+        : typeof layer.file === "string" && SAFE_FILE.test(layer.file),
+    );
     return parsed;
   } catch {
     return null;
@@ -84,13 +103,61 @@ export type MapFile = { body: Buffer; contentType: string };
  * manifest means a caller cannot name an arbitrary file inside the folder even
  * if it passes the character checks.
  */
-export async function readMapFile(siteSlug: string, file: string): Promise<MapFile | null> {
-  if (!SAFE_FILE.test(file)) return null;
+/**
+ * A tile request, and only a tile request.
+ *
+ * Tiles cannot be listed in the manifest one by one, so instead of "is this
+ * file named", the rule is "does this look exactly like a tile belonging to a
+ * layer this site declares". Layer key must match a `kind: "tiles"` layer, and
+ * z, x and y must be plain integers. Nothing else gets through, which keeps the
+ * catch-all route from becoming a way to read the folder.
+ */
+function tilePathIsDeclared(manifest: MapManifest, segments: string[]): boolean {
+  if (segments.length !== 5) return false;
+  const [dir, layerKey, z, x, yFile] = segments;
+  if (dir !== "tiles") return false;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(layerKey)) return false;
+  if (!/^\d{1,2}$/.test(z) || !/^\d{1,9}$/.test(x)) return false;
+  if (!/^\d{1,9}\.webp$/.test(yFile)) return false;
+  return manifest.layers.some(
+    (layer) => layer.kind === "tiles" && layer.key === layerKey,
+  );
+}
+
+/**
+ * Is this a legitimate request for a tile that simply was not generated?
+ *
+ * The survey footprint is a rotated quadrilateral, MapLibre asks for every tile
+ * in the rectangle around it, and the corners have no data so no file was
+ * written. Those requests are correct behaviour, not an attack and not a bug, so
+ * the route answers 204 and the browser console stays clean. Anything that is
+ * not a declared tile path still gets a flat 404.
+ */
+export async function isDeclaredTilePath(siteSlug: string, requested: string): Promise<boolean> {
+  const segments = requested.split("/").filter(Boolean);
+  const manifest = await readMapManifest(siteSlug);
+  if (!manifest) return false;
+  return tilePathIsDeclared(manifest, segments);
+}
+
+export async function readMapFile(siteSlug: string, requested: string): Promise<MapFile | null> {
+  const segments = requested.split("/").filter(Boolean);
+  // Reject the separators and traversal tokens before they reach the filesystem.
+  if (segments.some((s) => s === "." || s === ".." || s.includes("\\") || s.includes("\0"))) {
+    return null;
+  }
 
   const manifest = await readMapManifest(siteSlug);
   if (!manifest) return null;
-  if (!manifest.layers.some((layer) => layer.file === file)) return null;
 
+  const isTile = tilePathIsDeclared(manifest, segments);
+  if (!isTile) {
+    if (segments.length !== 1) return null;
+    if (!SAFE_FILE.test(segments[0])) return null;
+    if (!manifest.layers.some((layer) => layer.file === segments[0])) return null;
+  }
+
+  const file = segments.join("/");
   const dir = siteDir(siteSlug);
   const full = path.resolve(dir, file);
   if (!full.startsWith(dir + path.sep)) return null;

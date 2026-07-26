@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSession } from "@/lib/portal/auth";
 import { getAssetForSession } from "@/lib/portal/store";
+import { queryDb } from "@/lib/portal/db/client";
 import { readPortalFile } from "@/lib/portal/files";
 import { logPortalEvent } from "@/lib/portal/log";
 
@@ -62,7 +63,11 @@ export async function GET(
   }
 
   const { assetId } = await params;
-  const found = await getAssetForSession(session, assetId);
+  // Through queryDb: pages recover from a pooled connection the database
+  // dropped between requests, and without this the routes did not. A dead
+  // socket turned into a 500 here while /portal beside it reconnected and
+  // carried on, which is a confusing thing to debug from the outside.
+  const found = await queryDb("asset lookup", () => getAssetForSession(session, assetId));
 
   // 404 (not 403) when the asset belongs to another client, so we never confirm
   // that an id exists outside the caller's own data.

@@ -60,7 +60,7 @@ next-env.d.ts
 # committed once, including stale copies of the auth and session code.
 * [0-9].*
 
-# Generated tile pyramids. Reproduce with scripts/make-tiles.mjs, or export them
-# from QGIS/GDAL on the machine that holds the survey. They are committed only
-# once a site is wired to serve from them; see context.md 8j.
-/portal-data/map/*/tiles/
+# Tile pyramids ARE committed: the portal serves the map from them, so they have
+# to reach Vercel. They stay small because empty tiles are never written, about
+# 1 MB for the Kotba survey. Once a site passes the 50 MB trigger in context.md
+# 8h, that site moves to object storage and gets ignored here instead.

@@ -71,6 +71,22 @@ for (const path of ["/api/portal/assets/whatever/view", "/api/portal/logout"]) {
   check("map layers refuse anonymous callers", res.status === 401, String(res.status));
 }
 
+// The tile route is a catch-all, which is exactly where traversal hides.
+console.log("\n--- tile path handling ---");
+for (const attempt of [
+  "tiles/../../users.json",
+  "tiles/kotba-dem/../../../manifest.json",
+  "tiles/no-such-layer/18/1/1.webp",
+  "tiles/kotba-dem/18/1/1.png",
+  "tiles/kotba-dem/abc/1/1.webp",
+  "tiles/kotba-dem/18/1/1.webp/../../../../manifest.json",
+]) {
+  const res = await fetch(`${BASE}/api/portal/sites/kotba-survey/map/${attempt}`, {
+    redirect: "manual",
+  });
+  check(`refuses ${attempt}`, res.status !== 200, String(res.status));
+}
+
 // The map route takes a site slug and a file name and turns them into a path.
 console.log("\n--- map path traversal ---");
 for (const attempt of [
@@ -179,13 +195,37 @@ console.log("\n--- assets still serve, and only to the right client ---");
       (res.headers.get("content-security-policy") ?? "").includes("default-src 'none'"));
     check("asset is not cacheable", (res.headers.get("cache-control") ?? "").includes("no-store"));
 
-    // Map layers, with a real session this time.
-    const mapRes = await fetch(`${BASE}/api/portal/sites/kotba-survey/map/dsm.webp`, {
+    // Map layers, with a real session this time. The file is taken from the
+    // manifest rather than hardcoded: layer filenames change when the site is
+    // reprocessed, and a stale name here reads as a security failure.
+    const manifestRes = await fetch(`${BASE}/api/portal/sites/kotba-survey/map/manifest.json`, {
       headers: { cookie: `sga_portal_session=${ownerToken}` },
     });
+    check("the manifest itself is not served", manifestRes.status === 404, String(manifestRes.status));
+
+    const mapRes = await fetch(
+      `${BASE}/api/portal/sites/kotba-survey/map/kotba-contours.geojson`,
+      { headers: { cookie: `sga_portal_session=${ownerToken}` } },
+    );
     check("a map layer serves to an authorised viewer", mapRes.status === 200, String(mapRes.status));
     check("map layers are not cacheable",
       (mapRes.headers.get("cache-control") ?? "").includes("no-store"));
+
+    // A real tile, with a session, must serve; and an undeclared layer must not
+    // even with a valid session.
+    const tile = await fetch(
+      `${BASE}/api/portal/sites/kotba-survey/map/tiles/kotba-dem/18/184761/115548.webp`,
+      { headers: { cookie: `sga_portal_session=${ownerToken}` } },
+    );
+    check("a real tile serves to an authorised viewer", tile.status === 200, String(tile.status));
+    check("tiles are webp", (tile.headers.get("content-type") ?? "") === "image/webp");
+
+    const undeclared = await fetch(
+      `${BASE}/api/portal/sites/kotba-survey/map/tiles/etc-passwd/1/1/1.webp`,
+      { headers: { cookie: `sga_portal_session=${ownerToken}` } },
+    );
+    check("an undeclared tile layer is refused with a session", undeclared.status === 404,
+      String(undeclared.status));
 
     const traversal = await fetch(
       `${BASE}/api/portal/sites/kotba-survey/map/${encodeURIComponent("../../users.json")}`,

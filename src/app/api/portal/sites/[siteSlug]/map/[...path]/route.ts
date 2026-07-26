@@ -1,8 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSession } from "@/lib/portal/auth";
 import { getSite } from "@/lib/portal/store";
-import { readMapFile } from "@/lib/portal/map-data";
+import { isDeclaredTilePath, readMapFile } from "@/lib/portal/map-data";
 import { logPortalEvent } from "@/lib/portal/log";
+import { queryDb } from "@/lib/portal/db/client";
 
 export const runtime = "nodejs";
 
@@ -20,16 +21,21 @@ export const runtime = "nodejs";
  */
 export async function GET(
   _request: NextRequest,
-  { params }: { params: Promise<{ siteSlug: string; file: string }> },
+  { params }: { params: Promise<{ siteSlug: string; path: string[] }> },
 ) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const { siteSlug, file } = await params;
+  // A catch-all, because tiles are nested as tiles/<layer>/{z}/{x}/{y}.webp.
+  // readMapFile decides what is allowed; this only reassembles the path.
+  const { siteSlug, path: segments } = await params;
+  const file = (segments ?? []).join("/");
 
-  const site = await getSite(session, siteSlug);
+  // Same reconnect protection the pages get. A map pulls dozens of tiles, so a
+  // route with no retry turns one dropped connection into a screen of holes.
+  const site = await queryDb("map site lookup", () => getSite(session, siteSlug));
   if (!site) {
     logPortalEvent("denied", { userId: session.userId, site: siteSlug, file });
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -37,6 +43,15 @@ export async function GET(
 
   const found = await readMapFile(siteSlug, file);
   if (!found) {
+    // A tile inside the bounding box but outside the survey footprint was never
+    // generated. 204 tells MapLibre "nothing here" without filling the console
+    // with 404s on every pan.
+    if (await isDeclaredTilePath(siteSlug, file)) {
+      return new NextResponse(null, {
+        status: 204,
+        headers: { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" },
+      });
+    }
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 

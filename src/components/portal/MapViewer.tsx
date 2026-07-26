@@ -56,7 +56,7 @@ setWorkerUrl("/vendor/maplibre-gl-worker.mjs");
 
 /** Groups mirror how the deliverables are actually discussed. */
 function groupOf(layer: MapLayer): "Imagery and models" | "Vectors" {
-  return layer.kind === "raster" ? "Imagery and models" : "Vectors";
+  return layer.kind === "vector" ? "Vectors" : "Imagery and models";
 }
 
 export default function MapViewer({ siteSlug, siteName, layers }: Props) {
@@ -84,7 +84,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   useEffect(() => {
     if (!container.current || map.current) return;
 
-    const raster = layers.find((l) => l.kind === "raster" && l.coordinates);
+    const raster = layers.find((l) => l.kind !== "vector" && l.coordinates);
     const corners = raster?.coordinates;
     if (!corners) {
       setFailed("This site has no georeferenced layers yet.");
@@ -160,7 +160,33 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     instance.on("load", () => {
       for (const layer of layers) {
-        if (layer.kind === "raster" && layer.coordinates) {
+        if (layer.kind === "tiles" && layer.tiles) {
+          /**
+           * A tile pyramid. The browser asks for the handful of 256 px squares
+           * covering the current view, so a 3 GB deliverable costs the same as a
+           * 3 MB one: about 70 KB a screen.
+           *
+           * `bounds` stops MapLibre requesting tiles outside the survey, and
+           * `maxzoom` lets it stretch the deepest level rather than asking for
+           * tiles that were never generated, so zooming past native resolution
+           * degrades smoothly instead of going blank.
+           */
+          instance.addSource(layer.key, {
+            type: "raster",
+            tiles: [`${window.location.origin}${url(layer.tiles)}`],
+            tileSize: 256,
+            minzoom: layer.minZoom ?? 0,
+            maxzoom: layer.maxZoom ?? 22,
+            ...(layer.bounds ? { bounds: layer.bounds } : {}),
+          });
+          instance.addLayer({
+            id: layer.key,
+            type: "raster",
+            source: layer.key,
+            paint: { "raster-opacity": RASTER_OPACITY, "raster-fade-duration": 0 },
+            layout: { visibility: "none" },
+          });
+        } else if (layer.kind === "raster" && layer.coordinates && layer.file) {
           instance.addSource(layer.key, {
             type: "image",
             url: url(layer.file),
@@ -176,7 +202,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             },
             layout: { visibility: "none" },
           });
-        } else {
+        } else if (layer.file) {
+          const vectorFile = layer.file;
           /**
            * Start empty and fill it in from a fetch we make ourselves.
            *
@@ -195,8 +222,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
           void (async () => {
             try {
-              const response = await fetch(url(layer.file), { credentials: "same-origin" });
-              if (!response.ok) throw new Error(`${response.status} for ${layer.file}`);
+              const response = await fetch(url(vectorFile), { credentials: "same-origin" });
+              if (!response.ok) throw new Error(`${response.status} for ${vectorFile}`);
               const data = await response.json();
               const source = instance.getSource(layer.key);
               if (source && "setData" in source) {
@@ -242,7 +269,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         "visibility",
         visible[layer.key] ? "visible" : "none",
       );
-      if (layer.kind === "raster") {
+      if (layer.kind === "raster" || layer.kind === "tiles") {
         instance.setPaintProperty(layer.key, "raster-opacity", opacity[layer.key] ?? RASTER_OPACITY);
       } else {
         instance.setPaintProperty(layer.key, "line-opacity", opacity[layer.key] ?? 0.9);
