@@ -59,3 +59,8 @@ next-env.d.ts
 # and a conflict leaves a "<name> 2.ts" beside the original. 35 of them were
 # committed once, including stale copies of the auth and session code.
 * [0-9].*
+
+# Generated tile pyramids. Reproduce with scripts/make-tiles.mjs, or export them
+# from QGIS/GDAL on the machine that holds the survey. They are committed only
+# once a site is wired to serve from them; see context.md 8j.
+/portal-data/map/*/tiles/
