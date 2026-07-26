@@ -61,7 +61,13 @@ next-env.d.ts
 # committed once, including stale copies of the auth and session code.
 * [0-9].*
 
-# Tile pyramids ARE committed: the portal serves the map from them, so they have
-# to reach Vercel. They stay small because empty tiles are never written, about
-# 1 MB for the Kotba survey. Once a site passes the 50 MB trigger in context.md
-# 8h, that site moves to object storage and gets ignored here instead.
+# Tile pyramids ARE committed, because the portal serves the map from them and
+# they have to reach Vercel. Do not add an ignore rule here: the layer route only
+# serves a tile the manifest declares, so an ignored pyramid is a 404 on a
+# deployed site with nothing wrong locally.
+#
+# Reproduce them with scripts/prepare-site.mjs, or export from QGIS/GDAL on the
+# machine that holds the survey (context.md 8j and 8k). They stay small because
+# empty tiles are never written: about 1 MB for Kotba, 17 MB for Aektanagar. Once
+# a site passes the 50 MB trigger in 8h, that site moves to object storage and
+# gets ignored here instead.
