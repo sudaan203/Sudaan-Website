@@ -11,7 +11,7 @@
  *   node scripts/portal-map-test.mjs
  */
 import sharp from "sharp";
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 mkdirSync("/tmp/rt", { recursive: true });
 let pass=0, fail=0;
 const check=(l,ok,d="")=>{console.log(`  ${ok?"ok  ":"FAIL"} ${l}${d?" — "+d:""}`); ok?pass++:fail++;};
@@ -47,11 +47,7 @@ function shpZ() {
 }
 writeFileSync("/tmp/rt/z.shp", shpZ());
 
-const src = readFileSync("scripts/prepare-map-data.mjs","utf8");
-const fnSrc = src.slice(src.indexOf("const SHAPE_NAMES"), src.indexOf("/* ------------------------------------------------------------------ run"));
-const mod = await import("data:text/javascript;base64," + Buffer.from(
-  `import {readFileSync} from "node:fs";\n${fnSrc}\nexport {readShpPolylines};`
-).toString("base64"));
+const mod = await import("./lib/geo.mjs");
 const shapes = mod.readShpPolylines("/tmp/rt/z.shp");
 check("PolyLineZ (13) is parsed", shapes.length===1 && shapes[0] && shapes[0][0]?.length===3,
       JSON.stringify(shapes[0]?.[0]?.[0]));
