@@ -46,6 +46,14 @@ import {
   tileRange,
   TILE_SIZE,
 } from "./lib/geo.mjs";
+import {
+  readManifest,
+  emptyManifest,
+  upsertLayer,
+  sortLayers,
+  writeManifest,
+  verify,
+} from "./lib/manifest.mjs";
 
 /* --------------------------------------------------------------- options --- */
 
@@ -272,20 +280,42 @@ console.log(
   `  ${written} tiles z${minZoom}-${maxZoom}, ${(bytes / 1024 / 1024).toFixed(2)} MB, ` +
     `${skipped} of them all nodata but written anyway for gapless coverage`,
 );
-console.log(`
-Add to ${join(outDir, "manifest.json")}:
+/**
+ * Register the layer, rather than printing JSON for someone to paste.
+ *
+ * This used to end with "Add to manifest.json:" and a block of text. That is how
+ * Aektanagar's terrain layer was added: by hand, at a prompt. A step that produces
+ * 342 tiles and then relies on a human to describe them correctly will eventually
+ * describe them wrongly, and nothing downstream checks.
+ */
+const manifest =
+  readManifest(outDir) ?? emptyManifest(siteSlug);
 
-  {
-    "key": "${layerKey}",
-    "kind": "dem",
-    "title": "Terrain (elevation data)",
-    "tiles": "tiles/${layerKey}/{z}/{x}/{y}.png",
-    "encoding": "mapbox",
-    "minZoom": ${minZoom},
-    "maxZoom": ${maxZoom},
-    "bounds": [${Math.min(tl[0], br[0])}, ${Math.min(tl[1], br[1])}, ${Math.max(tl[0], br[0])}, ${Math.max(tl[1], br[1])}],
-    "elevation": { "min": ${Number(min.toFixed(2))}, "max": ${Number(max.toFixed(2))} },
-    "utmZone": ${proj.zone},
-    "utmNorthern": ${proj.northern}
-  }
-`);
+upsertLayer(manifest, {
+  key: layerKey,
+  kind: "dem",
+  title: "Terrain (elevation data)",
+  tiles: `tiles/${layerKey}/{z}/{x}/{y}.png`,
+  encoding: "mapbox",
+  minZoom,
+  maxZoom,
+  bounds: [
+    Math.min(tl[0], br[0]), Math.min(tl[1], br[1]),
+    Math.max(tl[0], br[0]), Math.max(tl[1], br[1]),
+  ],
+  coordinates,
+  elevation: { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) },
+  utmZone: proj.zone,
+  utmNorthern: proj.northern,
+});
+sortLayers(manifest);
+writeManifest(outDir, manifest);
+console.log(`  registered "${layerKey}" in manifest.json (${manifest.layers.length} layers)`);
+
+const problems = verify(outDir, manifest);
+if (problems.length) {
+  console.error(`\nthe manifest does not match what is on disk:`);
+  for (const p of problems) console.error(`  ! ${p}`);
+  process.exit(1);
+}
+console.log(`  manifest matches the tiles on disk\n`);

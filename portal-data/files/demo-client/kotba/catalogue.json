@@ -1,0 +1,113 @@
+{
+  "generatedAt": "2026-07-26T17:14:02.903Z",
+  "client": {
+    "id": "9760021e-885d-57be-8bf3-465e9849373a",
+    "slug": "demo-client"
+  },
+  "site": {
+    "id": "567a0eaf-b106-5887-861e-9eda671357b6",
+    "client_id": "9760021e-885d-57be-8bf3-465e9849373a",
+    "slug": "kotba-survey",
+    "name": "Kotba Site Survey",
+    "location": "Kotba, Gandhinagar, Gujarat",
+    "district": "Gandhinagar",
+    "state": "Gujarat",
+    "area_label": "12.8 ha",
+    "industry": "Infrastructure",
+    "status": "delivered",
+    "summary": "Processed survey deliverables for this site: a terrain model spanning 337.14 to 424.25 m and 201 1 m contour lines.",
+    "is_published": true
+  },
+  "survey": {
+    "id": "1bec70ec-2366-5118-9677-f7757c545e45",
+    "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+    "label": "Baseline flight",
+    "flown_on": "2024-05-03"
+  },
+  "assets": [
+    {
+      "id": "4e202a15-b4a2-5e13-a7ca-9c02d54c6c56",
+      "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+      "survey_id": "1bec70ec-2366-5118-9677-f7757c545e45",
+      "category": "drawing",
+      "title": "Contour Map",
+      "file_name": "contour-map.pdf",
+      "storage_key": "demo-client/kotba/drawings/contour-map.pdf",
+      "mime_type": "application/pdf",
+      "description": "201 contour lines from 338 to 424 m.",
+      "size_bytes": 531678,
+      "is_published": true,
+      "sort_order": 1
+    },
+    {
+      "id": "f959568b-38a0-5a9e-8b34-29fe1d172984",
+      "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+      "survey_id": "1bec70ec-2366-5118-9677-f7757c545e45",
+      "category": "photo",
+      "title": "Contours over orthomosaic",
+      "file_name": "contours.webp",
+      "storage_key": "demo-client/kotba/imagery/contours.webp",
+      "mime_type": "image/webp",
+      "description": "201 contour lines from 338 to 424 m.",
+      "size_bytes": 119856,
+      "is_published": true,
+      "sort_order": 1
+    },
+    {
+      "id": "0b4a01fb-172d-5d9c-b0f1-2ece5c841dfc",
+      "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+      "survey_id": "1bec70ec-2366-5118-9677-f7757c545e45",
+      "category": "photo",
+      "title": "DSM preview",
+      "file_name": "dsm.webp",
+      "storage_key": "demo-client/kotba/imagery/dsm.webp",
+      "mime_type": "image/webp",
+      "description": null,
+      "size_bytes": 806250,
+      "is_published": true,
+      "sort_order": 2
+    },
+    {
+      "id": "d57ffc4e-25b4-5dad-bc36-27980239c4ce",
+      "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+      "survey_id": "1bec70ec-2366-5118-9677-f7757c545e45",
+      "category": "photo",
+      "title": "DTM preview",
+      "file_name": "dtm.webp",
+      "storage_key": "demo-client/kotba/imagery/dtm.webp",
+      "mime_type": "image/webp",
+      "description": "Bare earth terrain model, 337.14 to 424.25 m.",
+      "size_bytes": 613218,
+      "is_published": true,
+      "sort_order": 3
+    },
+    {
+      "id": "aeb26c82-7862-5be1-aa27-2acb4d7bc600",
+      "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+      "survey_id": "1bec70ec-2366-5118-9677-f7757c545e45",
+      "category": "photo",
+      "title": "Orthomosaic preview",
+      "file_name": "ortho.webp",
+      "storage_key": "demo-client/kotba/imagery/ortho.webp",
+      "mime_type": "image/webp",
+      "description": "True colour orthomosaic.",
+      "size_bytes": 126116,
+      "is_published": true,
+      "sort_order": 4
+    },
+    {
+      "id": "f65d7688-6cb1-5638-9dea-7acac8d5c0e3",
+      "site_id": "567a0eaf-b106-5887-861e-9eda671357b6",
+      "survey_id": "1bec70ec-2366-5118-9677-f7757c545e45",
+      "category": "report",
+      "title": "Topographic Survey Report",
+      "file_name": "topographic-survey-report.pdf",
+      "storage_key": "demo-client/kotba/reports/topographic-survey-report.pdf",
+      "mime_type": "application/pdf",
+      "description": null,
+      "size_bytes": 4129,
+      "is_published": true,
+      "sort_order": 1
+    }
+  ]
+}

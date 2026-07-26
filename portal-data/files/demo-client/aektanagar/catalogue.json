@@ -1,0 +1,141 @@
+{
+  "generatedAt": "2026-07-26T17:16:12.005Z",
+  "client": {
+    "id": "9760021e-885d-57be-8bf3-465e9849373a",
+    "slug": "demo-client"
+  },
+  "site": {
+    "id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+    "client_id": "9760021e-885d-57be-8bf3-465e9849373a",
+    "slug": "aektanagar-survey",
+    "name": "Aektanagar Site Survey",
+    "location": "Aektanagar, Narmada, Gujarat",
+    "district": "Narmada",
+    "state": "Gujarat",
+    "area_label": "26.1 ha",
+    "industry": "Infrastructure",
+    "status": "delivered",
+    "summary": "Processed survey deliverables for this site: surface and terrain models spanning 29.48 to 103.01 m, 108 1 m contour lines, a 5 m elevation grid and a 50.2 million point LiDAR cloud.",
+    "is_published": true
+  },
+  "survey": {
+    "id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+    "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+    "label": "Baseline flight",
+    "flown_on": "2024-07-20"
+  },
+  "assets": [
+    {
+      "id": "ab9eef4a-0d75-582b-8a79-89580f509162",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "drawing",
+      "title": "Survey Elevation Grid",
+      "file_name": "Grid.csv",
+      "storage_key": "demo-client/aektanagar/drawings/Grid.csv",
+      "mime_type": "text/csv",
+      "description": "5,449 surveyed points, 30.30 to 97.91 m.",
+      "size_bytes": 162891,
+      "is_published": true,
+      "sort_order": 1
+    },
+    {
+      "id": "c20b5c42-b940-549d-8513-aa111440899c",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "drawing",
+      "title": "Contour Map",
+      "file_name": "contour-map.pdf",
+      "storage_key": "demo-client/aektanagar/drawings/contour-map.pdf",
+      "mime_type": "application/pdf",
+      "description": "108 contour lines from 30 to 97 m.",
+      "size_bytes": 793436,
+      "is_published": true,
+      "sort_order": 2
+    },
+    {
+      "id": "6787303c-6342-57b7-b05c-3779070d79ef",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "photo",
+      "title": "Contours over orthomosaic",
+      "file_name": "contours.webp",
+      "storage_key": "demo-client/aektanagar/imagery/contours.webp",
+      "mime_type": "image/webp",
+      "description": "108 contour lines from 30 to 97 m.",
+      "size_bytes": 714278,
+      "is_published": true,
+      "sort_order": 1
+    },
+    {
+      "id": "5f8c7aba-e2b2-5deb-90aa-c8786b0045ad",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "photo",
+      "title": "DSM preview",
+      "file_name": "dsm.webp",
+      "storage_key": "demo-client/aektanagar/imagery/dsm.webp",
+      "mime_type": "image/webp",
+      "description": "Surface model, 29.48 to 103.01 m, colourised with relief shading.",
+      "size_bytes": 595606,
+      "is_published": true,
+      "sort_order": 2
+    },
+    {
+      "id": "0c3431e3-6961-5c0f-bb95-51952cb11247",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "photo",
+      "title": "DTM preview",
+      "file_name": "dtm.webp",
+      "storage_key": "demo-client/aektanagar/imagery/dtm.webp",
+      "mime_type": "image/webp",
+      "description": "Bare earth terrain model, 29.48 to 98.18 m.",
+      "size_bytes": 294748,
+      "is_published": true,
+      "sort_order": 3
+    },
+    {
+      "id": "b2a8d9cd-a482-50d5-b1da-6dec8c46b661",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "photo",
+      "title": "Orthomosaic preview",
+      "file_name": "ortho.webp",
+      "storage_key": "demo-client/aektanagar/imagery/ortho.webp",
+      "mime_type": "image/webp",
+      "description": "True colour orthomosaic. Preview reduced from 27521x27199 px.",
+      "size_bytes": 650916,
+      "is_published": true,
+      "sort_order": 4
+    },
+    {
+      "id": "b6393b5a-67a5-5753-8da2-fc29d6990069",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "report",
+      "title": "Topographic Survey Report",
+      "file_name": "topographic-survey-report.pdf",
+      "storage_key": "demo-client/aektanagar/reports/topographic-survey-report.pdf",
+      "mime_type": "application/pdf",
+      "description": null,
+      "size_bytes": 7403,
+      "is_published": true,
+      "sort_order": 1
+    },
+    {
+      "id": "604c9aa4-54b5-5152-a794-46079e62dcec",
+      "site_id": "27bb4225-2a81-597f-8f5d-f9a84dd336d1",
+      "survey_id": "083af8c2-a83a-5ef1-9a95-28886267c63e",
+      "category": "lidar",
+      "title": "LiDAR Point Cloud, survey summary",
+      "file_name": "point-cloud-summary.pdf",
+      "storage_key": "demo-client/aektanagar/uav/point-cloud-summary.pdf",
+      "mime_type": "application/pdf",
+      "description": null,
+      "size_bytes": 4997,
+      "is_published": true,
+      "sort_order": 1
+    }
+  ]
+}

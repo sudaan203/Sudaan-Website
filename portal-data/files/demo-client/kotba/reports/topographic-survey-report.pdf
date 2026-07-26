@@ -1,0 +1,275 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 3231 >>
+stream
+0.98 0.969 0.949 rg
+0 765.89 595.28 76 re f
+0.85 0.84 0.82 RG
+0.75 w
+36 765.89 m 559.28 765.89 l S
+BT
+/F2 11 Tf
+0.851 0.467 0.024 rg
+36 801.89 Td
+(SUDAAN GEO-ANALYTICS) Tj
+ET
+BT
+/F2 17 Tf
+0.18 0.18 0.18 rg
+36 785.89 Td
+(Topographic Survey Report) Tj
+ET
+BT
+/F2 11 Tf
+0.18 0.18 0.18 rg
+466.394 801.89 Td
+(Kotba Site Survey) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+444.215 785.89 Td
+(Kotba, Gandhinagar, Gujarat) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 731.89 Td
+(DELIVERABLES IN THIS SURVEY) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 727.89 m 547.28 727.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 713.89 Td
+(Surface model \(DSM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+466.489 713.89 Td
+(143.1 to 438.29 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 699.89 Td
+(Terrain model \(DTM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+460.916 699.89 Td
+(337.14 to 424.25 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 685.89 Td
+(Terrain \(elevation data\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+460.916 685.89 Td
+(337.14 to 424.25 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 671.89 Td
+(Contours) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+488.779 671.89 Td
+(338 to 424 m) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 647.89 Td
+(REFERENCE SYSTEM) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 643.89 m 547.28 643.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 629.89 Td
+(Projection) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+479.889 629.89 Td
+(UTM zone 43N) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 615.89 Td
+(Horizontal datum) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+512.191 615.89 Td
+(WGS84) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 591.89 Td
+(ELEVATION MODELS) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 587.89 m 547.28 587.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 573.89 Td
+(Surface model \(DSM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+466.489 573.89 Td
+(143.1 to 438.29 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 559.89 Td
+(Terrain model \(DTM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+460.916 559.89 Td
+(337.14 to 424.25 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 545.89 Td
+(Maximum object height) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+511.069 545.89 Td
+(14.04 m) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 531.89 Td
+(The surface model includes vegetation and structures; the terrain model is bare earth. The) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 519.89 Td
+(difference between them at any point is the height of whatever stands there.) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 493.89 Td
+(CONTOURS) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 489.89 m 547.28 489.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 475.89 Td
+(Interval) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+530.572 475.89 Td
+(1 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 461.89 Td
+(Lines delivered) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+530.562 461.89 Td
+(201) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 447.89 Td
+(Range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+488.779 447.89 Td
+(338 to 424 m) Tj
+ET
+0.85 0.84 0.82 RG
+0.75 w
+36 52 m 559.28 52 l S
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+36 38 Td
+(Every figure in this report is read from the delivered survey files. Areas are planimetric. Elevations are ellipsoidal unless a vertical datum is stated.) Tj
+ET
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+380.442 38 Td
+(Generated 2026-07-26 from the delivered survey data) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Title (Kotba Site Survey topographic survey report) /Author (Sudaan Geo-Analytics) /Producer (Sudaan Geo-Analytics portal pipeline) >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000212 00000 n 
+0000000314 00000 n 
+0000003597 00000 n 
+0000003739 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R /Info 7 0 R >>
+startxref
+3893
+%%EOF

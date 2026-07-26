@@ -1,6 +1,6 @@
 {
   "site": "aektanagar-survey",
-  "generatedAt": "2026-07-26T08:04:57.627Z",
+  "generatedAt": "2026-07-26T17:15:56.825Z",
   "layers": [
     {
       "key": "aekatanagar-dsm",
@@ -111,17 +111,6 @@
       ]
     },
     {
-      "key": "contours",
-      "kind": "vector",
-      "title": "Contours",
-      "file": "contours.geojson",
-      "featureCount": 108,
-      "elevation": {
-        "min": 30,
-        "max": 97
-      }
-    },
-    {
       "key": "terrain",
       "kind": "dem",
       "title": "Terrain (elevation data)",
@@ -159,6 +148,17 @@
       },
       "utmZone": 43,
       "utmNorthern": true
+    },
+    {
+      "key": "contours",
+      "kind": "vector",
+      "title": "Contours",
+      "file": "contours.geojson",
+      "featureCount": 108,
+      "elevation": {
+        "min": 30,
+        "max": 97
+      }
     }
   ]
 }
