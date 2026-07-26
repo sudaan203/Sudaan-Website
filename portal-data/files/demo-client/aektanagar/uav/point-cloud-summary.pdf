@@ -1,0 +1,329 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 4102 >>
+stream
+0.98 0.969 0.949 rg
+0 765.89 595.28 76 re f
+0.85 0.84 0.82 RG
+0.75 w
+36 765.89 m 559.28 765.89 l S
+BT
+/F2 11 Tf
+0.851 0.467 0.024 rg
+36 801.89 Td
+(SUDAAN GEO-ANALYTICS) Tj
+ET
+BT
+/F2 17 Tf
+0.18 0.18 0.18 rg
+36 785.89 Td
+(LiDAR Point Cloud) Tj
+ET
+BT
+/F2 11 Tf
+0.18 0.18 0.18 rg
+437.369 801.89 Td
+(Aektanagar Site Survey) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+436.727 785.89 Td
+(Aektanagar, Narmada, Gujarat) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 731.89 Td
+(THE CLOUD) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 727.89 m 547.28 727.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 713.89 Td
+(Points) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+494.341 713.89 Td
+(5,01,83,644) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 699.89 Td
+(Average density) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+488.227 699.89 Td
+(181.7 per m²) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 685.89 Td
+(Covered extent) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+492.126 685.89 Td
+(497 x 555 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 671.89 Td
+(Bounding area) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+508.272 671.89 Td
+(27.61 ha) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 657.89 Td
+(Elevation range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+455.344 657.89 Td
+(29.426 to 103.141 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 643.89 Td
+(Easting range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+438.616 643.89 Td
+(361351.54 to 361848.81) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 629.89 Td
+(Northing range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+427.471 629.89 Td
+(2420864.48 to 2421419.81) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 605.89 Td
+(FORMAT) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 601.89 m 547.28 601.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 587.89 Td
+(Specification) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+511.62 587.89 Td
+(LAS 1.2) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 573.89 Td
+(Point data format) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+541.707 573.89 Td
+(3) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 559.89 Td
+(Produced with) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+481.552 559.89 Td
+(Global Mapper) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 545.89 Td
+(Projection) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+436.441 545.89 Td
+(UTM zone 43N / WGS84) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 521.89 Td
+(CLASSIFICATION) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 517.89 m 547.28 517.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 503.89 Td
+(Ground) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+424.144 503.89 Td
+(50.6%   approx 2,53,91,696) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 489.89 Td
+(Unclassified) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+424.144 489.89 Td
+(49.4%   approx 2,47,91,948) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 473.89 Td
+(Shares are measured from a sample of 2,00,735 points, every 250th record in the file, not) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 461.89 Td
+(estimated.) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 445.89 Td
+(This cloud separates ground returns from unclassified returns. It does not carry separate) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 433.89 Td
+(vegetation, building or noise classes, so it supports bare earth extraction but not feature) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 421.89 Td
+(classification.) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 395.89 Td
+(VIEWING THE FULL CLOUD) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 391.89 m 547.28 391.89 l S
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 377.89 Td
+(The point cloud itself is 50.2 million points and is not yet viewable in the browser: that needs) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 365.89 Td
+(a dedicated point cloud viewer, which is planned. The terrain model derived from the ground) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 353.89 Td
+(returns is already on the site's map, where it drives the relief shading, the elevation readout) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 341.89 Td
+(and the measurement tools.) Tj
+ET
+0.85 0.84 0.82 RG
+0.75 w
+36 52 m 559.28 52 l S
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+36 38 Td
+(Every figure on this sheet is read from the LAS public header and a sampled pass over the point records.) Tj
+ET
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+380.442 38 Td
+(Generated 2026-07-26 from the delivered survey data) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Title (Aektanagar Site Survey LiDAR point cloud) /Author (Sudaan Geo-Analytics) /Producer (Sudaan Geo-Analytics portal pipeline) >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000212 00000 n 
+0000000314 00000 n 
+0000004468 00000 n 
+0000004610 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R /Info 7 0 R >>
+startxref
+4761
+%%EOF

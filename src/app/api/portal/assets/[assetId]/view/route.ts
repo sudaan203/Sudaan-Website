@@ -28,6 +28,21 @@ const VIEWABLE_TYPES = new Set([
   "image/webp",
   "image/gif",
   "image/avif",
+  /**
+   * Delimited text, for point grids and observation tables.
+   *
+   * Safe for the reason the types above this line are and text/html is not: a
+   * browser never executes text/csv, so serving it from our origin creates no
+   * script context. It is also sent with `Content-Disposition: inline` and
+   * `X-Content-Type-Options: nosniff`, so it cannot be re-interpreted as
+   * something executable.
+   *
+   * Added because the Aektanagar elevation grid, 5,449 real surveyed points, was
+   * being refused here with a 415 and reported to the client as "this file type
+   * cannot be previewed". CsvViewer parses and profiles it instead.
+   */
+  "text/csv",
+  "text/tab-separated-values",
 ]);
 
 /**

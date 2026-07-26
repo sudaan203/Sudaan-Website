@@ -3,83 +3,528 @@
 << /Type /Catalog /Pages 2 0 R >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
 endobj
 4 0 obj
-<< /Length 916 >>
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 6500 >>
 stream
-0.118 0.533 0.898 RG
-2 w
-72 740 m 523 740 l S
-0.85 0.88 0.92 RG
-0.5 w
-72 690 m 523 690 l S
+0.98 0.969 0.949 rg
+0 765.89 595.28 76 re f
+0.85 0.84 0.82 RG
+0.75 w
+36 765.89 m 559.28 765.89 l S
 BT
-/F2 22 Tf
-0.118 0.533 0.898 rg
-72 720 Td
-(Topographic Survey) Tj
-/F1 12 Tf
-0.3 0.34 0.4 rg
-0 -22 Td
-(Sudaan Geo-Analytics  |  Sample Deliverable) Tj
-/F1 11 Tf
-0.15 0.18 0.22 rg
-0 -34 Td
-14 TL
-(Project:        Sample Site - Northern State) Tj
-T*
-(Deliverable:    Digital Terrain Model + Spot Heights) Tj
-T*
-(Vertical datum:           EGM2008) Tj
-T*
-(Coordinate system:        UTM Zone 36N / WGS84) Tj
-T*
-(DTM grid resolution:      0.25 m) Tj
-T*
-(Checkpoint RMSE \(vert\):   0.034 m) Tj
-T*
-(Surveyed area:            480 hectares) Tj
-T*
-() Tj
-T*
-(Contents:) Tj
-T*
-(  - Bare-earth digital terrain model) Tj
-T*
-(  - Classified ground point cloud) Tj
-T*
-(  - Spot heights and breaklines) Tj
-T*
-(  - Survey control summary and residuals) Tj
-T*
-() Tj
-T*
-(This is a representative sample for demonstration purposes only.) Tj
-T*
+/F2 11 Tf
+0.851 0.467 0.024 rg
+36 801.89 Td
+(SUDAAN GEO-ANALYTICS) Tj
+ET
+BT
+/F2 17 Tf
+0.18 0.18 0.18 rg
+36 785.89 Td
+(Topographic Survey Report) Tj
+ET
+BT
+/F2 11 Tf
+0.18 0.18 0.18 rg
+437.369 801.89 Td
+(Aektanagar Site Survey) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+436.727 785.89 Td
+(Aektanagar, Narmada, Gujarat) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 731.89 Td
+(DELIVERABLES IN THIS SURVEY) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 727.89 m 547.28 727.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 713.89 Td
+(Surface model \(DSM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+466.489 713.89 Td
+(29.48 to 103.01 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 699.89 Td
+(Terrain model \(DTM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+472.061 699.89 Td
+(29.48 to 98.18 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 685.89 Td
+(Orthomosaic) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+500.495 685.89 Td
+(tiled raster) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 671.89 Td
+(Contours) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+499.924 671.89 Td
+(30 to 97 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 657.89 Td
+(Terrain \(elevation data\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+472.061 657.89 Td
+(29.48 to 98.18 m) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 633.89 Td
+(REFERENCE SYSTEM) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 629.89 m 547.28 629.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 615.89 Td
+(Projection) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+479.889 615.89 Td
+(UTM zone 43N) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 601.89 Td
+(Horizontal datum) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+512.191 601.89 Td
+(WGS84) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 587.89 Td
+(Extent, longitude) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+449.761 587.89 Td
+(73.65795 to 73.66287) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 573.89 Td
+(Extent, latitude) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+449.761 573.89 Td
+(21.88689 to 21.89135) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 549.89 Td
+(ORTHOMOSAIC) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 545.89 m 547.28 545.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 531.89 Td
+(Source resolution) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+467.601 531.89 Td
+(27521 x 27199 px) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 517.89 Td
+(Published resolution) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+497.699 517.89 Td
+(to zoom 21) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 503.89 Td
+(The orthomosaic is published at a reduced resolution because the source exceeded what the) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 491.89 Td
+(preparation machine could tile in one pass. Native resolution tiling is available on request.) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 465.89 Td
+(ELEVATION MODELS) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 461.89 m 547.28 461.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 447.89 Td
+(Surface model \(DSM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+466.489 447.89 Td
+(29.48 to 103.01 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 433.89 Td
+(Terrain model \(DTM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+472.061 433.89 Td
+(29.48 to 98.18 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 419.89 Td
+(Maximum object height) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+516.641 419.89 Td
+(4.83 m) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 405.89 Td
+(The surface model includes vegetation and structures; the terrain model is bare earth. The) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 393.89 Td
+(difference between them at any point is the height of whatever stands there.) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 367.89 Td
+(CONTOURS) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 363.89 m 547.28 363.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 349.89 Td
+(Interval) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+530.572 349.89 Td
+(1 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 335.89 Td
+(Lines delivered) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+530.562 335.89 Td
+(108) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 321.89 Td
+(Range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+499.924 321.89 Td
+(30 to 97 m) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 297.89 Td
+(ELEVATION GRID) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 293.89 m 547.28 293.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 279.89 Td
+(Points) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+522.204 279.89 Td
+(5,449) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 265.89 Td
+(Spacing) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+514.416 265.89 Td
+(5 x 5 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 251.89 Td
+(Elevation range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+460.916 251.89 Td
+(30.304 to 97.914 m) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 227.89 Td
+(LIDAR POINT CLOUD) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 223.89 m 547.28 223.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 209.89 Td
+(Points) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+494.341 209.89 Td
+(5,01,83,644) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 195.89 Td
+(Average density) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+488.227 195.89 Td
+(181.7 per m²) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 181.89 Td
+(Elevation range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+466.489 181.89 Td
+(29.43 to 103.14 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 167.89 Td
+(Extent) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+492.126 167.89 Td
+(497 x 555 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 153.89 Td
+(Format) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+444.77 153.89 Td
+(LAS 1.2, point format 3) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 139.89 Td
+(Produced with) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+481.552 139.89 Td
+(Global Mapper) Tj
+ET
+BT
+/F2 8.5 Tf
+0.45 0.45 0.45 rg
+48 119.89 Td
+(Classification) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 106.89 Td
+(  Ground) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+518.866 106.89 Td
+(50.6%) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 92.89 Td
+(  Unclassified) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+518.866 92.89 Td
+(49.4%) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 78.89 Td
+(Classification shares are from a sample of 2,00,735 points, every 250th in the file. This cloud) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 66.89 Td
+(separates ground from unclassified returns; it does not carry separate vegetation or building) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+48 54.89 Td
+(classes.) Tj
+ET
+0.85 0.84 0.82 RG
+0.75 w
+36 52 m 559.28 52 l S
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+36 38 Td
+(Every figure in this report is read from the delivered survey files. Areas are planimetric. Elevations are ellipsoidal unless a vertical datum is stated.) Tj
+ET
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+380.442 38 Td
+(Generated 2026-07-26 from the delivered survey data) Tj
 ET
 endstream
 endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
 6 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Title (Aektanagar Site Survey topographic survey report) /Author (Sudaan Geo-Analytics) /Producer (Sudaan Geo-Analytics portal pipeline) >>
 endobj
 xref
-0 7
+0 8
 0000000000 65535 f 
 0000000009 00000 n 
 0000000058 00000 n 
 0000000115 00000 n 
-0000000251 00000 n 
-0000001218 00000 n 
-0000001288 00000 n 
+0000000212 00000 n 
+0000000314 00000 n 
+0000006866 00000 n 
+0000007008 00000 n 
 trailer
-<< /Size 7 /Root 1 0 R >>
+<< /Size 8 /Root 1 0 R /Info 7 0 R >>
 startxref
-1363
+7167
 %%EOF
