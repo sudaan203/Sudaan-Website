@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Spinner } from "@/components/Pending";
+import { startNavProgress } from "@/components/NavProgress";
 
 export default function LoginForm({ next }: { next: string }) {
   const router = useRouter();
@@ -29,6 +31,10 @@ export default function LoginForm({ next }: { next: string }) {
         return;
       }
 
+      // A programmatic navigation, so nothing has been clicked for the progress
+      // bar to notice. Tell it explicitly, then leave the button disabled: the
+      // route change is still in flight and this form is about to be replaced.
+      startNavProgress();
       // Full navigation so the server layout picks up the new session cookie.
       router.replace(next);
       router.refresh();
@@ -83,8 +89,19 @@ export default function LoginForm({ next }: { next: string }) {
         </p>
       ) : null}
 
-      <button type="submit" disabled={busy} className="btn-primary w-full disabled:opacity-60">
-        {busy ? "Signing in..." : "Sign in"}
+      <button
+        type="submit"
+        disabled={busy}
+        className="btn-primary w-full disabled:cursor-wait disabled:opacity-60"
+      >
+        {busy ? (
+          <>
+            <Spinner />
+            Signing in
+          </>
+        ) : (
+          "Sign in"
+        )}
       </button>
     </form>
   );

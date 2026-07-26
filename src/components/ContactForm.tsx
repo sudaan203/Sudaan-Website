@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { sectors } from "@/lib/site";
+import { Spinner } from "@/components/Pending";
 
 const industriesList = [...sectors, "Other"];
 
@@ -166,9 +167,16 @@ export default function ContactForm() {
       <button
         type="submit"
         disabled={status === "submitting"}
-        className="btn-primary mt-6 w-full disabled:opacity-60"
+        className="btn-primary mt-6 w-full disabled:cursor-wait disabled:opacity-60"
       >
-        {status === "submitting" ? "Sending..." : "Request Consultation"}
+        {status === "submitting" ? (
+          <>
+            <Spinner />
+            Sending your request
+          </>
+        ) : (
+          "Request Consultation"
+        )}
       </button>
       <p className="mt-3 text-center text-xs text-ink/50">
         We typically respond within one business day.

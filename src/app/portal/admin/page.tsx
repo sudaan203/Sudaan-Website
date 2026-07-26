@@ -84,7 +84,9 @@ export default async function OwnerConsole() {
       </header>
 
       {/* ---------------- Clients ---------------- */}
-      <section className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      {/* items-start: without it each panel stretches to match the taller column
+          beside it, leaving a short list sitting in a tall empty card. */}
+      <section className="grid items-start gap-6 lg:grid-cols-[1fr_320px]">
         <div className="surface overflow-hidden">
           <h2 className="border-b border-ink/[0.08] px-5 py-3 text-sm font-semibold text-ink-900">
             Clients
@@ -119,7 +121,9 @@ export default async function OwnerConsole() {
       </section>
 
       {/* ---------------- People ---------------- */}
-      <section className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      {/* items-start: without it each panel stretches to match the taller column
+          beside it, leaving a short list sitting in a tall empty card. */}
+      <section className="grid items-start gap-6 lg:grid-cols-[1fr_320px]">
         <div className="surface overflow-hidden">
           <h2 className="border-b border-ink/[0.08] px-5 py-3 text-sm font-semibold text-ink-900">
             People
@@ -248,7 +252,9 @@ export default async function OwnerConsole() {
       </section>
 
       {/* ---------------- Sites ---------------- */}
-      <section className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      {/* items-start: without it each panel stretches to match the taller column
+          beside it, leaving a short list sitting in a tall empty card. */}
+      <section className="grid items-start gap-6 lg:grid-cols-[1fr_320px]">
         <div className="surface overflow-hidden">
           <h2 className="border-b border-ink/[0.08] px-5 py-3 text-sm font-semibold text-ink-900">
             Sites

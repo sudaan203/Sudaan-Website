@@ -18,7 +18,16 @@ export default function BackToTop() {
       {visible && (
         <motion.button
           type="button"
-          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          onClick={() =>
+            window.scrollTo({
+              top: 0,
+              // A long smooth scroll is exactly the motion people who set this
+              // preference are trying to avoid; jump instead.
+              behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+                ? "auto"
+                : "smooth",
+            })
+          }
           aria-label="Back to top"
           initial={{ opacity: 0, scale: 0.8, y: 12 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}

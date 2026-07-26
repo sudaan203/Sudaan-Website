@@ -8,6 +8,8 @@ import BackgroundDecor from "@/components/BackgroundDecor";
 import ScrollProgress from "@/components/ScrollProgress";
 import BackToTop from "@/components/BackToTop";
 import SiteChrome from "@/components/SiteChrome";
+import NavProgress from "@/components/NavProgress";
+import MotionProvider from "@/components/MotionProvider";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -102,23 +104,36 @@ export default function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
-        <SiteChrome
-          top={
-            <>
-              <BackgroundDecor />
-              <ScrollProgress />
-              <Navbar />
-            </>
-          }
-          bottom={
-            <>
-              <Footer />
-              <BackToTop />
-            </>
-          }
+        {/* Outside SiteChrome so the portal gets it too: the portal is where
+            navigations actually take time. */}
+        <NavProgress />
+
+        <a
+          href="#main"
+          className="sr-only z-[70] focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:rounded-full focus:bg-accent-600 focus:px-5 focus:py-2.5 focus:text-sm focus:font-semibold focus:text-white"
         >
-          {children}
-        </SiteChrome>
+          Skip to content
+        </a>
+
+        <MotionProvider>
+          <SiteChrome
+            top={
+              <>
+                <BackgroundDecor />
+                <ScrollProgress />
+                <Navbar />
+              </>
+            }
+            bottom={
+              <>
+                <Footer />
+                <BackToTop />
+              </>
+            }
+          >
+            {children}
+          </SiteChrome>
+        </MotionProvider>
       </body>
     </html>
   );

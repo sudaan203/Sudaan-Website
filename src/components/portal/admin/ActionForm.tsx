@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { Spinner } from "@/components/Pending";
 import type { ActionResult } from "@/lib/portal/admin-actions";
 
 type Action = (prev: ActionResult | null, formData: FormData) => Promise<ActionResult>;
@@ -28,12 +29,14 @@ export default function ActionForm({
 }) {
   const [result, formAction, pending] = useActionState<ActionResult | null, FormData>(action, null);
 
+  const focusRing =
+    "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:ring-offset-2 focus-visible:ring-offset-panel";
   const buttonClass =
     variant === "primary"
-      ? "btn-primary w-full disabled:opacity-60"
+      ? `btn-primary w-full disabled:cursor-wait disabled:opacity-60`
       : variant === "danger"
-        ? "rounded-full border border-signal/40 px-3 py-1.5 text-xs font-semibold text-signal-600 transition-colors hover:bg-signal/10 disabled:opacity-60"
-        : "rounded-full border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-900 transition-colors hover:border-accent/50 hover:bg-accent-50 disabled:opacity-60";
+        ? `inline-flex items-center gap-1.5 rounded-full border border-signal/40 px-3 py-1.5 text-xs font-semibold text-signal-600 transition-colors hover:bg-signal/10 disabled:cursor-wait disabled:opacity-60 ${focusRing}`
+        : `inline-flex items-center gap-1.5 rounded-full border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-900 transition-colors hover:border-accent/50 hover:bg-accent-50 disabled:cursor-wait disabled:opacity-60 ${focusRing}`;
 
   return (
     <form
@@ -50,16 +53,28 @@ export default function ActionForm({
       {children}
 
       <button type="submit" disabled={pending} className={buttonClass}>
-        {pending ? "Working..." : submitLabel}
+        {pending ? (
+          <>
+            <Spinner className={variant === "primary" ? "" : "h-3.5 w-3.5"} />
+            Saving
+          </>
+        ) : (
+          submitLabel
+        )}
       </button>
 
       {result ? (
         <p
           role="status"
-          className={`mt-2 text-xs leading-relaxed ${
+          className={`mt-2 flex items-start gap-1.5 text-xs leading-relaxed ${
             result.ok ? "text-accent-700" : "text-signal-600"
           }`}
         >
+          {/* A tick or a cross, so the outcome is readable at a glance and does
+              not depend on telling two similar colours apart. */}
+          <span aria-hidden className="mt-px font-bold">
+            {result.ok ? "✓" : "✗"}
+          </span>
           {result.message}
         </p>
       ) : null}

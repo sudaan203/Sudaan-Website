@@ -13,6 +13,18 @@
  */
 export type PortalRole = "owner" | "admin" | "client";
 
+/**
+ * The only correct way to ask "is this Sudaan staff?".
+ *
+ * Comparing against "admin" alone silently excludes every Google owner, and
+ * comparing against "owner" alone excludes the transitional password logins.
+ * The dashboard had the first bug: owners saw a client's greeting and no
+ * indication of which client each site belonged to.
+ */
+export function isOwnerRole(role: PortalRole): boolean {
+  return role !== "client";
+}
+
 export type AssetCategory =
   | "report"
   | "drawing"
