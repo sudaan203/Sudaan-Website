@@ -277,6 +277,99 @@ Fixed:
 Known and accepted: rate limiting is per serverless instance, not global; logs
 carry email addresses; `script-src` allows inline.
 
+## 8f. The reference dashboard, from the walkthrough video
+
+The portal is modelled on the **EnerComp "Monuments" dashboard** built for the
+Directorate of Archaeology and Museums, Pune Division. The 11 minute walkthrough
+is `05. Dashboard_Overview_video.mp4` in the repo root: 424 MB, gitignored, so it
+is on this machine only.
+
+Everything below was read off the actual frames on 26 Jul 2026, not remembered.
+**Eight stills are committed in `docs/reference/dashboard/`** with their own
+README, so you can look instead of reading prose. Extract more with:
+
+```bash
+ffmpeg -i "05. Dashboard_Overview_video.mp4" -vf "fps=1/20,scale=1280:-1" -q:v 4 out/f%03d.jpg
+```
+
+The committed stills have the account email redacted. They are another company's
+product, captured for design reference, in a public repo: keep that in mind
+before adding more.
+
+**Chrome.** Teal top bar, hamburger, the client's crest, account email at top
+right. A left icon rail that is the whole navigation. Footer credits EnerComp.
+Their palette is teal and green: **do not copy it**, we are warm light (section 3).
+
+**Landing: "Monuments".** Three cascading filters (Division `PUNE` → District
+`KOLHAPUR` → monument name) with FILTER and RESET, plus ADD MONUMENT top right.
+Below, a four column card grid. Each card: name, village/taluka/district address,
+then District, Division, **Last Modified**, **Data Acquisition on**, **Created**,
+and a row of small action buttons ending in a red delete.
+
+**Left rail, per monument.** Monuments, OrthoMaps, Comparison, PointClouds,
+Video, REPORT_WRITING, UAV & DGPS DATA, LIDARDATA, ENGINEERING_DRAWINGS,
+3D_MODELLING, COFFEETABLE_DATA, CONSERVATION_WORK, CONTROL_AREA, WALKTHROUGH.
+
+**OrthoMaps is the centre of the product**, and it is a real WebGIS, not an
+image viewer:
+
+- `SELECT DATE` picks the acquisition, so the same monument holds several surveys.
+- A layer tree on the right, in groups: **Drawing**; **Layers**
+  (Drainage_Pattern, Contours1, GCP1); **Drone Imagery** (Orthomosaic.tif, DTM,
+  DSM); **Base layers** (OSM, Google Maps).
+- Every layer has a checkbox, its own **opacity slider**, and a delete control.
+  Toggling DTM/DSM swaps the green/yellow elevation raster over the ortho.
+- Contours render **with elevation labels** (777 m, 782 m …) on top of the ortho.
+- A draw and measure toolbar: select, point, line, polygon, rectangle, measure.
+- Zoom buttons, live lat/long readout, and **Page size + Resolution + Export
+  PDF**, plus Save.
+
+**PointClouds** is **Potree**, unmistakably: a "SELECT A POINT CLOUD TO VIEW"
+dropdown, then point budget, field of view, Eye-Dome-Lighting, splat quality,
+measurement tools and clipping.
+
+**Video and WALKTHROUGH** are YouTube embeds behind a SELECT VIDEO dropdown,
+titled like `Kukdeshwar_Temple_FrontView`. The walkthrough is a flythrough of the
+point cloud.
+
+**REPORT_WRITING** opens a File Viewer: the browser PDF viewer with a page
+thumbnail rail, on a 42 page report.
+
+**The data tabs** (ENGINEERING_DRAWINGS, CONTROL_AREA, LIDARDATA, and the rest)
+are all the same table: `No | File Name | Action`, with **DOWNLOAD** and **VIEW**
+per row. A `.dwg` row gets DOWNLOAD only, because it cannot be previewed.
+
+**Comparison was not captured** in the frames sampled, so its behaviour is the
+one thing here that is inferred rather than seen. Intent is comparing two
+acquisition dates. Check the video before building it.
+
+### How ours differs, deliberately
+
+- **View only.** Their every file row offers DOWNLOAD. Ours never does: the
+  client asked for view only, and `AssetViewer` plus the inline-only asset route
+  exist to hold that line.
+- **Multi tenant.** Theirs serves one organisation. Ours isolates every client
+  from every other, which is why visibility lives in SQL (`db/queries.ts`) and a
+  miss answers 404.
+- **Management is not in the client UI.** They put ADD MONUMENT, edit and delete
+  next to the data. Ours lives in the owner console, so a client sees only their
+  deliverables.
+
+### What "working on the dashboard" means next
+
+Built already: the monument list (our `/portal` site cards), per site tabs, the
+file tables, the PDF and image viewer. What the reference has and we do not:
+
+1. **The map viewer.** The biggest gap by far, and the thing that makes their
+   portal feel like a product: tiled ortho/DSM/DTM, a layer tree with opacity,
+   base maps, contour labels, measurement. Phase 2 in the plan.
+2. **Survey date switching** on a site that has more than one acquisition. The
+   `surveys` table already exists for this.
+3. **Point cloud viewer**, Potree in an iframe. Phase 3.
+4. **Comparison** between two dates. We already have `CompareSlider` on the
+   marketing site, which is most of the interaction.
+5. **Video tab**, unlisted YouTube embeds. `videos` table exists, page is a stub.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)
