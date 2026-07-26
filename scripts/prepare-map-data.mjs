@@ -30,8 +30,56 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SITE = "kotba-survey";
+
+/**
+ * Where each site's raw deliverables live.
+ *
+ * Adding a site is a data change here, not a code change. Paths are relative to
+ * the repo root and all of them are gitignored, so this only runs on a machine
+ * that holds the survey.
+ *
+ * Usage:
+ *   node scripts/prepare-map-data.mjs            all configured sites
+ *   node scripts/prepare-map-data.mjs kotba-survey   just one
+ */
+const SITES = {
+  "kotba-survey": {
+    rasters: [
+      { key: "dsm", title: "Surface model (DSM)", tif: "DSM/Kotba_DEM.tif" },
+      { key: "dtm", title: "Terrain model (DTM)", tif: "DTM/Kotba_DTM.tif" },
+    ],
+    vectors: [
+      { key: "contours", title: "Contours", shapefile: "Contours/Kotba Contours" },
+    ],
+  },
+};
+
+const requested = process.argv[2];
+if (requested && !SITES[requested]) {
+  console.error(`unknown site "${requested}". Configured: ${Object.keys(SITES).join(", ")}`);
+  process.exit(1);
+}
+const SITE = requested ?? Object.keys(SITES)[0];
+const CONFIG = SITES[SITE];
 const OUT = join(root, "portal-data", "map", SITE);
+
+/**
+ * Is this a real ground height, or a nodata marker?
+ *
+ * The previous test was `v < -1e4 || v > 1e5`, which lets through -9999: the
+ * single most common nodata sentinel in DEMs, and one this pipeline had never
+ * met only because the Kotba export happens to use NaN. A -9999 filled corner
+ * would have been drawn as terrain and dragged the reported minimum with it.
+ *
+ * Bounding by what an elevation on this planet can actually be catches every
+ * sentinel in one rule: -9999, -32767, -32768 and -3.4e38 are all outside it,
+ * and so is anything else a package invents. The floor allows for ellipsoidal
+ * heights, which run below sea level where the geoid separation is large.
+ */
+const MIN_ELEVATION_M = -500;
+const MAX_ELEVATION_M = 9000;
+const isElevation = (v) =>
+  Number.isFinite(v) && v > MIN_ELEVATION_M && v < MAX_ELEVATION_M;
 
 /* ------------------------------------------------------------------ UTM --- */
 
@@ -162,19 +210,42 @@ function readDbf(path) {
   return { fields, rows };
 }
 
-/** Polyline geometry from a .shp. Shape type 3 only, which is what contours are. */
+/** Human names, so an unsupported file says what it actually contains. */
+const SHAPE_NAMES = {
+  0: "Null", 1: "Point", 3: "PolyLine", 5: "Polygon", 8: "MultiPoint",
+  11: "PointZ", 13: "PolyLineZ", 15: "PolygonZ", 18: "MultiPointZ",
+  21: "PointM", 23: "PolyLineM", 25: "PolygonM", 28: "MultiPointM",
+};
+
+/**
+ * Line geometry from a .shp.
+ *
+ * Handles PolyLine (3), PolyLineZ (13) and PolyLineM (23), plus the polygon
+ * equivalents read as closed lines. The Z and M variants carry extra arrays
+ * *after* the XY points, so the part and point layout this reads is byte for
+ * byte identical and only the record length differs.
+ *
+ * That matters more than it sounds: contours exported from most survey packages
+ * are PolyLineZ, because each line carries its height. Reading only type 3
+ * would have produced an empty layer with no error at all for most real files.
+ * The Kotba export happens to be plain PolyLine, so nothing here caught it.
+ */
 function readShpPolylines(path) {
   const buf = readFileSync(path);
   const fileLength = buf.readInt32BE(24) * 2; // header stores 16 bit words
   const shapes = [];
+  const seen = new Map();
+
+  const LINE_TYPES = new Set([3, 13, 23, 5, 15, 25]);
 
   let pos = 100; // past the file header
   while (pos < fileLength) {
     const contentLength = buf.readInt32BE(pos + 4) * 2;
     const body = pos + 8;
     const type = buf.readInt32LE(body);
+    seen.set(type, (seen.get(type) ?? 0) + 1);
 
-    if (type === 3) {
+    if (LINE_TYPES.has(type)) {
       const numParts = buf.readInt32LE(body + 36);
       const numPoints = buf.readInt32LE(body + 40);
       const partsAt = body + 44;
@@ -202,6 +273,21 @@ function readShpPolylines(path) {
     }
     pos = body + contentLength;
   }
+
+  // Say what was skipped. Silently dropping geometry is how a layer ends up
+  // half drawn with nobody noticing.
+  const skipped = [...seen].filter(([type]) => !LINE_TYPES.has(type) && type !== 0);
+  if (skipped.length > 0) {
+    console.warn(
+      `     SKIPPED unsupported geometry in ${path}: ` +
+        skipped.map(([t, n]) => `${SHAPE_NAMES[t] ?? `type ${t}`} x${n}`).join(", "),
+    );
+  }
+  const used = [...seen].filter(([type]) => LINE_TYPES.has(type));
+  console.log(
+    `     geometry: ${used.map(([t, n]) => `${SHAPE_NAMES[t] ?? t} x${n}`).join(", ") || "none"}`,
+  );
+
   return shapes;
 }
 
@@ -219,10 +305,7 @@ function requireFile(path, what) {
 }
 
 // ---- rasters -----------------------------------------------------------
-const rasters = [
-  { key: "dsm", title: "Surface model (DSM)", tif: "DSM/Kotba_DEM.tif", zFactor: 1.4 },
-  { key: "dtm", title: "Terrain model (DTM)", tif: "DTM/Kotba_DTM.tif", zFactor: 1.4 },
-];
+const rasters = CONFIG.rasters;
 
 /** Warm elevation ramp, matching the marketing site's DEM renders. */
 const ramp = [
@@ -253,8 +336,24 @@ for (const raster of rasters) {
 
   const proj = readProjection(prj);
   const world = readWorldFile(tfw);
-  const image = sharp(tif);
+  const image = sharp(tif, { limitInputPixels: false });
   const meta = await image.metadata();
+
+  /**
+   * Refuse anything that is not a single band of floating point height.
+   *
+   * Point this at an orthomosaic and, without the check, it reads the red
+   * channel as metres and reports an "elevation range" of 120 to 120. No throw,
+   * no warning, just a nonsense layer. An ortho is a colour image and belongs on
+   * a different path, not this one.
+   */
+  if (meta.channels !== 1 || meta.depth !== "float") {
+    throw new Error(
+      `${raster.tif} is ${meta.channels} channel(s) at depth ${meta.depth}, ` +
+        `not a single band float elevation model. If this is an orthomosaic it ` +
+        `needs the imagery path, which is not built yet (see context.md 8h).`,
+    );
+  }
   const { coordinates, utm } = rasterCorners(world, meta.width, meta.height, proj);
 
   // Single band float elevation -> warm colourised RGBA, nodata transparent.
@@ -283,7 +382,7 @@ for (const raster of rasters) {
   let min = Infinity;
   let max = -Infinity;
   for (const v of floats) {
-    if (!Number.isFinite(v) || v < -1e4 || v > 1e5) continue;
+    if (!isElevation(v)) continue;
     if (v < min) min = v;
     if (v > max) max = v;
   }
@@ -303,7 +402,7 @@ for (const raster of rasters) {
   const sample = [];
   for (let i = 0; i < floats.length; i += Math.max(1, Math.floor(floats.length / 200000))) {
     const v = floats[i];
-    if (Number.isFinite(v) && v >= -1e4 && v <= 1e5) sample.push(v);
+    if (isElevation(v)) sample.push(v);
   }
   sample.sort((a, b) => a - b);
   const lo = sample[Math.floor(sample.length * 0.02)] ?? min;
@@ -314,7 +413,7 @@ for (const raster of rasters) {
   const rgba = Buffer.alloc(pixels * 4);
   for (let i = 0; i < pixels; i += 1) {
     const v = floats[i];
-    const nodata = !Number.isFinite(v) || v < -1e4 || v > 1e5;
+    const nodata = !isElevation(v);
     if (nodata) continue; // leaves 0,0,0,0
     const [r, g, b] = elevColor(Math.min(1, Math.max(0, (v - lo) / span)));
     rgba[i * 4] = r;
@@ -347,7 +446,8 @@ for (const raster of rasters) {
 
 // ---- contours ----------------------------------------------------------
 {
-  const base = join(root, "Contours", "Kotba Contours");
+  const vector = CONFIG.vectors[0];
+  const base = join(root, vector.shapefile);
   requireFile(`${base}.shp`, "contour shapefile");
   requireFile(`${base}.dbf`, "contour attributes");
   requireFile(`${base}.prj`, "contour projection");
@@ -463,9 +563,9 @@ for (const raster of rasters) {
   writeFileSync(join(OUT, file), JSON.stringify({ type: "FeatureCollection", features }));
 
   manifest.layers.push({
-    key: "contours",
+    key: vector.key,
     kind: "vector",
-    title: "Contours",
+    title: vector.title,
     file,
     featureCount: features.length,
     elevation: { min: Math.min(...elevations), max: Math.max(...elevations) },
