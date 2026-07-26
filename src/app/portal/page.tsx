@@ -2,7 +2,8 @@ import Link from "next/link";
 import { requireSession } from "@/lib/portal/auth";
 import { getClient, listAssetCounts, listSites, listSurveys } from "@/lib/portal/store";
 import { mapPooled, queryDb } from "@/lib/portal/db/client";
-import { categoryByKey, type AssetCategory } from "@/lib/portal/types";
+import { LinkSpinner } from "@/components/Pending";
+import { categoryByKey, isOwnerRole, type AssetCategory } from "@/lib/portal/types";
 
 /** Fail fast instead of hanging at Vercel's 300 second ceiling. */
 export const maxDuration = 30;
@@ -17,6 +18,7 @@ function formatDate(iso: string) {
 
 export default async function PortalDashboard() {
   const session = await requireSession();
+  const isOwner = isOwnerRole(session.role);
 
   // Wrapped as one unit so a pooled connection that died between requests costs
   // a reconnect rather than an error page. See queryDb.
@@ -29,7 +31,7 @@ export default async function PortalDashboard() {
         site,
         surveys: await listSurveys(site.id),
         counts: await listAssetCounts(session, site.id),
-        owner: session.role === "admin" ? await getClient(site.clientId) : null,
+        owner: isOwner ? await getClient(site.clientId) : null,
       })),
     };
   });
@@ -38,14 +40,15 @@ export default async function PortalDashboard() {
     <div className="container-px py-10 sm:py-14">
       <div className="mb-10">
         <span className="eyebrow">
-          {session.role === "admin" ? "Admin view" : (client?.name ?? "Your account")}
+          {isOwner ? "Owner view, every client" : (client?.name ?? "Your account")}
         </span>
         <h1 className="mt-3 text-3xl font-bold tracking-tight text-ink-900 sm:text-4xl">
-          Your sites
+          {isOwner ? "All sites" : "Your sites"}
         </h1>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-ink/70">
-          Every site we have surveyed and processed for you. Open a site to view
-          its reports, drawings and imagery in the browser.
+          {isOwner
+            ? "Every site across every client, including ones not yet published. This is what we see, not what a client sees."
+            : "Every site we have surveyed and processed for you. Open a site to view its reports, drawings and imagery in the browser."}
         </p>
       </div>
 
@@ -122,7 +125,8 @@ export default async function PortalDashboard() {
                   </div>
                 ) : null}
 
-                <span className="mt-6 text-sm font-semibold text-accent-600 group-hover:text-accent-700">
+                <span className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-accent-600 group-hover:text-accent-700">
+                  <LinkSpinner className="h-3.5 w-3.5" />
                   Open site
                 </span>
               </Link>

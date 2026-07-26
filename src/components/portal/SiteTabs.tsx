@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LinkSpinner } from "@/components/Pending";
 
 type Tab = { href: string; label: string; count: number | null };
 
@@ -34,7 +35,10 @@ export default function SiteTabs({ tabs }: { tabs: Tab[] }) {
                     : "border border-ink/10 bg-panel text-ink/80 hover:border-accent/40 hover:text-accent-700 lg:border-transparent lg:bg-transparent",
                 ].join(" ")}
               >
-                <span>{tab.label}</span>
+                <span className="flex items-center gap-2">
+                  <LinkSpinner className="h-3.5 w-3.5" />
+                  {tab.label}
+                </span>
                 {tab.count !== null ? (
                   <span
                     className={[

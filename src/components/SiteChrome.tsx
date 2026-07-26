@@ -32,7 +32,9 @@ export default function SiteChrome({
   return (
     <>
       {top}
-      <main className="relative min-h-screen pt-20">{children}</main>
+      <main id="main" className="relative min-h-screen pt-20">
+        {children}
+      </main>
       {bottom}
     </>
   );
