@@ -8,6 +8,20 @@
 
 html {
   scroll-behavior: smooth;
+  /* The navbar is fixed and 5rem tall, so an anchor target used to land
+     underneath it with its heading hidden. */
+  scroll-padding-top: 6.5rem;
+}
+
+/* A visible focus ring on everything interactive. Several controls had none, so
+   keyboard users could not tell where they were. outline follows the element's
+   own shape, which a ring utility does not. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: 2px solid #d97706;
+  outline-offset: 2px;
 }
 
 body {
@@ -78,6 +92,15 @@ body {
 
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-full px-6 py-3 text-sm font-semibold transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:ring-offset-2 focus-visible:ring-offset-paper;
+  }
+
+  /* A disabled button that still lifts on hover reads as clickable when it is
+     not, which is the moment people click again and double submit. */
+  .btn:disabled {
+    /* Forced, because the hover utilities on .btn-primary would otherwise still
+       win and lift a button that cannot be pressed. cursor-wait is left intact
+       so the pointer keeps saying "in progress". */
+    @apply !translate-y-0 !shadow-none;
   }
 
   .btn-primary {

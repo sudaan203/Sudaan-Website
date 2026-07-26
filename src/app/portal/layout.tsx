@@ -22,7 +22,11 @@ export default async function PortalLayout({
   return (
     <div className="flex min-h-screen flex-col bg-paper">
       {session ? <PortalHeader session={session} /> : null}
-      {children}
+      {/* The portal had no main landmark, so "skip to content" and screen reader
+          navigation had nothing to target. */}
+      <main id="main" className="flex flex-1 flex-col">
+        {children}
+      </main>
     </div>
   );
 }

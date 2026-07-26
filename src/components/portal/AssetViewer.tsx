@@ -38,24 +38,38 @@ export default function AssetViewer({
     return (
       <figure className="surface overflow-hidden">
         <div className={zoomed ? "max-h-[75vh] overflow-auto bg-mist" : "bg-mist"}>
-          {/* Plain img on purpose: next/image would cache private data on a shared CDN. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={src}
-            alt={title}
-            draggable={false}
-            onContextMenu={(event) => event.preventDefault()}
+          {/*
+            A button rather than a click handler on the image. The zoom was
+            mouse only: not focusable, not reachable by keyboard, and invisible
+            to a screen reader, which is a real barrier on the page where the
+            client's actual deliverable lives.
+          */}
+          <button
+            type="button"
             onClick={() => setZoomed((v) => !v)}
+            aria-pressed={zoomed}
+            aria-label={zoomed ? `Fit ${title} to the screen` : `View ${title} at full size`}
             className={[
-              "select-none",
-              zoomed
-                ? "max-w-none cursor-zoom-out"
-                : "max-h-[75vh] w-full cursor-zoom-in object-contain",
+              "block focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-600",
+              zoomed ? "cursor-zoom-out" : "w-full cursor-zoom-in",
             ].join(" ")}
-          />
+          >
+            {/* Plain img on purpose: next/image would cache private data on a shared CDN. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={src}
+              alt={title}
+              draggable={false}
+              onContextMenu={(event) => event.preventDefault()}
+              className={[
+                "select-none",
+                zoomed ? "max-w-none" : "max-h-[75vh] w-full object-contain",
+              ].join(" ")}
+            />
+          </button>
         </div>
         <figcaption className="border-t border-ink/[0.08] px-4 py-2.5 text-xs text-ink/55">
-          Click the image to {zoomed ? "fit it to the screen" : "view it at full size"}.
+          Select the image to {zoomed ? "fit it to the screen" : "view it at full size"}.
         </figcaption>
       </figure>
     );

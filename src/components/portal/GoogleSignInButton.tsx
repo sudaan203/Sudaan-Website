@@ -1,4 +1,7 @@
-import Link from "next/link";
+"use client";
+
+import { useState } from "react";
+import { Spinner } from "@/components/Pending";
 
 /** Google's mark, inlined so the button works with no external requests. */
 function GoogleMark() {
@@ -24,16 +27,42 @@ function GoogleMark() {
   );
 }
 
+/**
+ * A plain anchor, not next/link: this leaves the app for Google's consent
+ * screen, so a client side route transition is the wrong model.
+ *
+ * That handshake is the slowest moment in the whole product, several seconds of
+ * redirects before Google draws anything. The button holds a pending state until
+ * the document is replaced, so nobody sits looking at an unchanged screen
+ * wondering whether the click landed, and nobody double clicks into a second
+ * OAuth handshake that invalidates the first.
+ */
 export default function GoogleSignInButton({ next }: { next: string }) {
+  const [leaving, setLeaving] = useState(false);
   const href = `/api/auth/google/start?next=${encodeURIComponent(next)}`;
+
   return (
-    <Link
+    <a
       href={href}
-      prefetch={false}
-      className="flex w-full items-center justify-center gap-3 rounded-full border border-ink/15 bg-panel px-6 py-3 text-sm font-semibold text-ink-900 transition-all duration-300 hover:-translate-y-0.5 hover:border-accent/50 hover:shadow-glow"
+      onClick={(event) => {
+        // Let the browser handle new tab and modified clicks normally, and do
+        // not lock the button in a pending state it can never leave.
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+        if (leaving) {
+          event.preventDefault();
+          return;
+        }
+        setLeaving(true);
+      }}
+      aria-disabled={leaving}
+      className={`flex w-full items-center justify-center gap-3 rounded-full border border-ink/15 bg-panel px-6 py-3 text-sm font-semibold text-ink-900 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-600 focus-visible:ring-offset-2 focus-visible:ring-offset-paper ${
+        leaving
+          ? "cursor-wait text-ink/70"
+          : "hover:-translate-y-0.5 hover:border-accent/50 hover:shadow-glow"
+      }`}
     >
-      <GoogleMark />
-      Continue with Google
-    </Link>
+      {leaving ? <Spinner /> : <GoogleMark />}
+      {leaving ? "Taking you to Google" : "Continue with Google"}
+    </a>
   );
 }

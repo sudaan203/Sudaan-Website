@@ -206,6 +206,33 @@ moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-pl
   Cloud, publish the consent screen, set the env vars in Vercel, and have a human complete
   one real Google sign in (cannot be automated from here).
 
+## 8d. Loading feedback and the review pass (26 Jul 2026)
+
+Every click that waits on the server now says so, because a portal page rendered
+against a database in Sydney can take a second or two and an unchanged screen
+reads as a dead button.
+
+- **`loading.tsx` per portal segment** is the main mechanism. Next renders the
+  skeleton the instant a link is clicked, so the console's shape appears
+  immediately instead of a blank page. Segments each need their own, otherwise a
+  nested route falls back to an ancestor and redraws the whole shell, including
+  the tab you just clicked.
+- **`NavProgress`** is the top bar, for routes with no skeleton. It waits 140ms
+  before appearing so fast navigations do not flash, creeps to 90%, and only
+  completes on a real route change. The cases that strand this kind of component
+  are a link to the current page and the back button; both are covered by
+  `scripts/portal-ux-test.mjs`.
+- **`useLinkStatus` / `useFormStatus`** drive the per control spinners
+  (`src/components/Pending.tsx`). Reading pending state from the platform rather
+  than a hand rolled `useState` means it cannot drift from the navigation.
+- **Framer Motion ignored `prefers-reduced-motion`.** The CSS block in
+  globals.css only reaches CSS transitions, and every animation here is
+  JavaScript driven inline transforms. `MotionProvider` fixes it globally.
+- **The dashboard tested `role === "admin"`**, which is the Phase 1 name. Google
+  owners are `"owner"`, so owners saw a client's greeting and no client
+  attribution on the cards. Use `isOwnerRole()` from types.ts, never a bare
+  comparison.
+
 ## 8e. Security review (26 Jul 2026)
 
 Reviewed as an account-holding app: auth, tenant isolation, the file route, the
