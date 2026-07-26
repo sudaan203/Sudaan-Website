@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { hit } from "@/lib/portal/rate-limit";
+import { clientIp } from "@/lib/portal/request-ip";
 
 export const runtime = "nodejs";
 
@@ -16,12 +18,52 @@ type ContactPayload = {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Generous for a human filling in a consultation form, useless for a script. */
+const MAX_PER_IP = 5;
+const CONTACT_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * Caps on what we will accept, because every field here ends up in an email we
+ * send and a log we read. Without them a single request can post megabytes.
+ */
+const LIMITS: Record<string, number> = {
+  name: 120,
+  company: 160,
+  email: 254,
+  phone: 40,
+  sector: 80,
+  projectType: 80,
+  message: 5000,
+};
+
 export async function POST(request: Request) {
+  // This endpoint is public, unauthenticated, and on its way to sending mail
+  // through a paid API. The honeypot alone stops naive bots and nothing else:
+  // anyone who looks at the request once can replay it in a loop, running up a
+  // Resend bill and burying real enquiries.
+  const ip = clientIp(request);
+  if (hit(`contact|${ip}`, MAX_PER_IP, CONTACT_WINDOW_MS)) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again shortly." },
+      { status: 429 },
+    );
+  }
+
   let body: ContactPayload;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+  }
+
+  for (const [field, max] of Object.entries(LIMITS)) {
+    const value = body[field as keyof ContactPayload];
+    if (typeof value === "string" && value.length > max) {
+      return NextResponse.json(
+        { errors: { [field]: `That ${field} is too long.` } },
+        { status: 422 },
+      );
+    }
   }
 
   // Bot trap: silently accept and drop if the honeypot is filled.

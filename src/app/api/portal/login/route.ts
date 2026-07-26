@@ -1,21 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/portal/session";
 import { verifyCredentials } from "@/lib/portal/users";
-import { isRateLimited, recordFailure, clearFailures } from "@/lib/portal/rate-limit";
+import { isRateLimited, recordFailure, clearFailures, hit } from "@/lib/portal/rate-limit";
+import { clientIp } from "@/lib/portal/request-ip";
 import { logPortalEvent } from "@/lib/portal/log";
 
 export const runtime = "nodejs";
 
 /** Same message for every failure, so we never reveal which emails exist. */
 const GENERIC_ERROR = "Invalid email or password.";
-
-function clientIp(request: NextRequest) {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("x-real-ip") ??
-    "unknown"
-  );
-}
 
 export async function POST(request: NextRequest) {
   let email = "";
@@ -35,6 +28,19 @@ export async function POST(request: NextRequest) {
 
   const ip = clientIp(request);
   const key = `${email.trim().toLowerCase()}|${ip}`;
+
+  // Two limits, because they stop different attacks. The per account one below
+  // stops guessing one password; on its own it lets someone try five passwords
+  // against each of a thousand addresses from a single host, which is how
+  // password spraying works. This one caps the host regardless of how many
+  // addresses it names.
+  if (hit(`login-ip|${ip}`, 30)) {
+    logPortalEvent("login_rate_limited", { scope: "ip", ip });
+    return NextResponse.json(
+      { error: "Too many attempts. Try again in 15 minutes." },
+      { status: 429 },
+    );
+  }
 
   if (isRateLimited(key)) {
     logPortalEvent("login_rate_limited", { email, ip });

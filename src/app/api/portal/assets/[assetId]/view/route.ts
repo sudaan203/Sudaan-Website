@@ -7,6 +7,44 @@ import { logPortalEvent } from "@/lib/portal/log";
 export const runtime = "nodejs";
 
 /**
+ * What we are willing to put a Content-Type on and serve from our own origin.
+ *
+ * This is the important line in the file. A file served from sudaangeo.in as
+ * text/html or image/svg+xml is same origin script: open one directly and it can
+ * read the portal's pages, call its endpoints as you, and walk your data out.
+ * nosniff does not help, because nothing is being sniffed; we would be declaring
+ * the dangerous type ourselves.
+ *
+ * Today the catalogue is filled in by a developer, so this guards a mistake
+ * rather than an attacker. When uploads land in a later phase it is the boundary
+ * between a client's file and our origin, so it belongs here now, before anything
+ * depends on the looser behaviour.
+ */
+const VIEWABLE_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
+
+/**
+ * Header values cannot contain control characters, and a filename arriving with
+ * a newline in it would let someone append headers of their own. Quotes are
+ * stripped because the value is quoted, and the result is ASCII only so no
+ * encoding question arises.
+ */
+function safeFilename(name: string): string {
+  const cleaned = name
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f"\\]/g, "")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .trim();
+  return cleaned.slice(0, 120) || "file";
+}
+
+/**
  * Streams an asset for in browser viewing.
  *
  * View only by design: Content-Disposition is always "inline" and the portal
@@ -35,6 +73,15 @@ export async function GET(
 
   const { asset, site } = found;
 
+  // Refuse rather than serve a type we have not vetted. The viewer already has
+  // a "cannot be previewed in the browser" state for exactly this.
+  if (!VIEWABLE_TYPES.has(asset.mimeType)) {
+    console.warn(
+      `[portal] refusing to serve asset ${asset.id} with unsupported type ${asset.mimeType}`,
+    );
+    return NextResponse.json({ error: "Not viewable" }, { status: 415 });
+  }
+
   let body: Buffer;
   try {
     body = await readPortalFile(asset.storageKey);
@@ -55,10 +102,13 @@ export async function GET(
     headers: {
       "Content-Type": asset.mimeType,
       "Content-Length": String(body.byteLength),
-      "Content-Disposition": `inline; filename="${asset.fileName.replace(/"/g, "")}"`,
+      "Content-Disposition": `inline; filename="${safeFilename(asset.fileName)}"`,
       "Cache-Control": "private, no-store, max-age=0",
       "X-Robots-Tag": "noindex, nofollow",
       "X-Content-Type-Options": "nosniff",
+      // The tight Content-Security-Policy for this response is set in
+      // next.config.mjs, not here: a header from the config wins over one set by
+      // the handler, so setting it here achieved nothing at all.
     },
   });
 }
