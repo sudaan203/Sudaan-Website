@@ -285,11 +285,16 @@ is `05. Dashboard_Overview_video.mp4` in the repo root: 424 MB, gitignored, so i
 is on this machine only.
 
 Everything below was read off the actual frames on 26 Jul 2026, not remembered.
-Re-derive them rather than trusting this prose:
+**Eight stills are committed in `docs/reference/dashboard/`** with their own
+README, so you can look instead of reading prose. Extract more with:
 
 ```bash
 ffmpeg -i "05. Dashboard_Overview_video.mp4" -vf "fps=1/20,scale=1280:-1" -q:v 4 out/f%03d.jpg
 ```
+
+The committed stills have the account email redacted. They are another company's
+product, captured for design reference, in a public repo: keep that in mind
+before adding more.
 
 **Chrome.** Teal top bar, hamburger, the client's crest, account email at top
 right. A left icon rail that is the whole navigation. Footer credits EnerComp.
