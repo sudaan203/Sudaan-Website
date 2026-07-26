@@ -7,10 +7,30 @@
  * Idempotent: fixed ids and upserts, so running it twice changes nothing. Safe to
  * run against a fresh Supabase project after portal-db-migrate.mjs.
  *
- * Usage: DATABASE_URL=postgres://... node scripts/portal-db-seed.mjs
+ * Usage:
+ *   DATABASE_URL=postgres://... node scripts/portal-db-seed.mjs
+ *   DATABASE_URL=postgres://... node scripts/portal-db-seed.mjs --only aektanagar-survey
+ *   DATABASE_URL=postgres://... node scripts/portal-db-seed.mjs --only aektanagar-survey --dry-run
+ *
+ * --only <site-slug> restricts every write to one site, its survey and its
+ * assets. It exists because "idempotent" is not the same as "harmless" once a
+ * database is real: the upserts reset name, summary and is_published to the
+ * values in this file, so a plain re-run to add one new site would quietly undo
+ * anything the owners had changed on the others through the console.
+ *
+ * --dry-run prints what would be written and touches nothing.
  */
 
 import postgres from "postgres";
+
+const argv = process.argv.slice(2);
+const dryRun = argv.includes("--dry-run");
+const onlyIndex = argv.indexOf("--only");
+const only = onlyIndex >= 0 ? argv[onlyIndex + 1] : null;
+if (onlyIndex >= 0 && !only) {
+  console.error("--only needs a site slug, for example --only aektanagar-survey");
+  process.exit(1);
+}
 
 // POSTGRES_URL is what the Supabase integration for Vercel creates.
 const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
@@ -141,7 +161,7 @@ const assets = [
     "demo-client/aektanagar/imagery/dtm.webp", "image/webp", "Bare earth digital terrain model.", 3],
   [17, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "photo", "Contours over orthomosaic", "contours.webp",
     "demo-client/aektanagar/imagery/contours.webp", "image/webp", null, 4],
-  [18, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "uav", "LiDAR Point Cloud (LAS)", "Aektanagar Lidar Point Cloud.las",
+  [18, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "lidar", "LiDAR Point Cloud (LAS)", "Aektanagar Lidar Point Cloud.las",
     "demo-client/aektanagar/uav/Aektanagar Lidar Point Cloud.las", "application/octet-stream", "3D Classified LiDAR point cloud file (1.7 GB).", 1],
   [9, SITE_AMBAJI, SURVEY_AMBAJI, "report", "Topographic Survey Report", "topographic-survey.pdf",
     "second-client/ambaji/reports/topographic-survey.pdf", "application/pdf", null, 1],
@@ -149,17 +169,55 @@ const assets = [
     "second-client/ambaji/imagery/ortho.webp", "image/webp", null, 1],
 ];
 
+/* ----------------------------------------------------- narrow to one site --- */
+
+let targetSites = sites;
+let targetClients = clients;
+let targetSurveys = surveys;
+let targetAssets = assets;
+
+if (only) {
+  targetSites = sites.filter((s) => s.slug === only);
+  if (targetSites.length === 0) {
+    console.error(
+      `no site with slug "${only}" in this file. Known: ${sites.map((s) => s.slug).join(", ")}`,
+    );
+    process.exit(1);
+  }
+  const siteIds = new Set(targetSites.map((s) => s.id));
+  targetClients = clients.filter((c) => targetSites.some((s) => s.client_id === c.id));
+  targetSurveys = surveys.filter((s) => siteIds.has(s.site_id));
+  targetAssets = assets.filter((a) => siteIds.has(a[1]));
+}
+
+console.log(
+  only
+    ? `seeding only "${only}": ${targetClients.length} client, ${targetSites.length} site, ` +
+        `${targetSurveys.length} survey, ${targetAssets.length} assets`
+    : `seeding everything: ${targetClients.length} clients, ${targetSites.length} sites, ` +
+        `${targetSurveys.length} surveys, ${targetAssets.length} assets`,
+);
+
+if (dryRun) {
+  for (const c of targetClients) console.log(`  client  ${c.slug}  ${c.name}`);
+  for (const s of targetSites) console.log(`  site    ${s.slug}  ${s.name}  published=${s.is_published}`);
+  for (const s of targetSurveys) console.log(`  survey  ${s.label}  flown ${s.flown_on}`);
+  for (const a of targetAssets) console.log(`  asset   ${String(a[3]).padEnd(13)} ${a[4]}`);
+  console.log("\ndry run, nothing written");
+  process.exit(0);
+}
+
 const sql = postgres(url, { prepare: false, max: 1, onnotice: () => {} });
 
 try {
-  for (const c of clients) {
+  for (const c of targetClients) {
     await sql`
       insert into clients ${sql(c)}
       on conflict (id) do update set slug = excluded.slug, name = excluded.name
     `;
   }
 
-  for (const s of sites) {
+  for (const s of targetSites) {
     await sql`
       insert into sites ${sql(s)}
       on conflict (id) do update set
@@ -169,7 +227,7 @@ try {
     `;
   }
 
-  for (const s of surveys) {
+  for (const s of targetSurveys) {
     await sql`
       insert into surveys ${sql(s)}
       on conflict (id) do update set
@@ -177,7 +235,7 @@ try {
     `;
   }
 
-  for (const [n, siteId, surveyId, category, title, fileName, storageKey, mime, description, order] of assets) {
+  for (const [n, siteId, surveyId, category, title, fileName, storageKey, mime, description, order] of targetAssets) {
     const row = {
       id: asset(n),
       site_id: siteId,

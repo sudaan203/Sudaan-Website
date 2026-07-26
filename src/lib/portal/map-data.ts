@@ -43,6 +43,13 @@ export type MapLayer = {
   coordinates?: [LonLat, LonLat, LonLat, LonLat];
   featureCount?: number;
   elevation?: { min: number; max: number };
+  /**
+   * Source width and height, present only when the raster was too large to tile
+   * on the machine that prepared it and was resized first. Recorded so the
+   * difference between "this is everything that was flown" and "this is a
+   * reduced copy" is visible rather than inferred from how blurry it looks.
+   */
+  downsampledFrom?: [number, number];
 };
 
 export type MapManifest = {

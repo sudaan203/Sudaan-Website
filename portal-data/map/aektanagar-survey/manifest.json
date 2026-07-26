@@ -1,12 +1,20 @@
 {
   "site": "aektanagar-survey",
-  "generatedAt": "2026-07-26T06:17:50.330Z",
+  "generatedAt": "2026-07-26T08:04:57.627Z",
   "layers": [
     {
-      "key": "dsm",
-      "kind": "raster",
+      "key": "aekatanagar-dsm",
+      "kind": "tiles",
       "title": "Surface model (DSM)",
-      "file": "dsm.webp",
+      "tiles": "tiles/aekatanagar-dsm/{z}/{x}/{y}.webp",
+      "minZoom": 14,
+      "maxZoom": 20,
+      "bounds": [
+        73.65789550453509,
+        21.886861215066542,
+        73.66270658323366,
+        21.891458896671505
+      ],
       "coordinates": [
         [
           73.65789550453509,
@@ -31,10 +39,18 @@
       }
     },
     {
-      "key": "dtm",
-      "kind": "raster",
+      "key": "aekatanagar-dtm",
+      "kind": "tiles",
       "title": "Terrain model (DTM)",
-      "file": "dtm.webp",
+      "tiles": "tiles/aekatanagar-dtm/{z}/{x}/{y}.webp",
+      "minZoom": 14,
+      "maxZoom": 20,
+      "bounds": [
+        73.65789550453509,
+        21.886861215066542,
+        73.66270658323366,
+        21.891458896671505
+      ],
       "coordinates": [
         [
           73.65789550453509,
@@ -57,6 +73,42 @@
         "min": 29.48,
         "max": 98.18
       }
+    },
+    {
+      "key": "orthomosaic-jpg",
+      "kind": "tiles",
+      "title": "Orthomosaic",
+      "tiles": "tiles/orthomosaic-jpg/{z}/{x}/{y}.webp",
+      "minZoom": 15,
+      "maxZoom": 21,
+      "bounds": [
+        73.65795396990008,
+        21.886890960415826,
+        73.66287003676555,
+        21.891347009310852
+      ],
+      "coordinates": [
+        [
+          73.65795396990008,
+          21.891347009310852
+        ],
+        [
+          73.6628281179761,
+          21.891386671496896
+        ],
+        [
+          73.66287003676555,
+          21.886890960415826
+        ],
+        [
+          73.65799604137685,
+          21.886851307196093
+        ]
+      ],
+      "downsampledFrom": [
+        27521,
+        27199
+      ]
     },
     {
       "key": "contours",

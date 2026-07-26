@@ -122,13 +122,27 @@ lib/
   - Default Homebrew `node` is now v26, too new for Next 15.5 (`next dev` starts but never
     binds a port). Run the app with the Node 22 keg instead:
     `PATH="/opt/homebrew/opt/node@22/bin:$PATH" /opt/homebrew/opt/node@22/bin/node node_modules/next/dist/bin/next dev -p 3100`
-  - **Lint works, it is just slow.** An earlier note here claimed ESLint hung; that was
-    wrong. A full `next build` takes about 7 minutes locally, most of it the lint and
-    typecheck step, and it passes. `next build --no-lint` is fine for a quick check but
-    **always run the full build before pushing**, because Vercel runs lint and a lint error
-    fails the deployment. One real example: an `eslint-disable` comment naming a rule this
-    config does not load (`@typescript-eslint/*`, not part of `next/core-web-vitals`) is a
-    hard error, not a warning.
+  - **THE BUILD GOTCHA ON THIS MACHINE: iCloud evicts `node_modules`.** The repo lives in
+    `~/Documents`, which iCloud Drive manages, and when the disk fills macOS turns files into
+    dataless stubs. Measured 26 Jul 2026: **17,452 of 23,720 files in `node_modules` had zero
+    blocks allocated.** Every `require()` of an evicted file blocks in `read()` while macOS
+    fetches that one small file over the network, and ESLint loads thousands of rule modules.
+    Symptom: the build prints "Creating an optimized production build" or "Linting and
+    checking validity of types" and then sits there with **0% CPU** and a couple of seconds of
+    CPU time after twenty minutes. It never errors and never times out. `next dev` fails the
+    same way, never binding a port, which looks exactly like the node v26 problem above.
+    Confirm with `stat -f %b <file>` returning 0, or `sample <pid>` showing every sample in
+    `uv_fs_read` -> `read`. **Fix: `rm -rf node_modules && npm ci`**, which writes resident
+    files and takes 15 seconds. Real fix: move the repo out of `~/Documents`, or turn off
+    Optimise Mac Storage, because iCloud should never sync 23,000 dependency files.
+  - **A full build takes about 20 seconds, not 7 minutes.** An earlier version of this note
+    claimed 7 minutes and blamed a slow lint step, and a memory file claimed the opposite.
+    Both were misreadings of the iCloud problem above. With `node_modules` resident:
+    compiled in 8.1s, lint and typecheck clean, 27 static pages, 20s total. So there is no
+    time argument for `--no-lint`: **always run the full build before pushing**, because
+    Vercel runs lint and a lint error fails the deployment. One real example: an
+    `eslint-disable` comment naming a rule this config does not load (`@typescript-eslint/*`,
+    not part of `next/core-web-vitals`) is a hard error, not a warning.
   - A bare `eslint` CLI run still fails: ESLint 9 wants a flat `eslint.config.js` while the
     repo has `.eslintrc.json`. Next supplies its own config internally, which is why the
     build works. Migrating the config is unfinished work.
@@ -633,6 +647,104 @@ Three things worth knowing about that wiring:
 
 Both older scripts share `scripts/lib/geo.mjs`, so there is one implementation
 of the projection and shapefile code rather than a copy per script.
+
+## 8l. Publishing Aektanagar, and the two ways it had silently half worked
+
+The second real site went up on 26 Jul 2026: `aektanagar-survey`, Demo Client,
+1,714 files and 22 MB in `portal-data/map/aektanagar-survey/`.
+
+```
+Surface model (DSM)   262 tiles z14-20   0.38 MB
+Terrain model (DTM)   262 tiles z14-20   0.16 MB
+Orthomosaic          1188 tiles z15-21  15.96 MB
+Contours              108 lines, 1,015,587 points thinned to 44,292, 952 KB
+```
+
+The usual cross check passes: the DTM reports 29.48 to 98.18 m from the GeoTIFF
+and the contours, read from a separate `.dbf`, report 30 to 97 m.
+
+**A killed run leaves a bundle that looks finished.** The first attempt died
+partway through the orthomosaic. `prepare-site.mjs` writes `manifest.json` last,
+so the folder kept a *stale* manifest from an earlier `prepare-map-data.mjs`
+run, which declared `kind: "raster"` single image overlays. The result was a map
+that rendered perfectly and was wrong in two ways at once: DSM and DTM served as
+4,096 px overlays while complete pyramids sat unused beside them, and 3,002
+orthomosaic tiles, 46 MB, committed to git and unreachable, because the layer
+route only serves tiles whose key a `kind: "tiles"` layer declares. Nothing
+errored. If a bundle ever looks odd, compare the manifest's mtime against
+`tiles/`.
+
+**Why it was killed: one decoded raster is four bytes a pixel.** The ortho is
+27,521 x 27,199, so 749 Mpx, so 3 GB held at once, on a machine with 8.6 GB.
+There is now a `--max-pixels` working limit, default 120 Mpx:
+
+- **Imagery over the limit is resized on the way in**, which libvips streams, so
+  it costs about two seconds and bounds the peak. The full run is 57 seconds at
+  857 MB peak with no swapping. The source size is recorded as
+  `downsampledFrom` in the manifest so a reduced copy is visible rather than
+  inferred from how blurry it looks.
+- **Elevation models over the limit are refused, not resized.** Resampling
+  across a nodata sentinel averages -9999 into real ground and invents terrain,
+  which is the failure 8i exists to prevent.
+
+**Resizing a georeferenced raster means changing the origin too.** A world file
+names the centre of the top left pixel, so `scaleWorld` holds the outer edges
+fixed and moves both the pixel size and the origin. Scaling only the pixel size
+leaves the layer half a pixel out, which is invisible on screen and wrong in
+every measurement taken off it. Verified at 0.0000 mm corner drift against the
+untouched full resolution world file.
+
+**What this costs, and how to get it back.** The portal's ortho is 4.57 cm
+rather than the 1.83 cm that was flown. That is the fallback script running out
+of machine, not a design choice, and 8j already names the fix: `gdal2tiles` or
+QGIS "Generate XYZ Tiles" on the desktop that holds the data, which streams and
+reaches native z22. The output drops into the same bundle layout. Do that before
+telling a client they can zoom to the limit of the survey.
+
+Worth knowing: the DSM and the ortho do **not** share a footprint. They are 5.93
+m apart east and 12.44 m north in the source world files, up to 21 m at a
+corner. That is the deliverables, not a registration bug, so do not "fix" it.
+
+### The code seed is not the database
+
+Aektanagar was in `src/lib/portal/seed.ts` and in `scripts/portal-db-seed.mjs`
+and still did not appear, because `store.ts` uses Postgres whenever
+`DATABASE_URL` is set and the row had never been inserted. **Adding a site to
+the seed file does nothing to production.**
+
+`portal-db-seed.mjs` now takes `--only <site-slug>` and `--dry-run`. Use them:
+the plain re-run upserts every site, so adding one new site would reset the
+name, summary and `is_published` of the others back to this file and quietly
+undo anything the owners had changed in the console. Idempotent is not the same
+as harmless once a database is real.
+
+Also fixed: the LiDAR asset used `category: "uav"`, which is not in
+`AssetCategory` (`uav_dgps` and `lidar` are) and violates the check constraint in
+`0001_init.sql`. It was wrong in both the seed file and the seed script, failed
+`tsc` and would have failed the insert. It is `lidar` now.
+
+### Two things about this site that are still placeholders
+
+- The LiDAR `.las` in `portal-data/files/` is a 159 byte text description, not
+  the 1.7 GB point cloud. It cannot go in git and there is no viewer for it
+  until Potree lands in Phase 3.
+- The Aektanagar report and contour map PDFs are about 1.5 KB each, generated,
+  not the real deliverables.
+
+### Mapbox, and where R2 stands
+
+There is **no Mapbox in this project and that is deliberate.** The map is
+MapLibre, a Mapbox token was added to `.env.example` at one point and referenced
+by nothing, and Mapbox GL JS bills per map load. Basemaps are also off by
+default on purpose (8g), so the thing a token would buy is the thing we chose
+not to do.
+
+The four `CF_*` variables are documented in `.env.example` and **nothing reads
+them yet.** Tiles still come from `portal-data`. When the redirect is built it
+is an authorisation check followed by a short lived signed URL, per 8j, never a
+public bucket URL: a public URL would defeat view only and tenant isolation in
+one step. Aektanagar at 22 MB is under the 50 MB trigger in 8h, so the move is
+not forced yet, though a native resolution ortho would force it immediately.
 
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until

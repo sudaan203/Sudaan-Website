@@ -62,6 +62,14 @@ const siteSlug = positional[1];
 const quality = Number(flag("quality", 80));
 const maxZoomOverride = flag("max-zoom", null);
 
+// Tiling holds one decoded raster in memory at four bytes a pixel, so the
+// source size sets the peak. 120 Mpx is about 480 MB, which leaves room on an
+// 8 GB laptop. Above this a raster is resized on the way in rather than the run
+// being killed partway through, which is what happened to the first Aektanagar
+// bundle: 750 Mpx wanted 3 GB, the process died after two thirds of a pyramid,
+// and because the manifest is written last it was never updated.
+const maxPixels = Number(flag("max-pixels", 120_000_000));
+
 if (!inputDir || !siteSlug) {
   console.error(`
 Usage: node scripts/prepare-site.mjs <input-folder> <site-slug> [options]
@@ -69,6 +77,8 @@ Usage: node scripts/prepare-site.mjs <input-folder> <site-slug> [options]
   --out DIR        where to write (default portal-data/map/<site-slug>)
   --quality N      WebP quality 1-100 (default 80)
   --max-zoom N     stop at this zoom instead of native resolution
+  --max-pixels N   working limit for one raster (default 120000000). Imagery
+                   above it is resized to fit and flagged in the manifest.
 
 Example:
   node scripts/prepare-site.mjs ~/surveys/reliance reliance-jamnagar
@@ -123,6 +133,26 @@ function friendlyTitle(stem) {
   if (/drainage/.test(n)) return "Drainage";
   if (/gcp|control/.test(n)) return "Ground control";
   return stem.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The world file for a resized copy of the same ground.
+ *
+ * What must not move is the extent, so the outer edges are held fixed. A world
+ * file names the centre of the top left pixel rather than its corner, so both
+ * the pixel size and the origin have to change: scaling only the pixel size
+ * leaves the layer half a pixel out, which at 2 cm data is invisible on screen
+ * and wrong in every measurement taken off it.
+ */
+function scaleWorld(world, fromWidth, fromHeight, toWidth, toHeight) {
+  const pxWidth = (world.pxWidth * fromWidth) / toWidth;
+  const pxHeight = (world.pxHeight * fromHeight) / toHeight;
+  return {
+    pxWidth,
+    pxHeight,
+    originX: world.originX - world.pxWidth / 2 + pxWidth / 2,
+    originY: world.originY - world.pxHeight / 2 + pxHeight / 2,
+  };
 }
 
 async function classify(file) {
@@ -342,6 +372,19 @@ for (const file of rasterFiles) {
   const key = basename(file).replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
   if (info.kind === "elevation") {
+    // Not resized to fit, unlike imagery. Averaging a nodata sentinel such as
+    // -9999 against real heights invents terrain that reads as real, and the
+    // whole point of 8i is that this pipeline refuses rather than guesses.
+    const pixels = info.meta.width * info.meta.height;
+    if (pixels > maxPixels) {
+      console.warn(
+        `  ! ${basename(file)}: ${(pixels / 1e6).toFixed(0)} Mpx elevation model is over the ` +
+          `${(maxPixels / 1e6).toFixed(0)} Mpx working limit. Skipped rather than resized, ` +
+          `because resampling across nodata invents heights. Downsample it with GDAL using ` +
+          `nearest neighbour first, or raise --max-pixels if there is memory for it.`,
+      );
+      continue;
+    }
     const { rgba, width, height, min, max } = await elevationToRgba(file, info.meta);
     console.log(`  ${basename(file)}: elevation ${width}x${height}, ${min.toFixed(1)} to ${max.toFixed(1)} m`);
     await tileRaster({
@@ -349,14 +392,42 @@ for (const file of rasterFiles) {
       extra: { elevation: { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) } },
     });
   } else {
-    const { data, info: raw } = await sharp(file, { limitInputPixels: false })
+    // Resizing on the way in is nearly free, because libvips streams it, and it
+    // bounds the peak instead of hoping. The trade is recorded in the manifest
+    // rather than hidden: past this size, native resolution tiles have to come
+    // from gdal2tiles or QGIS on the desktop, which is what context.md 8j
+    // prescribes for production anyway.
+    const sourcePixels = info.meta.width * info.meta.height;
+    let pipeline = sharp(file, { limitInputPixels: false });
+    const oversized = sourcePixels > maxPixels;
+
+    if (oversized) {
+      const scale = Math.sqrt(maxPixels / sourcePixels);
+      pipeline = pipeline.resize({ width: Math.round(info.meta.width * scale), fit: "inside" });
+      console.warn(
+        `  ! ${basename(file)}: ${(sourcePixels / 1e6).toFixed(0)} Mpx is over the ` +
+          `${(maxPixels / 1e6).toFixed(0)} Mpx working limit, resizing to fit. Native ` +
+          `resolution needs gdal2tiles or QGIS, or --max-pixels if there is memory for it.`,
+      );
+    }
+
+    const { data, info: raw } = await pipeline
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
-    console.log(`  ${basename(file)}: imagery ${raw.width}x${raw.height}`);
+    console.log(
+      `  ${basename(file)}: imagery ${raw.width}x${raw.height}` +
+        (oversized ? ` (from ${info.meta.width}x${info.meta.height})` : ""),
+    );
     await tileRaster({
       key, title: friendlyTitle(basename(file).replace(/\.[^.]+$/, "")),
-      rgba: data, width: raw.width, height: raw.height, geo, extra: {},
+      rgba: data, width: raw.width, height: raw.height,
+      geo: oversized
+        ? { ...geo, world: scaleWorld(geo.world, info.meta.width, info.meta.height, raw.width, raw.height) }
+        : geo,
+      extra: oversized
+        ? { downsampledFrom: [info.meta.width, info.meta.height] }
+        : {},
     });
   }
 }

@@ -277,7 +277,7 @@ export const assets: PortalAsset[] = [
     id: "as_aektanagar_pointcloud",
     siteId: "st_aektanagar",
     surveyId: "sv_aektanagar_1",
-    category: "uav",
+    category: "lidar",
     title: "LiDAR Point Cloud (LAS)",
     fileName: "Aektanagar Lidar Point Cloud.las",
     storageKey: "demo-client/aektanagar/uav/Aektanagar Lidar Point Cloud.las",
