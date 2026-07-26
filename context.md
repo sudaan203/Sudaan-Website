@@ -414,6 +414,91 @@ cell, which took 94,255 points down to 29,422 and the file from 2.2 MB to 660 KB
 **Deliberately different from the reference:** the basemap is off by default and
 says why, because a tile request tells a third party where a client's site is.
 
+## 8h. Scaling the map to real deliverables (PLAN, not built)
+
+The map in 8g hands the browser one image per layer. That is right for the Kotba
+demo and wrong for production, so here is where it breaks and what replaces it.
+
+### What real data looks like
+
+Measured against this survey's own footprint, 336 x 380 m, which is a *small*
+site:
+
+| Deliverable | Pixels | Raw RGB |
+|---|---|---|
+| Ortho at 5 cm GSD | 6,722 x 7,600 | 0.15 GB |
+| Ortho at 2 cm GSD | 16,805 x 19,000 | 0.96 GB |
+| Ortho at 1 cm GSD | 33,609 x 38,000 | 3.8 GB |
+| A 42 ha site at 2 cm | 32,404 x 32,404 | 3.2 GB |
+
+### Three ceilings, in the order they are hit
+
+1. **WebP refuses over 16,383 px per side.** Verified, not read: sharp throws
+   "Processed image is too large for the WebP format". A 2 cm ortho of even the
+   small plot above cannot be encoded at all.
+2. **Browser memory.** A decoded overlay costs width x height x 4 bytes
+   regardless of file size. 4,096 square is 67 MB, 8,192 square is 268 MB, 16k
+   square is over a gigabyte.
+3. **Git and the deployment.** `portal-data/**` is committed so Vercel bundles
+   it. That works for the current 956 KB and is untenable at hundreds of MB.
+
+The pipeline now downsamples anything over 4,096 px and says so, recording the
+effective ground sampling in the manifest. That keeps it honest and usable, but
+it is a stopgap: a client zooming into a 2 cm ortho would be looking at 10 cm.
+
+### What replaces it
+
+**Tile pyramids.** Cut each raster into 256 px tiles at every zoom, so the
+browser only ever fetches the handful covering the current view. Costs are then
+flat in the size of the deliverable.
+
+- **Generating them needs no GDAL.** `sharp().tile({ layout: "google" })` is
+  libvips dzsave and produces an XYZ pyramid directly, which matters because
+  this machine has no GDAL and ECW cannot be read here at all.
+- **Packing:** PMTiles, a single file addressed by HTTP range requests. One
+  object per layer instead of tens of thousands of files, and no tile server.
+  The authorised route has to honour `Range` and answer 206.
+- **MapLibre** already reads both an XYZ raster source and PMTiles.
+
+**Storage moves out of git.** Options at the current budget:
+
+| | Free tier | Egress | Notes |
+|---|---|---|---|
+| Supabase Storage | 1 GB | 5 GB/mo | Already have the account |
+| Cloudflare R2 | 10 GB | **free** | Best fit for imagery |
+
+R2 is the one to pick when imagery starts landing, because egress is where image
+serving gets expensive and R2 does not charge for it.
+
+**Authorisation with tiles.** Proxying every tile through a serverless function
+burns invocations and bandwidth. Instead: the route checks the caller can see
+the site, then redirects to a short lived signed URL from the bucket.
+
+The reasoning that makes this compatible with "view only": *a tile is not a
+deliverable*. A leaked tile URL is one 256 px square for a few minutes, not the
+orthomosaic. Whole file deliverables, reports and drawings, keep going through
+the proxy exactly as they do now.
+
+### Triggers, so this gets done at the right time
+
+- A raster over **4,096 px** on a side: already downsampled, detail is being lost.
+- **50 MB** of map data for one site: stop committing it, move to object storage.
+- **5 GB/month** of portal egress: move off Supabase Storage to R2.
+- The first client who needs to read detail at full zoom: build the pyramid.
+
+### Point clouds are a separate problem
+
+LAS/LAZ are gigabytes and need an octree (PotreeConverter or Entwine) generated
+on a desktop, producing thousands of small files. Same storage answer, same
+signed URL answer, but the conversion cannot run on Vercel.
+
+### Ask the client for the right export
+
+Worth having in the field workflow: for anything to appear on the map we need
+**GeoTIFF, or PNG/JPG accompanied by its `.tfw` and `.prj`**. ECW cannot be read
+without GDAL, and a bare PNG has no idea where on earth it belongs, which is
+exactly why there is no ortho layer in 8g.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)

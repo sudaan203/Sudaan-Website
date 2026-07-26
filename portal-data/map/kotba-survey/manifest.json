@@ -1,6 +1,6 @@
 {
   "site": "kotba-survey",
-  "generatedAt": "2026-07-26T04:06:34.081Z",
+  "generatedAt": "2026-07-26T04:34:37.037Z",
   "layers": [
     {
       "key": "dsm",
@@ -28,6 +28,14 @@
       "elevation": {
         "min": 143.1,
         "max": 438.29
+      },
+      "resolution": {
+        "width": 2143,
+        "height": 2423,
+        "sourceWidth": 2143,
+        "sourceHeight": 2423,
+        "metresPerPixel": 0.1568,
+        "downsampled": false
       }
     },
     {
@@ -56,6 +64,14 @@
       "elevation": {
         "min": 337.14,
         "max": 424.25
+      },
+      "resolution": {
+        "width": 1393,
+        "height": 1575,
+        "sourceWidth": 1393,
+        "sourceHeight": 1575,
+        "metresPerPixel": 0.2413,
+        "downsampled": false
       }
     },
     {

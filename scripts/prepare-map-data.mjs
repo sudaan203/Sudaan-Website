@@ -33,6 +33,27 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE = "kotba-survey";
 const OUT = join(root, "portal-data", "map", SITE);
 
+/**
+ * Largest overlay this pipeline will produce, per side.
+ *
+ * This is a single image handed to the browser whole, so the ceiling is memory,
+ * not disk. A 4096 square overlay decodes to about 67 MB of RGBA, which a phone
+ * can hold. The format's own hard limit is 16,383 px, above which WebP encoding
+ * simply refuses, and a 16k square would decode to over a gigabyte.
+ *
+ * Real orthomosaics are far past both. Measured against this survey's own
+ * footprint of 336 x 380 m:
+ *
+ *   5 cm GSD ->  6,722 x  7,600   (51 MP)
+ *   2 cm GSD -> 16,805 x 19,000  (319 MP, refuses to encode)
+ *   1 cm GSD -> 33,609 x 38,000  (1.3 GP)
+ *
+ * So anything bigger is downsampled here and says so, loudly, rather than
+ * failing at encode time or shipping a layer the browser cannot hold. Full
+ * resolution needs a tile pyramid; see context.md section 8h.
+ */
+const MAX_OVERLAY_PX = 4096;
+
 /* ------------------------------------------------------------------ UTM --- */
 
 /**
@@ -323,8 +344,31 @@ for (const raster of rasters) {
     rgba[i * 4 + 3] = 255;
   }
 
+  // Downsample rather than produce something the browser cannot hold. The
+  // geographic corners are unchanged, so the overlay still lands in the right
+  // place, it just carries less detail than the source.
+  const longest = Math.max(info.width, info.height);
+  const scale = longest > MAX_OVERLAY_PX ? MAX_OVERLAY_PX / longest : 1;
+  const outWidth = Math.round(info.width * scale);
+  const outHeight = Math.round(info.height * scale);
+
+  const sourceGsd = Math.abs(world.pxWidth);
+  const effectiveGsd = sourceGsd / scale;
+
+  if (scale < 1) {
+    console.warn(
+      `     DOWNSAMPLED ${info.width}x${info.height} -> ${outWidth}x${outHeight}. ` +
+        `Ground sampling goes from ${sourceGsd.toFixed(3)} to ${effectiveGsd.toFixed(3)} m/px. ` +
+        `Full resolution needs a tile pyramid, see context.md 8h.`,
+    );
+  }
+
   const file = `${raster.key}.webp`;
-  await sharp(rgba, { raw: { width: info.width, height: info.height, channels: 4 } })
+  const pipeline = sharp(rgba, {
+    raw: { width: info.width, height: info.height, channels: 4 },
+    limitInputPixels: false,
+  });
+  await (scale < 1 ? pipeline.resize(outWidth, outHeight, { fit: "fill" }) : pipeline)
     .webp({ quality: 82 })
     .toFile(join(OUT, file));
 
@@ -335,6 +379,16 @@ for (const raster of rasters) {
     file,
     coordinates,
     elevation: { min: Number(min.toFixed(2)), max: Number(max.toFixed(2)) },
+    // Recorded so the viewer can be honest about resolution instead of implying
+    // the overlay is the full deliverable.
+    resolution: {
+      width: outWidth,
+      height: outHeight,
+      sourceWidth: info.width,
+      sourceHeight: info.height,
+      metresPerPixel: Number(effectiveGsd.toFixed(4)),
+      downsampled: scale < 1,
+    },
   });
 
   console.log(
