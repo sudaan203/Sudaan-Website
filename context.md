@@ -467,6 +467,21 @@ them failed loudly. `scripts/portal-map-test.mjs` now guards all of them.
 
 ## 8j. Full quality data on a light website: the architecture
 
+> **SUPERSEDED in part, 26 Jul 2026. Read `docs/portal-map-architecture.md`
+> first.** The measurements below are real and still worth reading. Two
+> conclusions are not:
+>
+> - **Pre baked WebP pyramids committed to git are a dead end.** They cap site
+>   size, and worse, they freeze the pixels: no restyling a DEM, no NDVI, no
+>   comparing two dates, and publishing means committing about 1,700 binary
+>   files. The replacement is PMTiles for imagery and vectors, COG behind a
+>   dynamic tiler for elevation, COPC for point clouds.
+> - **"Redirects to a short lived signed URL" is wrong for tiles.** One pan fires
+>   hundreds of requests. Signed URLs are right for a single asset only.
+>   `docs/client-portal-plan.md` 8.2 had this right before 8j got it wrong; tiles
+>   are authorised once per session with an HMAC cookie checked by a Cloudflare
+>   Worker in front of R2.
+
 The question this answers: how does the portal show a client their survey at full
 resolution without the website carrying the weight of it. Worked out from
 Sudaan's own portfolio, not from general advice.

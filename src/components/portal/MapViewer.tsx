@@ -12,6 +12,16 @@ import {
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapLayer } from "@/lib/portal/map-data";
+import { DemSampler } from "@/lib/portal/dem-sampler";
+import {
+  densifyPath,
+  formatElevation,
+  lonLatToUtm,
+  metresPerPixel,
+  pathLength,
+  ringArea,
+} from "@/lib/portal/geodesy";
+import { MeasurePanel, type Measurement } from "./MeasurePanel";
 
 /**
  * The survey map: georeferenced deliverables drawn over each other, with the
@@ -54,10 +64,20 @@ const RASTER_OPACITY = 0.85;
  */
 setWorkerUrl("/vendor/maplibre-gl-worker.mjs");
 
+/** The survey's own stated accuracy, used to qualify every elevation shown. */
+const TOLERANCE_M = 0.04;
+
+type Group = "Imagery and models" | "Terrain" | "Vectors";
+const GROUPS: readonly Group[] = ["Imagery and models", "Terrain", "Vectors"] as const;
+
 /** Groups mirror how the deliverables are actually discussed. */
-function groupOf(layer: MapLayer): "Imagery and models" | "Vectors" {
-  return layer.kind === "vector" ? "Vectors" : "Imagery and models";
+function groupOf(layer: MapLayer): Group {
+  if (layer.kind === "vector") return "Vectors";
+  if (layer.kind === "dem") return "Terrain";
+  return "Imagery and models";
 }
+
+type MeasureMode = "off" | "distance" | "area";
 
 export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const container = useRef<HTMLDivElement>(null);
@@ -66,19 +86,129 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [basemap, setBasemap] = useState(false);
-  const [visible, setVisible] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(layers.map((l, i) => [l.key, i === 0 || l.kind === "vector"])),
-  );
+  const [visible, setVisible] = useState<Record<string, boolean>>(() => {
+    // Open on the orthomosaic, which is the layer a client recognises, rather
+    // than whichever raster the pipeline happened to write first. With relief
+    // shading on top this is a shaded true colour view, which is the state worth
+    // landing on.
+    const opening =
+      layers.find((l) => l.kind === "tiles" && /ortho|mosaic|rgb/i.test(l.key))?.key ??
+      layers.find((l) => l.kind === "tiles" || l.kind === "raster")?.key;
+    return Object.fromEntries(
+      layers.map((l) => [l.key, l.key === opening || l.kind === "vector"]),
+    );
+  });
   const [opacity, setOpacity] = useState<Record<string, number>>(() =>
     Object.fromEntries(layers.map((l) => [l.key, RASTER_OPACITY])),
   );
   const [readout, setReadout] = useState<string>("");
   const [vectorError, setVectorError] = useState<string | null>(null);
+  const [hillshade, setHillshade] = useState(true);
+
+  // ---- measurement --------------------------------------------------------
+  const [mode, setMode] = useState<MeasureMode>("off");
+  const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  // Points live in a ref as well, because the map's click handler is registered
+  // once and would otherwise close over the first render's empty array.
+  const drawn = useRef<[number, number][]>([]);
+  const sampler = useRef<DemSampler | null>(null);
+  const modeRef = useRef<MeasureMode>("off");
+  modeRef.current = mode;
+
+  const dem = layers.find((l) => l.kind === "dem");
+  const utmZone = dem?.utmZone ?? 43;
+  const utmNorthern = dem?.utmNorthern ?? true;
 
   const url = useCallback(
     (file: string) => `/api/portal/sites/${siteSlug}/map/${file}`,
     [siteSlug],
   );
+
+  /**
+   * Redraw the measurement and recompute its numbers.
+   *
+   * Geometry goes into a GeoJSON source so MapLibre draws it; the numbers are
+   * computed in UTM by geodesy.ts, never from the map's own coordinates. The
+   * profile is sampled at roughly one DEM cell, because asking for samples closer
+   * together than the data would show interpolation rather than measurement.
+   */
+  const recompute = useCallback(
+    async (instance: InstanceType<typeof MapLibreMap>, closed: boolean) => {
+      const points = drawn.current;
+      const isArea = modeRef.current === "area";
+      const source = instance.getSource("measure");
+
+      const ring = isArea && points.length > 2 ? [...points, points[0]] : points;
+      const features: GeoJSON.Feature[] = points.map((p) => ({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "Point", coordinates: p },
+      }));
+      if (points.length > 1) {
+        features.push(
+          isArea && closed && points.length > 2
+            ? {
+                type: "Feature",
+                properties: {},
+                geometry: { type: "Polygon", coordinates: [ring] },
+              }
+            : {
+                type: "Feature",
+                properties: {},
+                geometry: { type: "LineString", coordinates: ring },
+              },
+        );
+      }
+      if (source && "setData" in source) {
+        (source as { setData: (d: unknown) => void }).setData({
+          type: "FeatureCollection",
+          features,
+        });
+      }
+
+      if (points.length < 2) {
+        setMeasurement(null);
+        return;
+      }
+
+      const length = pathLength(ring, utmZone, utmNorthern);
+      const area = isArea ? ringArea(points, utmZone, utmNorthern) : 0;
+
+      // One DEM cell at the deepest zoom we generated, so the profile is sampled
+      // at the resolution the data actually has.
+      const spacing = Math.max(
+        0.5,
+        metresPerPixel(points[0][1], dem?.maxZoom ?? instance.getZoom()),
+      );
+      const samples = densifyPath(ring, spacing, utmZone, utmNorthern);
+      const s = sampler.current;
+      const profile = s ? await s.elevations(samples, dem?.maxZoom ?? instance.getZoom()) : [];
+
+      setMeasurement({
+        mode: isArea ? "area" : "distance",
+        points,
+        length,
+        area,
+        profile,
+        utmZone,
+        closed,
+      });
+    },
+    [utmZone, utmNorthern, dem?.maxZoom],
+  );
+
+  const clearMeasurement = useCallback(() => {
+    drawn.current = [];
+    setMeasurement(null);
+    const instance = map.current;
+    const source = instance?.getSource("measure");
+    if (source && "setData" in source) {
+      (source as { setData: (d: unknown) => void }).setData({
+        type: "FeatureCollection",
+        features: [],
+      });
+    }
+  }, []);
 
   // ---- build the map once -------------------------------------------------
   useEffect(() => {
@@ -129,30 +259,95 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     const vectorIds = layers.filter((l) => l.kind === "vector").map((l) => l.key);
 
+    /**
+     * The readout the reference dashboard has, plus the two things it does not:
+     * the survey's own UTM coordinates, and the elevation under the cursor read
+     * from the terrain model rather than from a contour line that happens to be
+     * nearby.
+     *
+     * Throttled to animation frames. A mousemove handler that awaits a tile
+     * decode on every pixel would queue hundreds of promises across a single
+     * drag.
+     */
+    let pending = false;
+    let lastLngLat: { lng: number; lat: number } | null = null;
+
+    const refreshReadout = () => {
+      pending = false;
+      const at = lastLngLat;
+      if (!at) return;
+
+      const [easting, northing] = lonLatToUtm(at.lng, at.lat, utmZone, utmNorthern);
+      const base =
+        `${at.lat.toFixed(6)}, ${at.lng.toFixed(6)}` +
+        `  ·  ${easting.toFixed(1)} E ${northing.toFixed(1)} N`;
+      setReadout(base);
+
+      const s = sampler.current;
+      if (!s) return;
+      void s
+        .elevationAt(at.lng, at.lat, instance.getZoom())
+        .then((elevation) => {
+          // Only annotate if the pointer has not moved on since.
+          if (lastLngLat !== at || elevation === null) return;
+          setReadout(`${formatElevation(elevation, TOLERANCE_M)}  ·  ${base}`);
+        })
+        .catch(() => {});
+    };
+
     instance.on("mousemove", (event) => {
-      const position = `${event.lngLat.lat.toFixed(6)}, ${event.lngLat.lng.toFixed(6)}`;
+      lastLngLat = { lng: event.lngLat.lng, lat: event.lngLat.lat };
+      if (!pending) {
+        pending = true;
+        requestAnimationFrame(refreshReadout);
+      }
 
       // Reading a contour's height by pointing at it, in place of baked labels.
-      const drawn = vectorIds.filter((id) => instance.getLayer(id));
-      const hit = drawn.length
+      const vectors = vectorIds.filter((id) => instance.getLayer(id));
+      const hit = vectors.length
         ? instance.queryRenderedFeatures(
             [
               [event.point.x - 4, event.point.y - 4],
               [event.point.x + 4, event.point.y + 4],
             ],
-            { layers: drawn },
+            { layers: vectors },
           )[0]
         : undefined;
 
-      const elevation = hit?.properties?.elevation;
-      setReadout(
-        Number.isFinite(Number(elevation))
-          ? `${Number(elevation)} m  ·  ${position}`
-          : position,
-      );
-      instance.getCanvas().style.cursor = hit ? "crosshair" : "";
+      instance.getCanvas().style.cursor =
+        modeRef.current !== "off" ? "crosshair" : hit ? "help" : "";
     });
-    instance.on("mouseout", () => setReadout(""));
+    instance.on("mouseout", () => {
+      lastLngLat = null;
+      setReadout("");
+    });
+
+    // ---- measure: click to add a vertex, double click to finish ------------
+    instance.on("click", (event) => {
+      if (modeRef.current === "off") return;
+      drawn.current = [...drawn.current, [event.lngLat.lng, event.lngLat.lat]];
+      void recompute(instance, false);
+    });
+    instance.on("dblclick", (event) => {
+      if (modeRef.current === "off") return;
+      // Stop the default zoom, which would otherwise fire on the gesture that
+      // finishes a measurement.
+      event.preventDefault();
+
+      // A double click is two clicks first, so the click handler above has
+      // already added the same vertex twice. Drop the duplicate rather than
+      // leaving a zero length segment in the geometry, which would also put a
+      // spurious flat step in the elevation profile.
+      const pts = drawn.current;
+      if (pts.length >= 2) {
+        const [ax, ay] = pts[pts.length - 1];
+        const [bx, by] = pts[pts.length - 2];
+        if (Math.abs(ax - bx) < 1e-9 && Math.abs(ay - by) < 1e-9) {
+          drawn.current = pts.slice(0, -1);
+        }
+      }
+      void recompute(instance, true);
+    });
     instance.on("error", (event) => {
       // MapLibre reports missing tiles this way; do not blank the whole map.
       console.error("[portal map]", event.error?.message ?? event);
@@ -160,6 +355,42 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     instance.on("load", () => {
       for (const layer of layers) {
+        if (layer.kind === "dem" && layer.tiles) {
+          /**
+           * Terrain-RGB, so the elevation survives into the browser as metres.
+           *
+           * Two things come off this one source. MapLibre renders `hillshade`
+           * from it natively, which is relief the client can turn up or down
+           * rather than a colour ramp baked at ingest. And DemSampler decodes
+           * the same tiles to answer "how high is this point", which is what
+           * makes the measure tool report real heights instead of guesses.
+           */
+          instance.addSource(layer.key, {
+            type: "raster-dem",
+            tiles: [`${window.location.origin}${url(layer.tiles)}`],
+            tileSize: 256,
+            minzoom: layer.minZoom ?? 0,
+            maxzoom: layer.maxZoom ?? 22,
+            encoding: layer.encoding ?? "mapbox",
+            ...(layer.bounds ? { bounds: layer.bounds } : {}),
+          });
+          instance.addLayer({
+            id: layer.key,
+            type: "hillshade",
+            source: layer.key,
+            paint: {
+              // Warm shadows rather than the default blue grey, to sit with the
+              // site's palette instead of fighting it.
+              "hillshade-shadow-color": "#4a2a10",
+              "hillshade-highlight-color": "#fae2c0",
+              "hillshade-accent-color": "#7c2d12",
+              "hillshade-exaggeration": 0.55,
+            },
+            layout: { visibility: "none" },
+          });
+          continue;
+        }
+
         if (layer.kind === "tiles" && layer.tiles) {
           /**
            * A tile pyramid. The browser asks for the handful of 256 px squares
@@ -247,6 +478,42 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           });
         }
       }
+
+      // Measurement geometry, always on top of the deliverables.
+      instance.addSource("measure", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "measure-fill",
+        type: "fill",
+        source: "measure",
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#E58E3A", "fill-opacity": 0.18 },
+      });
+      instance.addLayer({
+        id: "measure-line",
+        type: "line",
+        source: "measure",
+        paint: {
+          "line-color": "#C2410C",
+          "line-width": 2,
+          "line-dasharray": [2, 1.5],
+        },
+      });
+      instance.addLayer({
+        id: "measure-points",
+        type: "circle",
+        source: "measure",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 4,
+          "circle-color": "#FFFFFF",
+          "circle-stroke-color": "#C2410C",
+          "circle-stroke-width": 2,
+        },
+      });
+
       setReady(true);
     });
 
@@ -258,24 +525,47 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The elevation sampler needs the same authorised tile URL the map uses.
+  useEffect(() => {
+    if (!dem?.tiles) return;
+    sampler.current = new DemSampler(
+      url(dem.tiles),
+      dem.minZoom ?? 0,
+      dem.maxZoom ?? 20,
+      dem.encoding ?? "mapbox",
+    );
+  }, [dem?.tiles, dem?.minZoom, dem?.maxZoom, dem?.encoding, url]);
+
   // ---- reflect state into the map ----------------------------------------
   useEffect(() => {
     const instance = map.current;
     if (!instance || !ready) return;
     for (const layer of layers) {
       if (!instance.getLayer(layer.key)) continue;
-      instance.setLayoutProperty(
-        layer.key,
-        "visibility",
-        visible[layer.key] ? "visible" : "none",
-      );
-      if (layer.kind === "raster" || layer.kind === "tiles") {
+      const shown = layer.kind === "dem" ? hillshade : visible[layer.key];
+      instance.setLayoutProperty(layer.key, "visibility", shown ? "visible" : "none");
+      if (layer.kind === "dem") {
+        // The slider drives relief strength here, not transparency: a hillshade
+        // faded to nothing is just a paler picture, whereas exaggeration is the
+        // control a surveyor actually wants.
+        instance.setPaintProperty(
+          layer.key,
+          "hillshade-exaggeration",
+          Math.max(0.05, (opacity[layer.key] ?? RASTER_OPACITY) * 0.8),
+        );
+      } else if (layer.kind === "raster" || layer.kind === "tiles") {
         instance.setPaintProperty(layer.key, "raster-opacity", opacity[layer.key] ?? RASTER_OPACITY);
       } else {
         instance.setPaintProperty(layer.key, "line-opacity", opacity[layer.key] ?? 0.9);
       }
     }
-  }, [visible, opacity, ready, layers]);
+  }, [visible, opacity, ready, layers, hillshade]);
+
+  // Switching mode starts a new measurement rather than extending the last one.
+  useEffect(() => {
+    if (mode === "off") return;
+    clearMeasurement();
+  }, [mode, clearMeasurement]);
 
   useEffect(() => {
     const instance = map.current;
@@ -308,10 +598,54 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     );
   }
 
-  const groups = ["Imagery and models", "Vectors"] as const;
+  const hasTerrain = Boolean(dem);
 
   return (
     <div className="surface overflow-hidden">
+      {/* Toolbar. The reference dashboard puts its draw and measure tools here;
+          ours carries the two that produce a number a client can rely on. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-ink/[0.08] px-4 py-2.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink/50">
+          Measure
+        </span>
+        {(
+          [
+            ["distance", "Distance"],
+            ["area", "Area"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={mode === value}
+            onClick={() => setMode(mode === value ? "off" : value)}
+            className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+              mode === value
+                ? "bg-accent-600 text-white"
+                : "border border-ink/15 text-ink/70 hover:border-accent-600 hover:text-accent-700"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+        {mode !== "off" ? (
+          <span className="text-[11px] text-ink/55">
+            Click to add points, double click to finish.
+          </span>
+        ) : null}
+        {hasTerrain ? (
+          <label className="ml-auto flex items-center gap-2 text-xs text-ink/70">
+            <input
+              type="checkbox"
+              checked={hillshade}
+              onChange={(e) => setHillshade(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
+            />
+            Relief shading
+          </label>
+        ) : null}
+      </div>
+
       <div className="relative">
         <div
           ref={container}
@@ -330,8 +664,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             small screens rather than covering it. */}
         <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-72 p-3 lg:block">
           <div className="pointer-events-auto max-h-full overflow-y-auto rounded-xl border border-ink/10 bg-panel/95 p-4 shadow-card backdrop-blur">
+            {measurement ? (
+              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+                <MeasurePanel
+                  measurement={measurement}
+                  onClear={clearMeasurement}
+                  toleranceM={TOLERANCE_M}
+                />
+              </div>
+            ) : null}
             <LayerTree
-              groups={groups}
+              groups={GROUPS}
               layers={layers}
               visible={visible}
               opacity={opacity}
@@ -339,6 +682,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               setOpacity={setOpacity}
               basemap={basemap}
               setBasemap={setBasemap}
+              hillshade={hillshade}
+              setHillshade={setHillshade}
             />
           </div>
         </div>
@@ -360,8 +705,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       </div>
 
       <div className="border-t border-ink/[0.08] p-4 lg:hidden">
+        {measurement ? (
+          <div className="mb-4 border-b border-ink/[0.08] pb-4">
+            <MeasurePanel
+              measurement={measurement}
+              onClear={clearMeasurement}
+              toleranceM={TOLERANCE_M}
+            />
+          </div>
+        ) : null}
         <LayerTree
-          groups={groups}
+          groups={GROUPS}
           layers={layers}
           visible={visible}
           opacity={opacity}
@@ -369,6 +723,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           setOpacity={setOpacity}
           basemap={basemap}
           setBasemap={setBasemap}
+          hillshade={hillshade}
+          setHillshade={setHillshade}
         />
       </div>
     </div>
@@ -384,6 +740,8 @@ function LayerTree({
   setOpacity,
   basemap,
   setBasemap,
+  hillshade,
+  setHillshade,
 }: {
   groups: readonly string[];
   layers: MapLayer[];
@@ -393,6 +751,8 @@ function LayerTree({
   setOpacity: (fn: (v: Record<string, number>) => Record<string, number>) => void;
   basemap: boolean;
   setBasemap: (v: boolean) => void;
+  hillshade: boolean;
+  setHillshade: (v: boolean) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -405,43 +765,59 @@ function LayerTree({
               {group}
             </legend>
             <div className="space-y-3">
-              {inGroup.map((layer) => (
-                <div key={layer.key}>
-                  <label className="flex items-center gap-2 text-sm text-ink-900">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(visible[layer.key])}
-                      onChange={(e) =>
-                        setVisible((v) => ({ ...v, [layer.key]: e.target.checked }))
-                      }
-                      className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
-                    />
-                    <span className="flex-1">{layer.title}</span>
-                  </label>
+              {inGroup.map((layer) => {
+                const isDem = layer.kind === "dem";
+                const on = isDem ? hillshade : Boolean(visible[layer.key]);
+                return (
+                  <div key={layer.key}>
+                    <label className="flex items-center gap-2 text-sm text-ink-900">
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={(e) =>
+                          isDem
+                            ? setHillshade(e.target.checked)
+                            : setVisible((v) => ({ ...v, [layer.key]: e.target.checked }))
+                        }
+                        className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
+                      />
+                      <span className="flex-1">{layer.title}</span>
+                    </label>
 
-                  {layer.elevation ? (
-                    <p className="ml-6 text-[11px] text-ink/50">
-                      {Math.round(layer.elevation.min)} to {Math.round(layer.elevation.max)} m
-                      {layer.featureCount ? ` · ${layer.featureCount} lines` : ""}
-                    </p>
-                  ) : null}
+                    {layer.elevation ? (
+                      <p className="ml-6 text-[11px] text-ink/50">
+                        {Math.round(layer.elevation.min)} to {Math.round(layer.elevation.max)} m
+                        {layer.featureCount ? ` · ${layer.featureCount} lines` : ""}
+                        {isDem ? " · measurable" : ""}
+                      </p>
+                    ) : null}
 
-                  <label className="ml-6 mt-1.5 flex items-center gap-2">
-                    <span className="sr-only">{layer.title} opacity</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round((opacity[layer.key] ?? RASTER_OPACITY) * 100)}
-                      disabled={!visible[layer.key]}
-                      onChange={(e) =>
-                        setOpacity((o) => ({ ...o, [layer.key]: Number(e.target.value) / 100 }))
-                      }
-                      className="h-1 w-full accent-accent-600 disabled:opacity-40"
-                    />
-                  </label>
-                </div>
-              ))}
+                    <label className="ml-6 mt-1.5 flex items-center gap-2">
+                      <span className="sr-only">
+                        {layer.title} {isDem ? "relief strength" : "opacity"}
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={Math.round((opacity[layer.key] ?? RASTER_OPACITY) * 100)}
+                        disabled={!on}
+                        onChange={(e) =>
+                          setOpacity((o) => ({ ...o, [layer.key]: Number(e.target.value) / 100 }))
+                        }
+                        className="h-1 w-full accent-accent-600 disabled:opacity-40"
+                      />
+                    </label>
+
+                    {isDem ? (
+                      <p className="ml-6 mt-1 text-[11px] leading-snug text-ink/55">
+                        Real elevations, not a colour picture of them. This is what the
+                        measure tools read.
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </fieldset>
         );
