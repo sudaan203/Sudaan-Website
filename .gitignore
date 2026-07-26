@@ -59,7 +59,14 @@ next-env.d.ts
 # iCloud sync conflict copies. This project lives in ~/Documents, which syncs,
 # and a conflict leaves a "<name> 2.ts" beside the original. 35 of them were
 # committed once, including stale copies of the auth and session code.
+#
+# The second pattern catches directories and extensionless files, which the first
+# one misses because it requires a dot: "src/components/portal/admin 2" appeared
+# on 26 Jul 2026 and was not ignored. iCloud also does this inside .git, where
+# gitignore cannot help: a stray "refs/heads/<branch> 2" makes git fetch fail
+# with "bad object", and git hides it as a broken ref name. Delete those by hand.
 * [0-9].*
+* [0-9]
 
 # Tile pyramids ARE committed, because the portal serves the map from them and
 # they have to reach Vercel. Do not add an ignore rule here: the layer route only

@@ -29,7 +29,15 @@ export type MapLayer = {
    * flat in the size of the deliverable. "raster" is the older single image
    * overlay, kept because it is simple and fine for something small.
    */
-  kind: "tiles" | "raster" | "vector";
+  /**
+   * "dem" is Terrain-RGB: the elevation is packed into the channels rather than
+   * turned into a colour, so the browser gets metres back. That one difference is
+   * what makes hillshade, an elevation readout, profiles and volumes possible,
+   * and it is what the reference dashboard cannot do, because its DEM styling was
+   * baked at ingest (see docs/reference/dashboard/03-orthomaps-dtm.jpg, where the
+   * nodata gaps are painted black and cannot be fixed without re-ingesting).
+   */
+  kind: "tiles" | "raster" | "vector" | "dem";
   title: string;
   /** raster and vector layers: a file in the site's folder. */
   file?: string;
@@ -50,6 +58,15 @@ export type MapLayer = {
    * reduced copy" is visible rather than inferred from how blurry it looks.
    */
   downsampledFrom?: [number, number];
+  /** dem only: how elevation is packed into the channels. */
+  encoding?: "mapbox" | "terrarium";
+  /**
+   * The survey's UTM zone. Measurement has to happen in a projected CRS: a
+   * polygon drawn on the map arrives as lon/lat, and computing its area on those
+   * numbers gives square degrees, which at this latitude is wrong by about 16%.
+   */
+  utmZone?: number;
+  utmNorthern?: boolean;
 };
 
 export type MapManifest = {
@@ -65,8 +82,14 @@ export type MapManifest = {
  */
 const SAFE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SAFE_FILE = /^[a-z0-9][a-z0-9._-]*$/i;
-/** Exactly `tiles/<layer-key>/{z}/{x}/{y}.webp`, nothing more inventive. */
-const SAFE_TILE_TEMPLATE = /^tiles\/[a-z0-9][a-z0-9-]*\/\{z\}\/\{x\}\/\{y\}\.webp$/;
+/**
+ * Exactly `tiles/<layer-key>/{z}/{x}/{y}.<webp|png>`, nothing more inventive.
+ *
+ * PNG is allowed only because Terrain-RGB has to be lossless: one channel unit
+ * is 0.1 m of elevation, so WebP's rounding would put noise into the hillshade
+ * and into every measurement taken off it. Imagery stays WebP.
+ */
+const SAFE_TILE_TEMPLATE = /^tiles\/[a-z0-9][a-z0-9-]*\/\{z\}\/\{x\}\/\{y\}\.(webp|png)$/;
 
 function siteDir(siteSlug: string): string {
   if (!SAFE_SLUG.test(siteSlug)) throw new Error(`unsafe site slug: ${siteSlug}`);
@@ -92,8 +115,15 @@ export async function readMapManifest(siteSlug: string): Promise<MapManifest | n
     const parsed = JSON.parse(raw) as MapManifest;
     if (!Array.isArray(parsed.layers)) return null;
     // Only expose layers we can build a safe URL for.
+    //
+    // Both "tiles" and "dem" are pyramids and carry a template; "raster" and
+    // "vector" name a single file. Getting this wrong is silent: a layer that
+    // fails the check is simply absent from the map, with no error anywhere,
+    // which is exactly how the terrain layer went missing when `dem` was added
+    // and this filter was not updated with it.
+    const isPyramid = (layer: MapLayer) => layer.kind === "tiles" || layer.kind === "dem";
     parsed.layers = parsed.layers.filter((layer) =>
-      layer.kind === "tiles"
+      isPyramid(layer)
         ? typeof layer.tiles === "string" && SAFE_TILE_TEMPLATE.test(layer.tiles)
         : typeof layer.file === "string" && SAFE_FILE.test(layer.file),
     );
@@ -125,9 +155,9 @@ function tilePathIsDeclared(manifest: MapManifest, segments: string[]): boolean 
   if (dir !== "tiles") return false;
   if (!/^[a-z0-9][a-z0-9-]*$/.test(layerKey)) return false;
   if (!/^\d{1,2}$/.test(z) || !/^\d{1,9}$/.test(x)) return false;
-  if (!/^\d{1,9}\.webp$/.test(yFile)) return false;
+  if (!/^\d{1,9}\.(webp|png)$/.test(yFile)) return false;
   return manifest.layers.some(
-    (layer) => layer.kind === "tiles" && layer.key === layerKey,
+    (layer) => (layer.kind === "tiles" || layer.kind === "dem") && layer.key === layerKey,
   );
 }
 
