@@ -186,10 +186,19 @@ moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-pl
 - Password login still exists as a **staff fallback** behind a details toggle, so a Google
   problem cannot lock the owners out. Remove it by clearing `PORTAL_USERS` and deleting
   `portal-data/users.json`.
-- **Pooler ports matter:** Vercel uses the transaction pooler (6543); a long-lived `next dev`
-  must use the session pooler (5432). A persistent client on 6543 wedges after a few requests
-  and every later query hangs. Also cache the db client on `globalThis` (done) or hot reload
-  leaks a pool per edit and exhausts the pooler.
+- **Use the transaction pooler (port 6543) everywhere** — production, local dev and the test
+  scripts. This used to say that `next dev` needed the session pooler (5432) because a
+  persistent client on 6543 "wedges after a few requests". That was a misdiagnosis. The real
+  cause was the pool being capped at one connection: the transaction pooler serves one query
+  at a time per connection, so concurrent queries pipelined down a single connection never
+  return. With the pool sized properly a dev server is stable on 6543 across repeated loads
+  and hot reloads (verified 26 Jul 2026).
+- **The split itself was the expensive part.** Local on 5432 and production on 6543 meant no
+  local test could reproduce the owner console outage; everything passed here while every
+  production request failed. `.env.example` documents the port, `getDb()` warns when it sees
+  5432, and `scripts/portal-pooler-test.mts` fails if the two drift apart again.
+- Cache the db client on `globalThis` (done) or hot reload leaks a pool per edit and
+  exhausts the pooler.
 - Verified 26 Jul 2026 against real Supabase: 33 portal checks, 18 console checks, and a
   16 step owner workflow (create site, publish, grant, revoke, unpublish, deactivate) where
   the client's dashboard changed correctly at every step.

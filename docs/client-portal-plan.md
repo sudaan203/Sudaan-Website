@@ -736,10 +736,23 @@ Merge the portal PR. Vercel deploys automatically and picks up the variables.
 
 ### If the portal hangs in production
 
-Symptom: pages load slowly then time out, and it gets worse rather than better.
-That is pooler starvation. Switch `DATABASE_URL` to the **session pooler** (port
-`5432`, same host) and redeploy. Transaction mode suits short lived functions and
-is the right default, but session mode is the safe fallback.
+Symptom: a page loads slowly then times out, or shows "Application error", while
+other pages are fine.
+
+This happened on 26 Jul 2026 and the answer was **not** the connection string.
+Supabase's transaction pooler serves one query at a time per connection, and the
+pool was capped at a single connection, so a page issuing several reads at once
+(the owner console issues four) pipelined them down one connection where they
+never returned. Sizing the pool for the concurrency a page actually issues fixed
+it: the same page went from hanging indefinitely to 325ms.
+
+Before changing anything, run `npx tsx scripts/portal-pooler-test.mts`. It
+exercises exactly this against the real database on port 6543.
+
+An earlier version of this document advised switching to the session pooler on
+port `5432` as a "safe fallback". Do not. That divergence, local on 5432 and
+production on 6543, is what made the outage invisible to every local test for
+days. Use port **6543 everywhere**.
 
 ## 13. Reference material
 

@@ -97,6 +97,33 @@ export function isDatabaseConfigured(): boolean {
   return connectionString() !== null;
 }
 
+/**
+ * Complains when the connection string is one we know causes trouble.
+ *
+ * The port check exists because local and production silently pointed at
+ * different Supabase poolers. Everything passed locally on 5432 while the owner
+ * console failed on every single request in production on 6543, and no local
+ * test could see it. A warning in the log is cheap; another week of that is not.
+ */
+function warnAboutHost(url: string): void {
+  // The direct host is IPv6 only on new projects and unreachable from many
+  // networks, including Vercel, so every query would fail with a DNS error.
+  if (/db\.[a-z0-9]+\.supabase\.co/.test(url)) {
+    console.warn(
+      "[portal] the connection string points at the direct Supabase host, which is IPv6 only. " +
+        "Use the pooler host (aws-N-region.pooler.supabase.com) instead.",
+    );
+  }
+
+  if (/pooler\.supabase\.com:5432/.test(url)) {
+    console.warn(
+      "[portal] DATABASE_URL uses port 5432, the session pooler, but production uses 6543, " +
+        "the transaction pooler. The two behave differently under concurrency, so anything you " +
+        "test here may not reflect production. Change the port to 6543 (see .env.example).",
+    );
+  }
+}
+
 export function getDb(): PortalDb | null {
   if (globalForDb.portalDb !== undefined) return globalForDb.portalDb;
 
@@ -106,24 +133,12 @@ export function getDb(): PortalDb | null {
     return null;
   }
 
-  // A direct host cannot be reached from IPv4 only networks, so say so loudly
-  // rather than letting every request fail with a DNS error.
-  if (/db\.[a-z0-9]+\.supabase\.co/.test(url)) {
-    console.warn(
-      "[portal] the connection string points at the direct Supabase host, which is IPv6 only. " +
-        "Use the pooler host (aws-N-region.pooler.supabase.com) instead.",
-    );
-  }
+  warnAboutHost(url);
 
-  // Which pooler port to point at:
-  //   Vercel, short lived functions -> transaction pooler, port 6543.
-  //   A long lived server such as `next dev` -> session pooler, port 5432.
-  //
-  // The two behave differently under concurrency, and that difference cost days.
-  // A page whose queries ran fine on 5432 hung on 6543, so nothing reproduced
-  // locally while production kept failing. If you are testing pooling behaviour,
-  // test on 6543: `npx tsx scripts/portal-pooler-test.mts` forces that port
-  // whatever .env.local says.
+  // Port 6543, the transaction pooler, everywhere: production, local dev and the
+  // test scripts. The session pooler on 5432 behaves differently under
+  // concurrency, and running local on one port while production ran on the other
+  // is what hid a production outage for days. See warnAboutHost.
   const sql = postgres(url, {
     // Required by Supabase's transaction mode pooler: it cannot keep prepared
     // statements across pooled connections.
