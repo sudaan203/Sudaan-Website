@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/portal/auth";
 import { listAssetCounts, getSite, listVideos } from "@/lib/portal/store";
 import { logPortalEvent } from "@/lib/portal/log";
 import SiteTabs from "@/components/portal/SiteTabs";
+import { readMapManifest } from "@/lib/portal/map-data";
 import { assetCategories } from "@/lib/portal/types";
 
 export default async function SiteLayout({
@@ -27,8 +28,21 @@ export default async function SiteLayout({
   const counts = await listAssetCounts(session, site.id);
   const videos = await listVideos(session, site.id);
 
+  const mapManifest = await readMapManifest(site.slug);
+
   const tabs = [
     { href: `/portal/${site.slug}`, label: "Overview", count: null as number | null },
+    // Straight after Overview: for a survey client the map is the deliverable,
+    // and the file lists are the supporting material.
+    ...(mapManifest && mapManifest.layers.length > 0
+      ? [
+          {
+            href: `/portal/${site.slug}/map`,
+            label: "Map",
+            count: mapManifest.layers.length,
+          },
+        ]
+      : []),
     ...assetCategories
       .filter((category) => (counts[category.key] ?? 0) > 0)
       .map((category) => ({

@@ -1,0 +1,73 @@
+{
+  "site": "kotba-survey",
+  "generatedAt": "2026-07-26T04:06:34.081Z",
+  "layers": [
+    {
+      "key": "dsm",
+      "kind": "raster",
+      "title": "Surface model (DSM)",
+      "file": "dsm.webp",
+      "coordinates": [
+        [
+          73.72919024889882,
+          20.84423729690113
+        ],
+        [
+          73.73241996613605,
+          20.844261232007646
+        ],
+        [
+          73.73244871482906,
+          20.840828435783582
+        ],
+        [
+          73.72921907079377,
+          20.84080450497656
+        ]
+      ],
+      "elevation": {
+        "min": 143.1,
+        "max": 438.29
+      }
+    },
+    {
+      "key": "dtm",
+      "kind": "raster",
+      "title": "Terrain model (DTM)",
+      "file": "dtm.webp",
+      "coordinates": [
+        [
+          73.72919024889772,
+          20.844237296902158
+        ],
+        [
+          73.73241997953319,
+          20.84426123210784
+        ],
+        [
+          73.73244872822593,
+          20.84082843588185
+        ],
+        [
+          73.72921907079268,
+          20.840804504975683
+        ]
+      ],
+      "elevation": {
+        "min": 337.14,
+        "max": 424.25
+      }
+    },
+    {
+      "key": "contours",
+      "kind": "vector",
+      "title": "Contours",
+      "file": "contours.geojson",
+      "featureCount": 201,
+      "elevation": {
+        "min": 338,
+        "max": 424
+      }
+    }
+  ]
+}

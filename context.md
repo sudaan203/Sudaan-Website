@@ -370,6 +370,50 @@ file tables, the PDF and image viewer. What the reference has and we do not:
    marketing site, which is most of the interaction.
 5. **Video tab**, unlisted YouTube embeds. `videos` table exists, page is a stub.
 
+## 8g. The survey map (Phase 2a, BUILT 26 Jul 2026)
+
+`/portal/<site>/map` draws the georeferenced deliverables over each other. This
+is the feature that closes most of the gap with the reference dashboard in 8f.
+
+**The pipeline.** `scripts/prepare-map-data.mjs` turns the raw Kotba survey into
+web layers in `portal-data/map/<slug>/`, outside `public/` so every byte goes
+through an authorised route. It does two things nothing else here does:
+unprojects UTM 43N corners to WGS84 so a raster lands in the right field, and
+parses the ESRI shapefile directly, because GDAL is not available on this
+machine. Cross check that it is working: the DTM reports 337 to 424 m and the
+contours, read from a completely separate file, report 338 to 424 m.
+
+Three bugs it is worth not rediscovering:
+
+- `sharp(...).raw()` silently returns 8 bit RGB for a float GeoTIFF. Without
+  `depth: "float"` you get convincing nonsense, the first run had the DSM
+  spanning -24 to 0 m. It also expands one band to three, so step by stride.
+- The contour `.dbf` stores elevation as the text `"338 m"`, so `Number()` gives
+  NaN and every line loses its height.
+- Colour across the 2nd to 98th percentile. One outlier at 143 m flattened the
+  entire survey to a single shade of orange.
+
+**MapLibre under Next needs its worker served by hand.** MapLibre tiles vector
+data in a web worker and finds it via `new URL(..., import.meta.url)`, which
+Next does not emit. Both `maplibre-gl-worker.mjs` and its sibling
+`maplibre-gl-shared.mjs` are copied to `public/vendor/` by a postinstall script
+and pointed at with `setWorkerUrl`. Copying only the first is not enough; the
+worker then requests the second and dies quietly.
+
+The failure mode is nasty and cost most of a session: raster layers keep working
+because images decode on the main thread, so the map looks fine while every
+GeoJSON source sits at `isSourceLoaded: false` with zero features, no error in
+the console and no failed request. If a vector layer ever silently vanishes
+again, check the worker before anything else.
+
+**Also worth knowing:** GeoJSON is fetched on the main thread and handed to the
+source with `setData`, because MapLibre's worker fetch does not carry the
+session cookie and our route answers 401. Contours are simplified to about a DEM
+cell, which took 94,255 points down to 29,422 and the file from 2.2 MB to 660 KB.
+
+**Deliberately different from the reference:** the basemap is off by default and
+says why, because a tile request tells a third party where a client's site is.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)
