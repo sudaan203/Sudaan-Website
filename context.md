@@ -541,6 +541,86 @@ Steps 1 and 2 are independent: tiles can be served from `portal-data` first and
 moved to R2 when a real site outgrows the repository, which is the 50 MB trigger
 in 8h.
 
+## 8k. The local workflow: one command per site
+
+`scripts/prepare-site.mjs` is the tool Sudaan runs on the machine that holds the
+survey. It takes a folder of deliverables and writes a portal ready bundle.
+
+```bash
+node scripts/prepare-site.mjs ~/surveys/reliance-jamnagar reliance-jamnagar
+```
+
+No paths in code, no per site editing. It looks at what is in the folder and
+decides:
+
+| Found | Treated as |
+|---|---|
+| Single band float GeoTIFF | Elevation model: colourised, tiled |
+| Three band GeoTIFF, PNG, JPG | Orthomosaic imagery: tiled as is |
+| `.shp` with `.dbf` and `.prj` | Lines: simplified GeoJSON, elevation kept |
+
+Every raster needs georeferencing, a `.tfw` and `.prj` beside it or inside the
+GeoTIFF. Without it the file is **skipped with a message**, not guessed at.
+
+Options: `--out DIR`, `--quality N` (default 80), `--max-zoom N`.
+
+### Why tiles and not "resize it smaller"
+
+Resizing is the thing that costs quality. A single overlay has to fit in browser
+memory, so it gets shrunk, and the detail the survey was flown to capture is
+gone. Tiles keep **native resolution** and the browser fetches only the screenful
+it is showing.
+
+Measured end to end on the real Kotba survey, all three layers from one command:
+
+```
+Kotba_DEM.tif: elevation 2143x2423, 143.1 to 438.3 m
+  55 tiles z13-19, 0.16 MB, 20 empty skipped
+Ortho_test.tif: imagery 1200x770
+  34 tiles z12-18, 0.10 MB
+Kotba Contours.shp: 201 lines, 94,255 points thinned to 29,422, 645 KB
+total 0.89 MB
+```
+
+Max zoom is chosen per layer from its own resolution, so a sharper source gets
+more zoom levels rather than every layer being flattened to the same ceiling.
+
+### The quality setting, measured
+
+On the busiest photographic tile, against the q80 default:
+
+| Quality | Size | Drift |
+|---|---|---|
+| q50 | 63% | 31.8 dB, visible |
+| q70 | 84% | 35.2 dB |
+| **q80 (default)** | **100%** | **40.1 dB** |
+| q90 | 119% | 42.0 dB |
+| q95 | 140% | 44.6 dB |
+
+Around 40 dB is the usual line for visually lossless, which is where q80 sits, so
+the default gives the smallest bundle that a client cannot tell apart. Use
+`--quality 90` for a client doing close visual inspection and accept 19% more.
+
+A colourised DEM barely moves across this whole range, because it is smooth, so
+the setting only really matters for imagery.
+
+### Where the output goes
+
+Today: copy the folder to `portal-data/map/<slug>/` in the repo. That is fine
+while a site is small.
+
+Once a site exceeds the 50 MB trigger in 8h, it goes to a bucket instead and the
+layer route redirects to a signed URL. The bundle layout does not change, which
+is the point of writing it as a self contained folder.
+
+### Still to wire
+
+The portal reads `kind: "raster"` and `kind: "vector"`. This tool emits
+`kind: "tiles"`, which nothing consumes yet, so `prepare-map-data.mjs` remains
+the script that feeds the live map until that lands. Both now share
+`scripts/lib/geo.mjs`, so there is one implementation of the projection and
+shapefile code rather than a copy per script.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)

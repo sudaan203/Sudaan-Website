@@ -20,91 +20,16 @@ import sharp from "sharp";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  lonLatToUtm,
+  lonLatToMercator,
+  mercatorToLonLat,
+  tileBounds,
+  tileRange,
+  TILE_SIZE as TILE,
+} from "./lib/geo.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TILE = 256;
-
-/* ---------------------------------------------------------- projections --- */
-
-const R = 6378137.0;
-
-/** WGS84 lon/lat to spherical mercator metres, the CRS web tiles are cut on. */
-function lonLatToMercator(lon, lat) {
-  const x = (R * lon * Math.PI) / 180;
-  const y = R * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
-  return [x, y];
-}
-
-function mercatorToLonLat(x, y) {
-  const lon = (x / R) * (180 / Math.PI);
-  const lat = (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * (180 / Math.PI);
-  return [lon, lat];
-}
-
-/** Forward UTM, the direction prepare-map-data.mjs does not need. */
-function lonLatToUtm(lon, lat, zone, northern = true) {
-  const a = 6378137.0;
-  const f = 1 / 298.257223563;
-  const k0 = 0.9996;
-  const e2 = f * (2 - f);
-  const ep2 = e2 / (1 - e2);
-
-  const phi = (lat * Math.PI) / 180;
-  const lambda = (lon * Math.PI) / 180;
-  const lambda0 = (((zone - 1) * 6 - 180 + 3) * Math.PI) / 180;
-
-  const n = a / Math.sqrt(1 - e2 * Math.sin(phi) ** 2);
-  const t = Math.tan(phi) ** 2;
-  const c = ep2 * Math.cos(phi) ** 2;
-  const A = Math.cos(phi) * (lambda - lambda0);
-
-  const m =
-    a *
-    ((1 - e2 / 4 - (3 * e2 ** 2) / 64 - (5 * e2 ** 3) / 256) * phi -
-      ((3 * e2) / 8 + (3 * e2 ** 2) / 32 + (45 * e2 ** 3) / 1024) * Math.sin(2 * phi) +
-      ((15 * e2 ** 2) / 256 + (45 * e2 ** 3) / 1024) * Math.sin(4 * phi) -
-      ((35 * e2 ** 3) / 3072) * Math.sin(6 * phi));
-
-  const easting =
-    k0 * n * (A + ((1 - t + c) * A ** 3) / 6 + ((5 - 18 * t + t * t + 72 * c - 58 * ep2) * A ** 5) / 120) +
-    500000;
-
-  let northing =
-    k0 *
-    (m +
-      n *
-        Math.tan(phi) *
-        ((A * A) / 2 +
-          ((5 - t + 9 * c + 4 * c * c) * A ** 4) / 24 +
-          ((61 - 58 * t + t * t + 600 * c - 330 * ep2) * A ** 6) / 720));
-  if (!northern) northing += 10000000;
-
-  return [easting, northing];
-}
-
-/* ---------------------------------------------------------------- tiles --- */
-
-const MERCATOR_EXTENT = 20037508.342789244;
-
-function tileBounds(z, x, y) {
-  const size = (2 * MERCATOR_EXTENT) / 2 ** z;
-  return {
-    west: -MERCATOR_EXTENT + x * size,
-    east: -MERCATOR_EXTENT + (x + 1) * size,
-    north: MERCATOR_EXTENT - y * size,
-    south: MERCATOR_EXTENT - (y + 1) * size,
-  };
-}
-
-function tileRange(z, bbox) {
-  const size = (2 * MERCATOR_EXTENT) / 2 ** z;
-  return {
-    minX: Math.floor((bbox.west + MERCATOR_EXTENT) / size),
-    maxX: Math.floor((bbox.east + MERCATOR_EXTENT) / size),
-    minY: Math.floor((MERCATOR_EXTENT - bbox.north) / size),
-    maxY: Math.floor((MERCATOR_EXTENT - bbox.south) / size),
-  };
-}
 
 /* ------------------------------------------------------------------ run --- */
 
