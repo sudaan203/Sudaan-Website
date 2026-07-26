@@ -74,7 +74,7 @@ const nextConfig = {
     "/api/portal/assets/[assetId]/view/route": ["portal-data/files/**"],
     // The map layers are read from disk at request time too, by the route that
     // serves them and by the pages that read the manifest to build the tab.
-    "/api/portal/sites/[siteSlug]/map/[file]/route": ["portal-data/map/**"],
+    "/api/portal/sites/[siteSlug]/map/[...path]/route": ["portal-data/map/**"],
     "/portal/[siteSlug]/map/page": ["portal-data/map/**"],
     "/portal/[siteSlug]/layout": ["portal-data/map/**"],
   },
