@@ -414,6 +414,43 @@ cell, which took 94,255 points down to 29,422 and the file from 2.2 MB to 660 KB
 **Deliberately different from the reference:** the basemap is off by default and
 says why, because a tile request tells a third party where a client's site is.
 
+## 8i. What the map pipeline does and does not handle
+
+Audited 26 Jul 2026 against the data types Sudaan actually produces, rather than
+the one survey that happened to be on disk. Four things were broken and none of
+them failed loudly. `scripts/portal-map-test.mjs` now guards all of them.
+
+**Fixed:**
+
+- **`-9999` was treated as a real elevation.** It is the commonest nodata
+  sentinel in DEMs, and the old test (`v < -1e4`) let it through by 1 metre. A
+  nodata corner would have drawn as terrain. Now bounded by what an elevation
+  can be, -500 to 9000 m, which catches -9999, -32767, -32768 and -3.4e38 in one
+  rule.
+- **Only `PolyLine` (type 3) contours were read.** Most survey packages export
+  `PolyLineZ` (13) because each line carries its height, and those would have
+  produced an empty layer with no error. Types 3, 13, 23 and the polygon
+  equivalents are read now, and anything else is named in a warning.
+- **An orthomosaic fed to the DEM path read colour channels as metres** and
+  reported "120 to 120 m". It is refused with a message now.
+- **The script was hardcoded to Kotba.** Sites are a config block; adding one is
+  a data change.
+
+**Still not handled, deliberately, and they throw rather than guess:**
+
+| Input | What happens |
+|---|---|
+| Non UTM projection (geographic, Lambert, Web Mercator) | Throws on the `.prj` |
+| Rotated world file | Throws |
+| Orthomosaic imagery | Refused, no imagery path exists yet |
+| ECW | Cannot be read at all without GDAL |
+| Raster over 4,096 px | Downsampled, flagged in the manifest, see 8h |
+| LAS/LAZ point clouds | Not handled, needs a desktop converter |
+| Multiple surveys per site | Manifest has no date dimension yet |
+
+**The ask for the field team stands:** GeoTIFF, or PNG/JPG with its `.tfw` and
+`.prj`, in UTM. Anything else needs a conversion step before it reaches here.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)
