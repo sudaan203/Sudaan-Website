@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import CsvViewer from "./CsvViewer";
 
 /**
  * In browser viewer for a single asset.
@@ -32,6 +33,12 @@ export default function AssetViewer({
         />
       </div>
     );
+  }
+
+  // A delivered point grid is a table of numbers, so show it as one. This used to
+  // fall through to "cannot be previewed" on 5,449 real surveyed elevations.
+  if (mimeType === "text/csv" || mimeType === "text/tab-separated-values") {
+    return <CsvViewer src={src} title={title} />;
   }
 
   if (mimeType.startsWith("image/")) {

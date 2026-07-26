@@ -49,11 +49,11 @@ export const sites: PortalSite[] = [
     location: "Aektanagar, Gujarat",
     district: "Narmada",
     state: "Gujarat",
-    areaLabel: "35 ha",
+    areaLabel: "25.3 ha",
     industry: "Infrastructure",
     status: "delivered",
     summary:
-      "High-precision UAV and LiDAR survey of the Aektanagar site with GCP controlled processing. Deliverables include a 1.8 cm orthomosaic, DSM, DTM, 0.5 m contours, 3D LiDAR point cloud, and elevation grid.",
+      "UAV LiDAR and photogrammetric survey of the Aektanagar site. Deliverables include a 1.8 cm orthomosaic, surface and terrain models spanning 29.5 to 103.0 m, 1 m contours, a 5 m elevation grid and a 50.2 million point LiDAR cloud.",
   },
   {
     id: "st_ambaji",
@@ -208,10 +208,12 @@ export const assets: PortalAsset[] = [
     siteId: "st_aektanagar",
     surveyId: "sv_aektanagar_1",
     category: "drawing",
-    title: "Contour Map, 0.5 m interval",
+    title: "Contour Map, 1 m interval",
     fileName: "contour-map.pdf",
     storageKey: "demo-client/aektanagar/drawings/contour-map.pdf",
     mimeType: "application/pdf",
+    description:
+      "108 contour lines from 30 to 97 m, index every 5 m, drawn to scale in UTM 43N.",
     sortOrder: 1,
   },
   {
@@ -278,11 +280,13 @@ export const assets: PortalAsset[] = [
     siteId: "st_aektanagar",
     surveyId: "sv_aektanagar_1",
     category: "lidar",
-    title: "LiDAR Point Cloud (LAS)",
-    fileName: "Aektanagar Lidar Point Cloud.las",
-    storageKey: "demo-client/aektanagar/uav/Aektanagar Lidar Point Cloud.las",
-    mimeType: "application/octet-stream",
-    description: "3D Classified LiDAR point cloud file (1.7 GB).",
+    title: "LiDAR Point Cloud, survey summary",
+    fileName: "point-cloud-summary.pdf",
+    storageKey: "demo-client/aektanagar/uav/point-cloud-summary.pdf",
+    mimeType: "application/pdf",
+    description:
+      "50,183,644 points at 181.7 per m2, ground and unclassified returns, LAS 1.2. " +
+      "Read from the file header. The cloud itself needs a point cloud viewer, which is not built yet.",
     sortOrder: 1,
   },
 
