@@ -861,6 +861,52 @@ browser refuses on its behalf.** If a layer silently does not draw, check the CS
 before the map code, alongside the MapLibre worker problem in 8g, which fails the
 same silent way.
 
+## 8o. The white slab around a survey, and a manifest that ate itself
+
+Two bugs found by looking at the map with the basemap turned on.
+
+### An orthomosaic footprint is not a rectangle, but its file is
+
+Aektanagar's ortho is a JPEG, which carries no alpha, and **25.8% of it is pure
+white filler** around the survey footprint. `ensureAlpha()` marked all of that
+opaque, so the portal drew a white slab over the basemap around every survey.
+
+`scripts/lib/nodata.mjs` clears it, and the interesting part is what it refuses to
+do. Blanket "white becomes transparent" would punch holes through concrete, roofs
+and road markings. So two conditions have to hold:
+
+- **Contiguous with the border.** Filler touches the edge; a white roof in the
+  middle does not. A scanline flood fill inward separates them with no per site
+  threshold to tune.
+- **The colour must look like a sentinel**, every channel at 250 or above, or 5 and
+  below. Agreeing corners alone are not enough: a synthetic all green raster had
+  agreeing corners and got 100% of itself cleared, which the test caught. Dense
+  forest or open water would have done the same thing to a real survey.
+
+Result on Aektanagar: 26.2% cleared, and 284 tiles that were pure white slabs are
+now empty and never written. Detected as `rgb(255,255,255)` and recorded in the
+manifest as `backgroundCleared`, so it is visible rather than magic. `--no-mask`
+turns it off, `--mask-tolerance` widens it.
+
+### prepare-site.mjs replaced the manifest instead of updating it
+
+Found while re-tiling one raster. Running it on a subfolder took Aektanagar from
+five declared layers to one, **while all four pyramids sat on disk untouched**, so
+the portal would have shown a single layer with no error anywhere. The same silent
+shape as the stale manifest in 8l, reached from the opposite direction: there the
+manifest was too old, here it was too new and too empty.
+
+It reads the existing manifest now, upserts by key through
+`scripts/lib/manifest.mjs`, reports which layers it left alone, and calls
+`verify()` before finishing. Re-running for one file is safe, and
+`portal-map-test.mjs` covers it: a partial run keeps the other layers, updates
+rather than duplicates the one it produced, and `verify()` catches both a layer
+with no tiles and a zoom range that disagrees with disk.
+
+The general rule worth keeping: **anything that writes the manifest must merge,
+never replace.** It is the one file that describes everything else, it is written
+last, and every failure around it has been silent.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)

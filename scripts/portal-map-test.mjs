@@ -59,5 +59,74 @@ const m = await sharp("/tmp/rt/ortho.tif").metadata();
 const refused = !(m.channels === 1 && m.depth === "float");
 check("RGB ortho is detected as not-an-elevation-model", refused, `${m.channels}ch ${m.depth}`);
 
-console.log(fail===0?`\nall ${pass} checks passed\n`:`\n${fail} FAILED\n`);
-process.exit(fail?1:0);
+
+/* ------------------------------------------- manifest and background masking --- */
+
+console.log("\n--- a partial run must not destroy the manifest ---");
+{
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const pathMod = await import("node:path");
+  const { readManifest, emptyManifest, upsertLayer, writeManifest, verify } =
+    await import("./lib/manifest.mjs");
+
+  const dir = mkdtempSync(pathMod.join(tmpdir(), "manifest-"));
+  const m = emptyManifest("test-site");
+  upsertLayer(m, { key: "ortho", kind: "tiles", title: "Orthomosaic", tiles: "tiles/ortho/{z}/{x}/{y}.webp", minZoom: 1, maxZoom: 2 });
+  upsertLayer(m, { key: "dtm", kind: "tiles", title: "Terrain model (DTM)", tiles: "tiles/dtm/{z}/{x}/{y}.webp", minZoom: 1, maxZoom: 2 });
+  writeManifest(dir, m);
+
+  // A second run that only produces one layer must upsert, not replace.
+  const again = readManifest(dir);
+  upsertLayer(again, { key: "ortho", kind: "tiles", title: "Orthomosaic", tiles: "tiles/ortho/{z}/{x}/{y}.webp", minZoom: 1, maxZoom: 3 });
+  writeManifest(dir, again);
+  const after = readManifest(dir);
+  check("re-running for one layer keeps the others", after.layers.length === 2,
+    after.layers.map((l) => l.key).join(", "));
+  check("and updates the one it produced rather than duplicating it",
+    after.layers.filter((l) => l.key === "ortho").length === 1 &&
+      after.layers.find((l) => l.key === "ortho").maxZoom === 3);
+
+  // verify() must notice a layer whose tiles are not there.
+  for (const z of [1, 2]) mkdirSync(pathMod.join(dir, "tiles", "ortho", String(z), "0"), { recursive: true });
+  writeFileSync(pathMod.join(dir, "tiles", "ortho", "1", "0", "0.webp"), "x");
+  const problems = verify(dir);
+  check("verify() reports a layer with no tiles on disk",
+    problems.some((p) => /dtm/.test(p)), problems.find((p) => /dtm/.test(p)) ?? "none");
+  check("verify() reports a zoom range that disagrees with disk",
+    problems.some((p) => /z1-3|disk has/.test(p)), problems.find((p) => /disk has/.test(p)) ?? "none");
+}
+
+console.log("\n--- flat filler around a footprint becomes transparent ---");
+{
+  const { detectBackground, maskBorderBackground } = await import("./lib/nodata.mjs");
+  const W = 40, H = 40;
+  const rgba = Buffer.alloc(W * H * 4);
+  // White frame, green blob in the middle, plus one white pixel inside the blob.
+  for (let i = 0; i < W * H; i += 1) {
+    const x = i % W, y = (i / W) | 0;
+    const inside = x > 9 && x < 30 && y > 9 && y < 30;
+    const v = inside ? [90, 140, 70] : [255, 255, 255];
+    rgba[i * 4] = v[0]; rgba[i * 4 + 1] = v[1]; rgba[i * 4 + 2] = v[2]; rgba[i * 4 + 3] = 255;
+  }
+  const roof = (20 * W + 20) * 4;
+  rgba[roof] = 255; rgba[roof + 1] = 255; rgba[roof + 2] = 255;
+
+  check("the filler colour is detected from the corners",
+    JSON.stringify(detectBackground(rgba, W, H)) === JSON.stringify([255, 255, 255]));
+  const res = maskBorderBackground(rgba, W, H);
+  check("the border filler is cleared", res !== null && res.cleared > 0, res ? `${(res.share * 100).toFixed(0)}% cleared` : "nothing");
+  check("a white roof inside the footprint is NOT cleared", rgba[roof + 3] === 255,
+    "otherwise the mask punches holes through real imagery");
+  check("a corner really is transparent now", rgba[3] === 0);
+
+  // Imagery that fills its own frame must be left alone.
+  const full = Buffer.alloc(W * H * 4);
+  for (let i = 0; i < W * H; i += 1) {
+    full[i * 4] = 90; full[i * 4 + 1] = 140; full[i * 4 + 2] = 70; full[i * 4 + 3] = 255;
+  }
+  check("imagery with no flat border is left untouched", maskBorderBackground(full, W, H) === null);
+}
+
+console.log(`\n${fail === 0 ? `all ${pass} checks passed` : `${pass} passed, ${fail} FAILED`}`);
+process.exit(fail ? 1 : 0);
