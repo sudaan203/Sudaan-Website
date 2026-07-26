@@ -47,6 +47,10 @@ import {
   tileRange,
   TILE_SIZE,
 } from "./lib/geo.mjs";
+import { maskBorderBackground } from "./lib/nodata.mjs";
+import {
+  readManifest, emptyManifest, upsertLayer, sortLayers, writeManifest, verify,
+} from "./lib/manifest.mjs";
 
 /* --------------------------------------------------------------- options --- */
 
@@ -69,6 +73,10 @@ const maxZoomOverride = flag("max-zoom", null);
 // bundle: 750 Mpx wanted 3 GB, the process died after two thirds of a pyramid,
 // and because the manifest is written last it was never updated.
 const maxPixels = Number(flag("max-pixels", 120_000_000));
+// Imagery with no alpha gets its flat border filler made transparent. --no-mask
+// turns that off; --mask-tolerance widens what counts as the same flat colour.
+const noMask = argv.includes("--no-mask");
+const maskTolerance = Number(flag("mask-tolerance", 10));
 
 if (!inputDir || !siteSlug) {
   console.error(`
@@ -79,6 +87,8 @@ Usage: node scripts/prepare-site.mjs <input-folder> <site-slug> [options]
   --max-zoom N     stop at this zoom instead of native resolution
   --max-pixels N   working limit for one raster (default 120000000). Imagery
                    above it is resized to fit and flagged in the manifest.
+  --no-mask        keep the flat filler around an orthomosaic footprint opaque
+  --mask-tolerance N  how close to the corner colour still counts as filler (10)
 
 Example:
   node scripts/prepare-site.mjs ~/surveys/reliance reliance-jamnagar
@@ -182,7 +192,23 @@ if (rasterFiles.length === 0 && shapefiles.length === 0) {
 }
 
 mkdirSync(outDir, { recursive: true });
-const manifest = { site: siteSlug, generatedAt: new Date().toISOString(), layers: [] };
+
+/**
+ * Start from the manifest that is already there, not from an empty one.
+ *
+ * This used to build a fresh manifest and overwrite whatever existed, which makes
+ * any partial run destructive. Re-tiling one raster from a subfolder took
+ * Aektanagar from five declared layers to one while all four pyramids sat on disk
+ * untouched, so the portal would have shown a single layer with no error
+ * anywhere. Exactly the silent shape of the stale manifest bug in context.md 8l,
+ * arrived at from the opposite direction.
+ *
+ * Layers produced by this run are upserted by key; layers this run did not touch
+ * are left alone and reported, so re-running for one file is safe.
+ */
+const manifest = readManifest(outDir) ?? emptyManifest(siteSlug);
+const layersBefore = new Set(manifest.layers.map((l) => l.key));
+const touched = new Set();
 const report = [];
 
 /* --------------------------------------------------------------- rasters --- */
@@ -334,7 +360,8 @@ async function tileRaster({ key, title, rgba, width, height, geo, extra }) {
     }
   }
 
-  manifest.layers.push({
+  touched.add(key);
+  upsertLayer(manifest, {
     key,
     kind: "tiles",
     title,
@@ -419,15 +446,45 @@ for (const file of rasterFiles) {
       `  ${basename(file)}: imagery ${raw.width}x${raw.height}` +
         (oversized ? ` (from ${info.meta.width}x${info.meta.height})` : ""),
     );
+
+    /**
+     * Make the flat filler around the footprint transparent.
+     *
+     * A survey footprint is an irregular polygon inside a rectangular file, and
+     * the processing software fills the difference with a flat colour. JPEG and
+     * ECW carry no alpha, so ensureAlpha above has just marked all of that opaque,
+     * and the portal would draw a white slab over the basemap around the survey.
+     * Aektanagar's orthomosaic is 25.8% pure white for exactly this reason.
+     *
+     * Only filler connected to the image border is cleared, so a white roof in
+     * the middle of the site survives. If the imagery reaches its own edges, or
+     * the corners are not flat, nothing is done: a cosmetic slab is a much smaller
+     * problem than holes punched through real imagery.
+     */
+    let masked = null;
+    if (!info.meta.hasAlpha && !noMask) {
+      masked = maskBorderBackground(data, raw.width, raw.height, { tolerance: maskTolerance });
+      if (masked) {
+        console.log(
+          `    background rgb(${masked.background.join(",")}) cleared from the border, ` +
+            `${(masked.share * 100).toFixed(1)}% of the image`,
+        );
+      } else {
+        console.log(`    no flat border background detected, imagery left as it is`);
+      }
+    }
     await tileRaster({
       key, title: friendlyTitle(basename(file).replace(/\.[^.]+$/, "")),
       rgba: data, width: raw.width, height: raw.height,
       geo: oversized
         ? { ...geo, world: scaleWorld(geo.world, info.meta.width, info.meta.height, raw.width, raw.height) }
         : geo,
-      extra: oversized
-        ? { downsampledFrom: [info.meta.width, info.meta.height] }
-        : {},
+      extra: {
+        ...(oversized ? { downsampledFrom: [info.meta.width, info.meta.height] } : {}),
+        ...(masked
+          ? { backgroundCleared: { rgb: masked.background, share: Number(masked.share.toFixed(4)) } }
+          : {}),
+      },
     });
   }
 }
@@ -521,7 +578,8 @@ for (const shp of shapefiles) {
   const bytes = statSync(join(outDir, file)).size;
 
   const elevations = features.map((f) => f.properties.elevation).filter(Number.isFinite);
-  manifest.layers.push({
+  touched.add(key);
+  upsertLayer(manifest, {
     key,
     kind: "vector",
     title: friendlyTitle(basename(stem)),
@@ -540,7 +598,19 @@ for (const shp of shapefiles) {
 
 /* ----------------------------------------------------------------- write --- */
 
-writeFileSync(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+const preserved = [...layersBefore].filter((k) => !touched.has(k));
+sortLayers(manifest);
+writeManifest(outDir, manifest);
+if (preserved.length) {
+  console.log(`\nkept ${preserved.length} layer(s) this run did not touch: ${preserved.join(", ")}`);
+}
+
+const problems = verify(outDir, manifest);
+if (problems.length) {
+  console.error(`\nthe manifest does not match what is on disk:`);
+  for (const pr of problems) console.error(`  ! ${pr}`);
+  process.exit(1);
+}
 
 const totalBytes = report.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
 console.log(`

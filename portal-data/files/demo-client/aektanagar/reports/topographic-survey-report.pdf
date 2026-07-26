@@ -56,37 +56,37 @@ BT
 /F1 9.5 Tf
 0.42 0.42 0.42 rg
 48 713.89 Td
-(Surface model \(DSM\)) Tj
-ET
-BT
-/F2 9.5 Tf
-0.18 0.18 0.18 rg
-466.489 713.89 Td
-(29.48 to 103.01 m) Tj
-ET
-BT
-/F1 9.5 Tf
-0.42 0.42 0.42 rg
-48 699.89 Td
-(Terrain model \(DTM\)) Tj
-ET
-BT
-/F2 9.5 Tf
-0.18 0.18 0.18 rg
-472.061 699.89 Td
-(29.48 to 98.18 m) Tj
-ET
-BT
-/F1 9.5 Tf
-0.42 0.42 0.42 rg
-48 685.89 Td
 (Orthomosaic) Tj
 ET
 BT
 /F2 9.5 Tf
 0.18 0.18 0.18 rg
-500.495 685.89 Td
+500.495 713.89 Td
 (tiled raster) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 699.89 Td
+(Surface model \(DSM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+466.489 699.89 Td
+(29.48 to 103.01 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 685.89 Td
+(Terrain model \(DTM\)) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+472.061 685.89 Td
+(29.48 to 98.18 m) Tj
 ET
 BT
 /F1 9.5 Tf
