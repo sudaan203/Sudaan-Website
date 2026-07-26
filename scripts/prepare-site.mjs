@@ -137,7 +137,9 @@ async function classify(file) {
 }
 
 console.log(`\nreading ${inputDir}`);
-const entries = readdirSync(inputDir).map((f) => join(inputDir, f));
+const entries = readdirSync(inputDir, { recursive: true })
+  .map((f) => join(inputDir, String(f)))
+  .filter((f) => statSync(f).isFile());
 
 const rasterFiles = entries.filter((f) =>
   [".tif", ".tiff", ".png", ".jpg", ".jpeg"].includes(extname(f).toLowerCase()),

@@ -1,0 +1,73 @@
+{
+  "site": "aektanagar-survey",
+  "generatedAt": "2026-07-26T06:17:50.330Z",
+  "layers": [
+    {
+      "key": "dsm",
+      "kind": "raster",
+      "title": "Surface model (DSM)",
+      "file": "dsm.webp",
+      "coordinates": [
+        [
+          73.65789550453509,
+          21.891458896671505
+        ],
+        [
+          73.66266334647376,
+          21.891497697208397
+        ],
+        [
+          73.66270658323366,
+          21.886861215066542
+        ],
+        [
+          73.65793889532911,
+          21.886822423575786
+        ]
+      ],
+      "elevation": {
+        "min": 29.48,
+        "max": 103.01
+      }
+    },
+    {
+      "key": "dtm",
+      "kind": "raster",
+      "title": "Terrain model (DTM)",
+      "file": "dtm.webp",
+      "coordinates": [
+        [
+          73.65789550453509,
+          21.891458896671505
+        ],
+        [
+          73.66266334647376,
+          21.891497697208397
+        ],
+        [
+          73.66270658323366,
+          21.886861215066542
+        ],
+        [
+          73.65793889532911,
+          21.886822423575786
+        ]
+      ],
+      "elevation": {
+        "min": 29.48,
+        "max": 98.18
+      }
+    },
+    {
+      "key": "contours",
+      "kind": "vector",
+      "title": "Contours",
+      "file": "contours.geojson",
+      "featureCount": 108,
+      "elevation": {
+        "min": 30,
+        "max": 97
+      }
+    }
+  ]
+}

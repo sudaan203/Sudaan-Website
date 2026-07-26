@@ -61,6 +61,15 @@ const SITES = {
       { key: "contours", title: "Contours", shapefile: "Contours/Kotba Contours" },
     ],
   },
+  "aektanagar-survey": {
+    rasters: [
+      { key: "dsm", title: "Surface model (DSM)", tif: "Aektanagar/Aekatanagar DSM.tif" },
+      { key: "dtm", title: "Terrain model (DTM)", tif: "Aektanagar/Aekatanagar DTM.tif" },
+    ],
+    vectors: [
+      { key: "contours", title: "Contours", shapefile: "Aektanagar/Contours/Contours/Contours" },
+    ],
+  },
 };
 
 const requested = process.argv[2];

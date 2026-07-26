@@ -22,8 +22,10 @@ if (!url) {
 const CLIENT_DEMO = "11111111-1111-4111-8111-111111111111";
 const CLIENT_SECOND = "22222222-2222-4222-8222-222222222222";
 const SITE_KOTBA = "33333333-3333-4333-8333-333333333333";
+const SITE_AEKTANAGAR = "33333333-3333-4333-8333-777777777777";
 const SITE_AMBAJI = "44444444-4444-4444-8444-444444444444";
 const SURVEY_KOTBA = "55555555-5555-4555-8555-555555555555";
+const SURVEY_AEKTANAGAR = "55555555-5555-4555-8555-777777777777";
 const SURVEY_AMBAJI = "66666666-6666-4666-8666-666666666666";
 const asset = (n) => `a0000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -46,6 +48,21 @@ const sites = [
     status: "delivered",
     summary:
       "UAV survey of the Kotba site with GCP controlled processing. Deliverables include a 3 cm orthomosaic, DSM, DTM and 0.5 m contours.",
+    is_published: true,
+  },
+  {
+    id: SITE_AEKTANAGAR,
+    client_id: CLIENT_DEMO,
+    slug: "aektanagar-survey",
+    name: "Aektanagar Site Survey",
+    location: "Aektanagar, Gujarat",
+    district: "Narmada",
+    state: "Gujarat",
+    area_label: "35 ha",
+    industry: "Infrastructure",
+    status: "delivered",
+    summary:
+      "High-precision UAV and LiDAR survey of the Aektanagar site with GCP controlled processing. Deliverables include a 1.8 cm orthomosaic, DSM, DTM, 0.5 m contours, 3D LiDAR point cloud, and elevation grid.",
     is_published: true,
   },
   {
@@ -72,6 +89,13 @@ const surveys = [
     label: "Baseline flight",
     flown_on: "2024-05-03",
     notes: "DJI survey, 12 GCPs, RTK corrected.",
+  },
+  {
+    id: SURVEY_AEKTANAGAR,
+    site_id: SITE_AEKTANAGAR,
+    label: "Baseline flight",
+    flown_on: "2024-07-20",
+    notes: "UAV LiDAR and high-resolution RGB camera survey, 10 GCPs, RTK & PPK corrected.",
   },
   {
     id: SURVEY_AMBAJI,
@@ -102,6 +126,23 @@ const assets = [
     "demo-client/kotba/imagery/dtm.webp", "image/webp", "Bare earth terrain model.", 3],
   [8, SITE_KOTBA, SURVEY_KOTBA, "photo", "Contours over orthomosaic", "contours.webp",
     "demo-client/kotba/imagery/contours.webp", "image/webp", null, 4],
+  [11, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "report", "Topographic Survey Report", "topographic-survey-report.pdf",
+    "demo-client/aektanagar/reports/topographic-survey-report.pdf", "application/pdf",
+    "Methodology, control network, accuracy statement and LiDAR deliverables summary.", 1],
+  [12, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "drawing", "Contour Map, 0.5 m interval", "contour-map.pdf",
+    "demo-client/aektanagar/drawings/contour-map.pdf", "application/pdf", null, 1],
+  [13, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "drawing", "Survey Elevation Grid (5m x 5m)", "Grid.csv",
+    "demo-client/aektanagar/drawings/Grid.csv", "text/csv", "5m grid elevation point dataset exported in UTM 43N / WGS84.", 2],
+  [14, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "photo", "Orthomosaic preview", "ortho.webp",
+    "demo-client/aektanagar/imagery/ortho.webp", "image/webp", "True colour high-resolution orthomosaic (1.8 cm GSD).", 1],
+  [15, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "photo", "DSM preview", "dsm.webp",
+    "demo-client/aektanagar/imagery/dsm.webp", "image/webp", "Digital surface model, colourised with elevation gradient.", 2],
+  [16, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "photo", "DTM preview", "dtm.webp",
+    "demo-client/aektanagar/imagery/dtm.webp", "image/webp", "Bare earth digital terrain model.", 3],
+  [17, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "photo", "Contours over orthomosaic", "contours.webp",
+    "demo-client/aektanagar/imagery/contours.webp", "image/webp", null, 4],
+  [18, SITE_AEKTANAGAR, SURVEY_AEKTANAGAR, "uav", "LiDAR Point Cloud (LAS)", "Aektanagar Lidar Point Cloud.las",
+    "demo-client/aektanagar/uav/Aektanagar Lidar Point Cloud.las", "application/octet-stream", "3D Classified LiDAR point cloud file (1.7 GB).", 1],
   [9, SITE_AMBAJI, SURVEY_AMBAJI, "report", "Topographic Survey Report", "topographic-survey.pdf",
     "second-client/ambaji/reports/topographic-survey.pdf", "application/pdf", null, 1],
   [10, SITE_AMBAJI, SURVEY_AMBAJI, "photo", "Orthomosaic preview", "ortho.webp",
