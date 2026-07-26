@@ -451,6 +451,96 @@ them failed loudly. `scripts/portal-map-test.mjs` now guards all of them.
 **The ask for the field team stands:** GeoTIFF, or PNG/JPG with its `.tfw` and
 `.prj`, in UTM. Anything else needs a conversion step before it reaches here.
 
+## 8j. Full quality data on a light website: the architecture
+
+The question this answers: how does the portal show a client their survey at full
+resolution without the website carrying the weight of it. Worked out from
+Sudaan's own portfolio, not from general advice.
+
+### What the portfolio actually demands
+
+At the accuracy the site advertises, plus or minus 3 to 4 cm, which means 2 to
+5 cm ground sampling:
+
+| Site | Area | Pixels at 5 cm | Raw RGB |
+|---|---|---|---|
+| Dang Forest | 450 km² | 180 Gpx | 540 GB |
+| Kutch dams | 70 km² | 28 Gpx | 84 GB |
+| Navsari | 64 km² | 25.6 Gpx | 77 GB |
+| Bavla, Gandhinagar | 20 km² each | 8 Gpx | 24 GB |
+| Kotba (the demo) | 0.13 km² | 51 Mpx | 154 MB |
+
+Dang Forest at 2 cm is **3.4 TB**. No single image approach survives contact
+with this, and the corridor jobs are worse in a different way: a 110 km
+transmission corridor covers about 22 km² of ground inside a bounding box of
+roughly 4,200 km², so **99% of one big image would be empty pixels**.
+
+### The answer, and the measurement that proves it
+
+Tile pyramids. The browser fetches only the 256 px squares covering the current
+view, so cost is flat in the size of the deliverable.
+
+Measured on the real Kotba DSM with `scripts/make-tiles.mjs`:
+
+```
+153 tiles, z14 to z20, 0.44 MB total, 2.9 KB average
+53 empty tiles skipped
+a 1440x900 screen pulls ~24 tiles = 70 to 78 KB, at every zoom
+```
+
+**70 KB per screenful whether the source is 150 MB or 3 TB.** Empty tiles are
+never written, which is what makes the corridor jobs affordable.
+
+Georeferencing was checked against an independently calculated slippy map tile
+index rather than by looking at the picture.
+
+### Where each piece runs, which is the actual design decision
+
+**Do not process rasters on Vercel, and do not put them in git.** The split:
+
+1. **Production, on the desktop Sudaan already uses.** Pix4D, Agisoft, Global
+   Mapper and QGIS all already produce these deliverables. Add one export step:
+   QGIS has "Generate XYZ Tiles" built into Processing, GDAL has `gdal2tiles`,
+   and either produces exactly what the portal needs. No new vendor, no new
+   cost, and it runs on the machine that already holds the data.
+   `scripts/make-tiles.mjs` is the fallback for when that is not available; it
+   is slower and reads fewer formats.
+2. **Storage: Cloudflare R2.** 10 GB free, and **egress is free**, which is the
+   number that matters when serving imagery. At $0.015/GB/month beyond that,
+   100 GB of tiles is about $1.50 a month. Supabase Storage works too but bills
+   egress after 5 GB.
+3. **The portal stays a thin authorising layer.** It checks the caller can see
+   the site, then redirects to a short lived signed URL. Bytes come from R2's
+   edge, not from a serverless function.
+
+### Why this keeps the site light, concretely
+
+- **The repository does not grow.** Imagery never enters git or the Vercel
+  bundle, so builds and deploys stay where they are today.
+- **Function time stays near zero.** The portal answers with a redirect, not
+  megabytes.
+- **The client's browser holds one viewport**, about 70 KB, instead of a whole
+  raster, and zooming fetches the next few tiles rather than a bigger image.
+
+### Quality is not the thing being traded away
+
+Tiles go to native resolution. Kotba's 15 cm data reaches z20; 2 cm data reaches
+z22 or z23. A client can zoom to the limit of what was flown, which is more than
+the current single overlay allows, since that is capped at 4,096 px and
+downsamples anything larger.
+
+### The order to build it
+
+1. Portal support for `kind: "tiles"` layers: a manifest entry and a MapLibre
+   raster source. Small, and there are real tiles on disk to test against.
+2. An R2 bucket and the signed URL redirect in the layer route.
+3. Move the desktop export into the delivery checklist, so tiles arrive with the
+   deliverables rather than being generated after the fact.
+
+Steps 1 and 2 are independent: tiles can be served from `portal-data` first and
+moved to R2 when a real site outgrows the repository, which is the 50 MB trigger
+in 8h.
+
 ## 9. Pending / TODO (next steps)
 1. **Consultation email (highest priority):** the contact form works but only logs server-side until
    Resend is configured. Steps: create a Resend account → verify `sudaangeo.in` (add DNS at Hostinger)
