@@ -8,9 +8,10 @@
  * with the owner console's four reads: pool of 1 hangs indefinitely, pool of 2
  * takes 9.1s, pool of 4 takes 325ms.
  *
- * This runs against port 6543 whatever .env.local says, because .env.local
- * points at the session pooler on 5432, which does not have this behaviour. That
- * single digit is why the fault never reproduced locally for days.
+ * It runs on port 6543 whatever is configured, and also fails when the
+ * configured port is not 6543. Local and production pointing at different
+ * poolers is what hid the outage: every local test passed on 5432 while every
+ * production request failed on 6543. Keeping them the same is the point.
  *
  * Run:
  *   npx tsx scripts/portal-pooler-test.mts
@@ -28,8 +29,10 @@ if (!configured) {
   process.exit(1);
 }
 
-// Force the production port regardless of what is configured locally.
+// Force the production port regardless of what is configured, so the test is
+// always meaningful, then report the drift separately rather than hiding it.
 process.env.DATABASE_URL = configured.replace(/:(5432|6543)\//, ":6543/");
+const configuredPort = /pooler\.supabase\.com:(\d+)/.exec(configured)?.[1] ?? "unknown";
 console.log("\ntransaction pooler, port 6543\n");
 
 const { getDb, queryDb, mapPooled } = await import("../src/lib/portal/db/client.ts");
@@ -46,6 +49,12 @@ function check(label: string, ok: boolean, detail = "") {
   console.log(`  ${ok ? "ok  " : "FAIL"} ${label}${detail ? ` — ${detail}` : ""}`);
   if (!ok) failures += 1;
 }
+
+check(
+  "local DATABASE_URL uses the same pooler as production (6543)",
+  configuredPort === "6543",
+  configuredPort === "6543" ? "" : `configured port is ${configuredPort}, see .env.example`,
+);
 
 const ownerConsoleReads = () =>
   queryDb("owner console", () =>
