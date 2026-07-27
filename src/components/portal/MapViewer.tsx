@@ -634,12 +634,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           </span>
         ) : null}
         {hasTerrain ? (
-          <label className="ml-auto flex items-center gap-2 text-xs text-ink/70">
+          <label className="ml-auto flex min-h-6 cursor-pointer items-center gap-2 py-0.5 text-xs text-ink/70">
             <input
               type="checkbox"
               checked={hillshade}
               onChange={(e) => setHillshade(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
+              className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
             />
             Relief shading
           </label>
@@ -651,7 +651,20 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           ref={container}
           role="application"
           aria-label={`Survey map of ${siteName}`}
-          className="h-[68vh] min-h-[420px] w-full bg-mist"
+          /**
+           * Sized to what is left of the viewport, not to a flat 68vh.
+           * At 68vh on a 900px laptop the map ran past the fold, so the bottom of
+           * the layer tree and the basemap toggle were only reachable by scrolling
+           * the page, which is the one thing you do not want to do while panning a
+           * map. clamp keeps it usable on a short window and stops it becoming
+           * absurd on a tall one.
+           *
+           * 26rem is measured, not guessed: the page chrome above the canvas is
+           * 389px (header, back link, title, section heading, toolbar), so
+           * 100vh-20rem left the card 70px past the fold at every viewport height
+           * tested. 26rem leaves it about 25px of clearance.
+           */
+          className="h-[clamp(360px,calc(100vh-26rem),760px)] w-full bg-mist"
         />
 
         {!ready ? (
@@ -770,7 +783,10 @@ function LayerTree({
                 const on = isDem ? hillshade : Boolean(visible[layer.key]);
                 return (
                   <div key={layer.key}>
-                    <label className="flex items-center gap-2 text-sm text-ink-900">
+                    {/* min-h-6 so the row itself clears the 24px minimum target
+                        size. The visible box stays 16px; the label is what gets
+                        clicked, and it spans the full width of the panel. */}
+                    <label className="flex min-h-6 cursor-pointer items-center gap-2 py-0.5 text-sm text-ink-900">
                       <input
                         type="checkbox"
                         checked={on}
@@ -792,11 +808,30 @@ function LayerTree({
                       </p>
                     ) : null}
 
-                    <label className="ml-6 mt-1.5 flex items-center gap-2">
-                      <span className="sr-only">
-                        {layer.title} {isDem ? "relief strength" : "opacity"}
-                      </span>
+                    {/*
+                      The slider carries its own visible label and value.
+                      It used to be an unlabelled 1px-high track: a sighted user had
+                      no idea what it did, and the accessible name came out as
+                      "Orthomosaicopacity" because the sr-only span sat directly
+                      against the title with no separating space.
+                    */}
+                    <div className="ml-6 mt-1.5">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <label
+                          htmlFor={`op-${layer.key}`}
+                          className={`text-[10px] uppercase tracking-wide ${on ? "text-ink/45" : "text-ink/25"}`}
+                        >
+                          {isDem ? "Relief" : "Opacity"}
+                        </label>
+                        <span
+                          aria-hidden
+                          className={`font-mono text-[10px] ${on ? "text-ink/45" : "text-ink/25"}`}
+                        >
+                          {Math.round((opacity[layer.key] ?? RASTER_OPACITY) * 100)}%
+                        </span>
+                      </div>
                       <input
+                        id={`op-${layer.key}`}
                         type="range"
                         min={0}
                         max={100}
@@ -805,9 +840,14 @@ function LayerTree({
                         onChange={(e) =>
                           setOpacity((o) => ({ ...o, [layer.key]: Number(e.target.value) / 100 }))
                         }
-                        className="h-1 w-full accent-accent-600 disabled:opacity-40"
+                        // h-6 is the hit area, not the track. A range input renders
+                        // its track at the browser default thickness and centres the
+                        // thumb, so this is a 24px grab target that still looks like a
+                        // hairline. It was 6px, which is fiddly with a mouse and worse
+                        // with a thumb.
+                        className="h-6 w-full cursor-pointer accent-accent-600 disabled:cursor-not-allowed disabled:opacity-40"
                       />
-                    </label>
+                    </div>
 
                     {isDem ? (
                       <p className="ml-6 mt-1 text-[11px] leading-snug text-ink/55">
@@ -827,21 +867,28 @@ function LayerTree({
         <legend className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink/50">
           Base map
         </legend>
-        <label className="flex items-start gap-2 text-sm text-ink-900">
+        {/*
+          The explanation is a description, not part of the name.
+          Nested inside the label it became part of the accessible name, so a
+          screen reader announced "OpenStreetMap Off by default. Turning this on
+          requests map tiles from OpenStreetMap, which reveals roughly where this
+          site is to a third party, checkbox" every single time. aria-describedby
+          keeps the reasoning available without reading an essay on focus.
+        */}
+        <label className="flex min-h-6 items-center gap-2 py-0.5 text-sm text-ink-900">
           <input
             type="checkbox"
             checked={basemap}
             onChange={(e) => setBasemap(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
+            aria-describedby="basemap-privacy"
+            className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
           />
-          <span>
-            OpenStreetMap
-            <span className="mt-0.5 block text-[11px] leading-snug text-ink/55">
-              Off by default. Turning this on requests map tiles from OpenStreetMap,
-              which reveals roughly where this site is to a third party.
-            </span>
-          </span>
+          OpenStreetMap
         </label>
+        <p id="basemap-privacy" className="ml-6 mt-0.5 text-[11px] leading-snug text-ink/55">
+          Off by default. Turning this on requests map tiles from OpenStreetMap,
+          which reveals roughly where this site is to a third party.
+        </p>
       </fieldset>
     </div>
   );

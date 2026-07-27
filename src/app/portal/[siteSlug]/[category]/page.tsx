@@ -35,23 +35,36 @@ export default async function CategoryPage({
       ) : category.layout === "gallery" ? (
         <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {assets.map((asset) => (
-            <li key={asset.id}>
+            // Cards in a row have to end level. Descriptions run to one line, two,
+            // or none at all, so without stretching the row the bottom edges
+            // stagger by 10 to 30px and the grid stops reading as a grid.
+            <li key={asset.id} className="flex">
               <Link
                 href={`/portal/${site.slug}/${category.slug}/${asset.id}`}
-                className="surface surface-hover group block overflow-hidden"
+                className="surface surface-hover group flex w-full flex-col overflow-hidden"
               >
                 {/*
                   Plain img, not next/image: the optimizer would cache client
                   imagery on a shared CDN, and this data is private.
                 */}
-                <span className="block aspect-[4/3] overflow-hidden bg-mist">
+                {/*
+                  object-contain, not object-cover.
+                  A survey footprint is an irregular shape, and cover crops to the
+                  centre, so a DSM thumbnail became an abstract orange texture with
+                  no recognisable site in it. The whole point of these tiles is that
+                  a client recognises their own site at a glance, which means the
+                  edges have to be in frame. p-2 keeps the artwork off the border,
+                  and the scale on hover is dropped: growing a contained image just
+                  pushes its edges under the crop.
+                */}
+                <span className="block aspect-[4/3] overflow-hidden bg-mist p-2">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={`/api/portal/assets/${asset.id}/view`}
                     alt={asset.title}
                     loading="lazy"
                     draggable={false}
-                    className="h-full w-full select-none object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+                    className="h-full w-full select-none object-contain transition-opacity duration-300 group-hover:opacity-90"
                   />
                 </span>
                 <span className="block p-4">

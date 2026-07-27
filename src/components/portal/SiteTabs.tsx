@@ -14,9 +14,19 @@ export default function SiteTabs({ tabs }: { tabs: Tab[] }) {
   const pathname = usePathname();
 
   return (
+    /**
+     * On a phone this is a horizontally scrolling row, and there was nothing to
+     * say so: the last tab sat flush against the edge looking like the end of the
+     * list rather than the start of an overflow. The mask fades the right edge, so
+     * a cut off tab reads as "there is more this way".
+     *
+     * Implemented as a mask rather than a gradient overlay because the row scrolls
+     * under it; an opaque overlay would need to match the page background, and this
+     * page has two of them.
+     */
     <nav
       aria-label="Site sections"
-      className="-mx-6 shrink-0 overflow-x-auto px-6 pb-2 lg:mx-0 lg:w-56 lg:overflow-visible lg:px-0 lg:pb-0"
+      className="-mx-6 shrink-0 overflow-x-auto px-6 pb-2 [mask-image:linear-gradient(to_right,transparent_0,black_1.5rem,black_calc(100%-2.5rem),transparent_100%)] lg:mx-0 lg:w-56 lg:overflow-visible lg:px-0 lg:pb-0 lg:[mask-image:none]"
     >
       <ul className="flex gap-2 lg:flex-col lg:gap-1">
         {tabs.map((tab) => {

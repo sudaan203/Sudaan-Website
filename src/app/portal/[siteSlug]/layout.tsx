@@ -59,7 +59,10 @@ export default async function SiteLayout({
     <div className="container-px flex-1 py-8 sm:py-10">
       <Link
         href="/portal"
-        className="mb-5 inline-flex items-center gap-1.5 text-xs font-semibold text-ink/60 transition-colors hover:text-accent-600"
+        // -ml-2 keeps the text optically aligned with the heading below while the
+        // padding gives the link a target that clears 24px. It was 63x16, which is
+        // a small thing to hit on a phone and the only way back to the site list.
+        className="mb-4 -ml-2 inline-flex min-h-6 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold text-ink/60 transition-colors hover:bg-ink/[0.04] hover:text-accent-600"
       >
         <span aria-hidden>&larr;</span> All sites
       </Link>
