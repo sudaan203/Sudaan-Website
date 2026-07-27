@@ -23,6 +23,7 @@
 import sharp from "sharp";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { maskBorderBackground } from "./lib/nodata.mjs";
 import {
   isElevation,
   lonLatToUtm,
@@ -218,6 +219,41 @@ async function demPreview(path, label) {
     .toBuffer();
 }
 
+/**
+ * The orthomosaic at preview size, with its flat filler made transparent.
+ *
+ * The tiles already get this treatment in prepare-site.mjs, but the previews did
+ * not, so two of the four thumbnails carried a white slab while the DSM and DTM
+ * showed through to the card background. Same bug, second location: fixing it in
+ * one place and not the other is how the inconsistency arose.
+ */
+async function orthoRgba(width) {
+  const meta = await sharp(orthoPath, { limitInputPixels: false }).metadata();
+  const ph = Math.max(1, Math.round((meta.height / meta.width) * width));
+  const { data } = await sharp(orthoPath, { limitInputPixels: false })
+    .resize({ width })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const masked = meta.hasAlpha ? null : maskBorderBackground(data, width, ph);
+  return { data, width, height: ph, masked, sourceWidth: meta.width, sourceHeight: meta.height };
+}
+
+async function orthoPreview() {
+  if (!orthoPath || !existsSync(orthoPath)) {
+    console.warn("  ! ortho: no orthomosaic given, skipped");
+    return null;
+  }
+  const o = await orthoRgba(width);
+  console.log(
+    `  ortho: ${o.width}x${o.height} from ${o.sourceWidth}x${o.sourceHeight}` +
+      (o.masked ? `, background rgb(${o.masked.background.join(",")}) cleared (${(o.masked.share * 100).toFixed(0)}%)` : ""),
+  );
+  return sharp(o.data, { raw: { width: o.width, height: o.height, channels: 4 } })
+    .webp({ quality: 86 })
+    .toBuffer();
+}
+
 /* ------------------------------------------- contours over the orthomosaic --- */
 
 async function contoursOverOrtho() {
@@ -284,8 +320,11 @@ async function contoursOverOrtho() {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}">${paths.join("")}</svg>`,
   );
 
-  const base = await sharp(orthoPath, { limitInputPixels: false })
-    .resize({ width: pw })
+  // Composite onto the masked raster, so the contour sheet has the same
+  // transparent surround as every other preview.
+  const o = await orthoRgba(pw);
+  const base = await sharp(o.data, { raw: { width: o.width, height: o.height, channels: 4 } })
+    .png()
     .toBuffer();
 
   console.log(`  contours over ortho: ${pw}x${ph}, ${drawn} lines at ${interval} m`);
@@ -303,6 +342,7 @@ mkdirSync(outDir, { recursive: true });
 const jobs = [
   { file: "dsm.webp", make: () => (dsmPath ? demPreview(dsmPath, "dsm") : null) },
   { file: "dtm.webp", make: () => (dtmPath ? demPreview(dtmPath, "dtm") : null) },
+  { file: "ortho.webp", make: orthoPreview },
   { file: "contours.webp", make: contoursOverOrtho },
 ];
 
