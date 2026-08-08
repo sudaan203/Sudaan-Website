@@ -11,7 +11,7 @@ Our run
   fill          0 cells raised, deepest 0.000 m
                   (none, as expected: this DEM was already filled by SAGA)
   accumulation  max 57,073 cells (5.71 ha draining to one cell)
-  runtime       42 ms for 148,282 cells
+  runtime       57 ms for 148,282 cells
   conservation  outflow 100,477 vs 100,477 data cells (exact)
 
 Catchment delineation vs SAGA

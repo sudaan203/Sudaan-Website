@@ -189,6 +189,132 @@ export class Grid {
 const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8 };
 
 /**
+ * TIFF LZW decompression.
+ *
+ * Needed because it is what real deliverables actually arrive as. The Kherwada
+ * fixture happens to be uncompressed, but `DTM/Kotba_DTM.tif`, written by the
+ * processing team's own toolchain, is LZW, and so is most GeoTIFF that GDAL,
+ * QGIS or Global Mapper produces by default. A reader that refuses it can only
+ * open test data.
+ *
+ * Two details separate this from textbook LZW, and both are silent if wrong:
+ *
+ * - Codes are packed most significant bit first, not least.
+ * - TIFF uses "early change": the code width grows one code sooner than plain
+ *   LZW, at 511 rather than 512. Getting this wrong decodes the first few
+ *   hundred bytes perfectly and then produces garbage, which looks like corrupt
+ *   input rather than a decoder bug.
+ */
+function lzwDecode(input, expectedBytes) {
+  const CLEAR = 256;
+  const EOI = 257;
+  const out = new Uint8Array(expectedBytes);
+  let outAt = 0;
+
+  // Dictionary entries as (prefix code, appended byte), walked backwards on
+  // emit. Cheaper than materialising a byte array per entry.
+  const prefix = new Int32Array(4096);
+  const suffix = new Uint8Array(4096);
+  const length = new Int32Array(4096);
+  const stack = new Uint8Array(4096);
+
+  let next = 258;
+  let width = 9;
+  let bitBuffer = 0;
+  let bitCount = 0;
+  let at = 0;
+  let previous = -1;
+
+  const reset = () => {
+    next = 258;
+    width = 9;
+    previous = -1;
+  };
+  for (let i = 0; i < 256; i += 1) { prefix[i] = -1; suffix[i] = i; length[i] = 1; }
+
+  const emit = (code) => {
+    let depth = 0;
+    let c = code;
+    while (c >= 0 && depth < 4096) {
+      stack[depth] = suffix[c];
+      depth += 1;
+      c = prefix[c];
+    }
+    for (let i = depth - 1; i >= 0; i -= 1) {
+      if (outAt < out.length) out[outAt] = stack[i];
+      outAt += 1;
+    }
+  };
+
+  while (outAt < expectedBytes) {
+    while (bitCount < width) {
+      if (at >= input.length) return out;
+      bitBuffer = (bitBuffer << 8) | input[at];
+      at += 1;
+      bitCount += 8;
+    }
+    const code = (bitBuffer >> (bitCount - width)) & ((1 << width) - 1);
+    bitCount -= width;
+
+    if (code === EOI) break;
+    if (code === CLEAR) { reset(); continue; }
+
+    if (previous === -1) {
+      emit(code);
+      previous = code;
+      continue;
+    }
+
+    if (code < next) {
+      emit(code);
+      if (next < 4096) {
+        prefix[next] = previous;
+        // First byte of the code just emitted.
+        let first = code;
+        while (prefix[first] >= 0) first = prefix[first];
+        suffix[next] = suffix[first];
+        length[next] = length[previous] + 1;
+        next += 1;
+      }
+    } else {
+      // The code is not in the table yet, the KwKwK case: it must expand to the
+      // previous string plus its own first byte.
+      let first = previous;
+      while (prefix[first] >= 0) first = prefix[first];
+      if (next < 4096) {
+        prefix[next] = previous;
+        suffix[next] = suffix[first];
+        length[next] = length[previous] + 1;
+        next += 1;
+      }
+      emit(next - 1);
+    }
+    previous = code;
+
+    // Early change: grow one code before the table is actually full.
+    if (next + 1 >= (1 << width) && width < 12) width += 1;
+  }
+  return out;
+}
+
+/** Undo horizontal differencing (TIFF Predictor 2). */
+function undoHorizontalPredictor(bytes, width, samples, bitsPerSample) {
+  if (bitsPerSample !== 8) {
+    throw new Error(
+      `Predictor 2 is only implemented for 8 bit samples, this file has ${bitsPerSample}. ` +
+        `Re-export without a predictor, or convert in the container.`,
+    );
+  }
+  for (let row = 0; row * width * samples < bytes.length; row += 1) {
+    const base = row * width * samples;
+    for (let i = samples; i < width * samples; i += 1) {
+      bytes[base + i] = (bytes[base + i] + bytes[base + i - samples]) & 0xff;
+    }
+  }
+  return bytes;
+}
+
+/**
  * Baseline TIFF reader, enough for a single band float or integer DEM.
  *
  * Scope is deliberate. It reads uncompressed, strip organised, single sample
@@ -239,10 +365,17 @@ export function readGeoTiff(path) {
   if (!width || !height) throw new Error(`${path}: missing image dimensions`);
 
   const compression = one(259, 1);
-  if (compression !== 1) {
+  if (compression !== 1 && compression !== 5) {
     throw new Error(
-      `${path}: compression ${compression} is not supported by this reader. ` +
-        `Re-export uncompressed, or run the conversion in the container.`,
+      `${path}: compression ${compression} is not supported by this reader ` +
+        `(only none and LZW). Re-export, or run the conversion in the container.`,
+    );
+  }
+  const predictor = one(317, 1);
+  if (predictor === 3) {
+    throw new Error(
+      `${path}: uses the floating point predictor (Predictor 3), which this reader ` +
+        `does not implement. Re-export with PREDICTOR=1, or convert in the container.`,
     );
   }
   if (tags.has(324)) {
@@ -263,17 +396,31 @@ export function readGeoTiff(path) {
   const rowsPerStrip = one(278, height);
   if (!stripOffsets || !stripCounts) throw new Error(`${path}: missing strip offsets`);
 
-  const read = pixelReader(buf, little, bits, format, path);
+  const bytesPerSample = bits / 8;
   const data = new Float32Array(width * height);
 
   let row = 0;
   for (let s = 0; s < stripOffsets.length && row < height; s += 1) {
-    const offset = stripOffsets[s];
     const rows = Math.min(rowsPerStrip, height - row);
+    const wanted = rows * width * bytesPerSample;
+
+    // Compressed strips decode into their own buffer; uncompressed ones are read
+    // in place, so an uncompressed file still costs no extra copy.
+    let source = buf;
+    let base = stripOffsets[s];
+    if (compression === 5) {
+      const raw = buf.subarray(stripOffsets[s], stripOffsets[s] + stripCounts[s]);
+      let decoded = lzwDecode(raw, wanted);
+      if (predictor === 2) decoded = undoHorizontalPredictor(decoded, width, samples, bits);
+      source = Buffer.from(decoded.buffer, decoded.byteOffset, decoded.length);
+      base = 0;
+    }
+
+    const read = pixelReader(source, little, bits, format, path);
     for (let r = 0; r < rows; r += 1) {
-      const base = offset + r * width * (bits / 8);
+      const rowBase = base + r * width * bytesPerSample;
       const out = (row + r) * width;
-      for (let c = 0; c < width; c += 1) data[out + c] = read(base + c * (bits / 8));
+      for (let c = 0; c < width; c += 1) data[out + c] = read(rowBase + c * bytesPerSample);
     }
     row += rows;
   }

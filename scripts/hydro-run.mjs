@@ -39,6 +39,9 @@ import {
   slopeDegrees,
   basinLabels,
   toEsriCodes,
+  watershedFrom,
+  snapToChannel,
+  connectedFlood,
 } from "./lib/hydrology.mjs";
 import { polygonize, ringArea, vectoriseStreams, toGeoJson } from "./lib/vectorise.mjs";
 
@@ -55,6 +58,9 @@ function parseArgs(argv) {
     else if (flag === "--cell") { args.cell = Number(value); i += 1; }
     else if (flag === "--threshold") { args.threshold = Number(value); i += 1; }
     else if (flag === "--epsilon") { args.epsilon = Number(value); i += 1; }
+    else if (flag === "--pour-point") { args.pourPoint = value; i += 1; }
+    else if (flag === "--flood-level") { args.floodLevel = Number(value); i += 1; }
+    else if (flag === "--flood-seed") { args.floodSeed = value; i += 1; }
     else if (flag === "--help" || flag === "-h") args.help = true;
     else throw new Error(`unknown argument ${flag}`);
   }
@@ -71,6 +77,13 @@ if (args.help || !args.dtm || !args.out) {
     --cell       analysis cell size in metres, default 1
     --threshold  channel initiation threshold in cells, default 500
     --epsilon    drainage gradient imposed across flats, default 0.00001 m
+
+  Interactive operations, phase B2. Both are cheap only because the batch above
+  precomputed the grids they walk:
+
+    --pour-point E,N     delineate the catchment draining to a point (tool 26)
+    --flood-level Z      inundate to a water level, connected only (tool 28)
+    --flood-seed E,N     where the water comes from, defaults to the lowest cell
 
   Cell size is a real decision, not a formality. Routing across a 2.5 cm surface
   turns every rut into a pit and the stream network into noise. 1 m is what the
@@ -281,6 +294,76 @@ layers.push({
 });
 console.log(`  basins.geojson         ${basinFeatures.length} basins, ` +
   `${truncated} truncated by the survey edge`);
+
+// --- B2: interactive operations, over the grids the batch just produced ------
+const parsePoint = (text) => {
+  const [x, y] = String(text).split(",").map(Number);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error(`cannot read "${text}" as an easting,northing pair`);
+  }
+  return [x, y];
+};
+
+if (args.pourPoint) {
+  const [x, y] = parsePoint(args.pourPoint);
+  const at = dem.cellAt(x, y);
+  if (!at) throw new Error(`--pour-point ${x},${y} falls outside the survey`);
+  // Snapping first, because a point digitised by hand is almost never exactly on
+  // the modelled channel, and one cell off returns a hillslope sliver instead of
+  // the basin.
+  const snapped = snapToChannel(accum, at.col, at.row, 5);
+  const shed = watershedFrom(dir, snapped.col, snapped.row);
+  let cells = 0;
+  for (let i = 0; i < shed.length; i += 1) cells += shed.data[i];
+  const rings = polygonize(shed, dem);
+  rings.sort((a, b) => ringArea(b) - ringArea(a));
+
+  const outlet = { col: snapped.col, row: snapped.row };
+  const leavesSurvey = outletLeavesSurvey(outlet.col, outlet.row);
+  writeFileSync(
+    join(args.out, "catchment.geojson"),
+    JSON.stringify(toGeoJson([{
+      geometry: { type: "Polygon", coordinates: rings },
+      properties: {
+        area_m2: Number((cells * dem.cellArea).toFixed(1)),
+        area_ha: Number(((cells * dem.cellArea) / 10000).toFixed(3)),
+        outlet_easting: Number(dem.xOf(outlet.col).toFixed(3)),
+        outlet_northing: Number(dem.yOf(outlet.row).toFixed(3)),
+        snapped_cells: Number(Math.hypot(snapped.col - at.col, snapped.row - at.row).toFixed(2)),
+        truncated_by_survey_edge: leavesSurvey,
+      },
+    }], dem), null, 1),
+  );
+  console.log(`  catchment.geojson      ${(cells * dem.cellArea / 10000).toFixed(3)} ha` +
+    `${leavesSurvey ? ", truncated by the survey edge" : ""}`);
+}
+
+if (args.floodLevel !== undefined) {
+  // Default the seed to the lowest cell in the survey, which is where standing
+  // water would actually be, rather than an arbitrary corner.
+  let seed = null;
+  if (args.floodSeed) {
+    const [x, y] = parsePoint(args.floodSeed);
+    seed = dem.cellAt(x, y);
+    if (!seed) throw new Error(`--flood-seed ${x},${y} falls outside the survey`);
+  } else {
+    let lowest = Infinity;
+    for (let row = 0; row < dem.height; row += 1) {
+      for (let col = 0; col < dem.width; col += 1) {
+        const v = dem.get(col, row);
+        if (dem.isNoData(v) || v >= lowest) continue;
+        lowest = v;
+        seed = { col, row };
+      }
+    }
+  }
+  const flood = connectedFlood(dem, args.floodLevel, [seed]);
+  writeGeoTiff(join(args.out, "flood_depth.tif"), flood.depth);
+  console.log(`  flood_depth.tif        ${args.floodLevel} m level: ` +
+    `${(flood.area / 10000).toFixed(3)} ha inundated, ` +
+    `${flood.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })} m3 stored`);
+  console.log(`                         connected from the seed, not a bathtub fill`);
+}
 
 // ---------------------------------------------------------------------------
 const manifest = {

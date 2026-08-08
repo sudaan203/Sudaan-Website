@@ -187,6 +187,54 @@ must survive the colour choice.
 pyramid, where the analytic volume is exact, matched to within floating point.
 Plus a hand check against one of Sudaan's existing Volume Analysis Reports.
 
+### A1 progress, 8 Aug 2026
+
+The computation behind tools 1 to 5 and 10 is built and tested. It needs none of
+phase 0: that gates serving these over HTTP and wiring them to the map, not
+working out the numbers, and the numbers are the part that can be quietly wrong.
+
+`scripts/lib/terrain-analysis.mjs` and `scripts/lib/export-formats.mjs`, driven by
+
+```
+node scripts/terrain-run.mjs --dtm <file.tif> --op spot|profile|grid|cutfill|diff [...]
+```
+
+`scripts/terrain-test.mjs` runs 59 checks. The surfaces are linear on purpose:
+bilinear interpolation is exact on a plane and the midpoint rule is exact for a
+linear integrand, so a volume over a cell aligned rectangle has a closed form
+answer to check against rather than a tolerance to hide behind. Cut and fill over
+a 20 x 20 m square came back at **480.000 m3 against an analytic 480**.
+
+Run against the real `DTM/Kotba_DTM.tif` at 24 cm, a 1 ha polygon gives cut
+18,553 m3, fill 1,459 m3, net 17,095 m3, and at Sudaan's advertised 4 cm the
+uncertainty is **plus or minus 399.8 m3, which is 2.3% of the net**. That is the
+400 m3 per hectare figure from `portal-map-architecture.md` section 6b, now
+computed rather than quoted.
+
+What was built to the rules rather than to the demo:
+
+- **Bilinear, not nearest neighbour.** The browser sampler in `dem-sampler.ts`
+  uses `Math.floor`, so a spot level can sit half a cell from where the client
+  clicked, which on a 15 degree slope is 13 cm of error the sampler invented.
+- **The reference surface is a required argument** with no default, and it is
+  echoed back in the result. `plane:<z>`, `boundary` (least squares through the
+  polygon rim) and `surface:<file>` are three different questions.
+- **Cells on the polygon boundary are subsampled** for partial coverage rather
+  than being counted in or out by their centre. A half cell error all the way
+  round the edge is most of the cells there are for a road corridor.
+- **Every export states its CRS**, and the ones whose format cannot carry it get
+  a `.prj` sidecar. `345308, 2355499` is a valid position in all sixty UTM zones.
+- **LandXML writes northing before easting**, per the schema. The other order
+  produces a perfectly valid file that transposes the survey, so it has a test.
+
+**The reader now decodes LZW**, which turned out to be necessary rather than
+nice: the Kherwada fixture is uncompressed but `Kotba_DTM.tif` is not, and nor is
+most GeoTIFF that GDAL, QGIS or Global Mapper writes by default. It reads
+337.137 to 424.254 m, which is exactly the range `context.md` section 8g recorded
+from the entirely separate sharp based pipeline.
+
+Not built yet: tools 6 to 9, and the HTTP and UI layers for all of them.
+
 ### A2. Export centre (tool 10, plus tool 37 and Malhar's GeoTIFF addition)
 
 **Formats.** CSV, DXF, LandXML, SHP, GeoJSON, PDF, LAS/LAZ, and **GeoTIFF**,
@@ -433,6 +481,20 @@ Cheap, but only because B1 precomputed the grids.
   of silent error as computing area in degrees.
 - Tools 24 and 25, flow direction and accumulation, are display of B1 output plus
   a click to inspect readout.
+
+**B2 status, 8 Aug 2026.** The algorithms are done and covered by known answer
+tests, and exposed on the CLI:
+
+```
+node scripts/hydro-run.mjs --dtm x.tif --out d/ --pour-point E,N --flood-level 4.0
+```
+
+On Kherwada that returns a 5.304 ha catchment, matching the figure validated
+against SAGA, and a 4 m flood standing 942 m3 over 0.126 ha. The flood is a
+connected component fill from a seed, so an isolated hollow at the same elevation
+stays dry; the test for that builds a DEM where the bathtub answer and the right
+answer differ, because on a map they look identical. What remains for B2 is the
+HTTP endpoints and the map UI, and that genuinely is gated on phase 0.
 
 ### B3. Presentation
 
