@@ -1,0 +1,11 @@
+{
+  "name": "sga-tile-gateway",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker fronting the private R2 survey bucket. The only door to it.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node ../../scripts/portal-tile-grant-test.mjs"
+  }
+}

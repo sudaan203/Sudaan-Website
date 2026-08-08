@@ -1,0 +1,32 @@
+name = "sga-tile-gateway"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# The bucket stays private. No public r2.dev URL, no public custom domain on the
+# bucket itself. This Worker is the only door, which is the whole design: a
+# public bucket would defeat view-only and tenant isolation in one step.
+#
+# Create it with:
+#   npx wrangler r2 bucket create sga-survey-data
+[[r2_buckets]]
+binding = "SURVEY_BUCKET"
+bucket_name = "sga-survey-data"
+
+# PORTAL_TILE_SECRET is a secret, not a var, so it is never written here:
+#   npx wrangler secret put PORTAL_TILE_SECRET
+#
+# It must match the portal's PORTAL_TILE_SECRET and must NOT be the same value as
+# PORTAL_AUTH_SECRET. This one is deployed to a third party's edge; the session
+# signing key must never leave our own infrastructure.
+
+# The route has to be a subdomain of the portal domain, or the grant cookie will
+# not be sent with tile requests. Cookies are scoped by domain, and
+# tiles.sudaangeo.in shares the sudaangeo.in parent that the portal sets
+# PORTAL_TILE_COOKIE_DOMAIN to.
+#
+# [[routes]]
+# pattern = "tiles.sudaangeo.in"
+# custom_domain = true
+
+[observability]
+enabled = true

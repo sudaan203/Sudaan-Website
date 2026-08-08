@@ -143,6 +143,54 @@ to run.
 same point, same number. This is the direct answer to the accuracy question and
 it is worth showing before anything else.
 
+### Phase 0 progress, 8 Aug 2026: the authorisation path
+
+Item 4, the R2 bucket, the Worker and the signed cookie, is built and tested. It
+was taken first deliberately: it needs no Docker, no GDAL and no Cloudflare
+account to develop against, and it is the piece everything else sits behind.
+
+- `src/lib/portal/tile-grant-core.mjs`, the rules
+- `src/lib/portal/tile-grant.ts`, the portal's secret and cookie handling
+- `src/app/api/portal/sites/[siteSlug]/tile-grant/route.ts`, the one
+  authorisation decision, tenant checked with the same `getSite` as every other
+  route and answering 404 for both "no such site" and "not yours"
+- `workers/tile-gateway/`, the Worker and its `wrangler.toml`
+- `scripts/portal-tile-grant-test.mjs`, 48 checks
+
+**The rules live in one file, imported by all three runtimes.** The first draft
+duplicated them into the Worker, which was a bad idea worth naming: an
+authorisation rule that exists in two places drifts, and the copy nobody
+remembers to update is the one on the edge holding a private bucket open.
+Wrangler bundles the shared import, so there is nothing to keep in sync.
+
+The tests are written as attacks rather than as features, because the dangerous
+request is the plausible one: a client with a genuine, unexpired, correctly
+signed grant for their own site, asking for something else. Covered:
+
+- a valid grant cannot read another client's site, though the object exists
+- **a valid grant cannot read a site whose slug merely starts with its own.**
+  `kotba-survey` must not reach `sites/kotba-survey-2/`, which a plain
+  `startsWith` allows and which is what real slugs in this portal look like
+- traversal, including percent encoded, backslashes and leading slashes
+- expiry, wrong secret, tampered payload, tampered signature, unsigned token
+- writes and deletes refused, cross origin preflight refused
+- a missing object and a forbidden one answer **identically**, so the status code
+  cannot be used to enumerate the bucket
+- a Worker deployed without its secret serves nothing, failing closed
+
+Two properties worth keeping when this is wired up:
+
+- **The grant is not the session.** The payload carries a site and an expiry and
+  nothing else: no user id, no email, no role, no client id. Compromising the
+  edge yields one site's tiles for half an hour, not an identity.
+- **`PORTAL_TILE_SECRET` is not `PORTAL_AUTH_SECRET`**, and the code refuses to
+  start if they match. The tile secret is deployed to Cloudflare; the session
+  secret mints logins and must never leave our own infrastructure.
+
+Still to do in phase 0: create the bucket and deploy the Worker, move
+Aektanagar's existing pyramid across unchanged to prove the path end to end
+before any format changes, then COG conversion and the tiler.
+
 ---
 
 ## Track A: Universal tools
