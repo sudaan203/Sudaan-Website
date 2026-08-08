@@ -1,0 +1,67 @@
+Hydrology validation against SAGA, Kherwada
+================================================================
+
+Fixture
+  grid          491 x 302 at 1 m, WGS 84 / UTM zone 43N
+  origin        345308.1866 E, 2355499.1039 N (outer corner of the top left cell)
+  elevation     1.896 to 16.519 m, 67.8% of cells carry data
+  survey area   10.05 ha
+
+Our run
+  fill          0 cells raised, deepest 0.000 m
+                  (none, as expected: this DEM was already filled by SAGA)
+  accumulation  max 57,073 cells (5.71 ha draining to one cell)
+  runtime       42 ms for 148,282 cells
+  conservation  outflow 100,477 vs 100,477 data cells (exact)
+
+Catchment delineation vs SAGA
+----------------------------------------------------------------
+  2 pour points, 2 reference catchments, all grids aligned
+
+  Pour point 1 at 345572.7 E, 2355273.6 N
+    snapped 5.1 cells onto 53,045 cells of accumulation
+    ours 53,045 cells (5.30 ha), SAGA "catchment area" 52028 cells
+    IoU 98.1%   precision 98.1%   recall 100.0%
+    disagreement: 1017 cells only ours, 0 cells only SAGA
+    stepping 5 cell(s) upstream to SAGA's own outlet: IoU 98.4% (833 only ours, 0 only SAGA)
+    of the 1017 disputed cells, 66.3% touch nodata or the grid edge, against a 1.6% base rate across the survey
+    that is 40x enrichment: the difference is boundary handling on a ragged footprint, not how water was routed
+
+  Pour point 2 at 345439.7 E, 2355269.6 N
+    snapped 5.0 cells onto 33,820 cells of accumulation
+    ours 33,820 cells (3.38 ha), SAGA "c11" 33240 cells
+    IoU 98.3%   precision 98.3%   recall 100.0%
+    disagreement: 580 cells only ours, 0 cells only SAGA
+    stepping 5 cell(s) upstream to SAGA's own outlet: IoU 98.6% (458 only ours, 0 only SAGA)
+    of the 580 disputed cells, 82.1% touch nodata or the grid edge, against a 1.6% base rate across the survey
+    that is 50x enrichment: the difference is boundary handling on a ragged footprint, not how water was routed
+
+Stream network vs SAGA channel network
+----------------------------------------------------------------
+  reference: 87 segments, 1883 cells once burnt in
+  reference Strahler orders present: 1, 2, 3, 4
+  sweeping the accumulation threshold, agreement measured at 2 m tolerance
+
+    threshold   our cells   precision   recall   F1
+           50       14789       23.7%   100.0%   0.383
+          100        8059       35.6%   100.0%   0.525
+          200        4306       55.2%   100.0%   0.711
+          300        2896       72.7%    99.9%   0.842
+          500        1957       92.1%    96.2%   0.941
+          750        1612       96.7%    87.8%   0.920
+         1000        1316       99.5%    78.7%   0.878
+         1500        1088       99.7%    64.3%   0.782
+         2000         964      100.0%    58.2%   0.735
+         3000         864      100.0%    52.1%   0.685
+
+  best agreement at threshold 500 cells (0.05 ha of contributing area)
+    precision 92.1%, recall 96.2%
+    our Strahler orders: 1 (969 cells), 2 (393 cells), 3 (408 cells), 4 (187 cells)
+    SAGA's highest order 4, ours 4 (agree)
+
+Verdict
+================================================================
+  PASS. Every figure is at or above the recorded floor.
+    catchment 1 vs "catchment area": IoU 98.1%
+    catchment 2 vs "c11": IoU 98.3%
+    stream network: precision 92.1%, recall 96.2%

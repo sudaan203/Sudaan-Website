@@ -1,0 +1,614 @@
+/**
+ * Elevation grids: reading, writing, and knowing when two of them line up.
+ *
+ * Deliberately free of dependencies, for the same reason as geo.mjs: GDAL is not
+ * installed on the operator machine and "install GDAL first" is not an
+ * instruction that survives contact with a delivery deadline. The production
+ * hydrology engine will run WhiteboxTools inside a container, but the validation
+ * harness has to run here, today, against the sample data Malhar sent.
+ *
+ * Two formats, because the Kherwada fixture ships both:
+ *
+ * - GeoTIFF, which is the input (`fill dem.tif`)
+ * - SAGA .sgrd/.sdat, which is what their outputs came out as
+ *
+ * The whole point of this file is the last function, `assertAligned`. Comparing
+ * two grids that are one half cell apart produces a plausible looking agreement
+ * figure that is quietly measuring the wrong thing, and that is exactly the
+ * class of error this module exists to make impossible.
+ */
+
+import { readFileSync, writeFileSync } from "node:fs";
+
+/**
+ * A north-up raster on a square cell.
+ *
+ * `originX` and `originY` are the *outer corner* of the top left cell, which is
+ * the GeoTIFF convention. SAGA uses the *centre* of the bottom left cell, and
+ * converting between the two is where half a cell goes missing if nobody is
+ * paying attention. `readSagaGrid` does that conversion in one place.
+ *
+ * Row 0 is always north. SAGA stores rows south to north, and `readSagaGrid`
+ * flips them, so nothing downstream has to remember which way up a file was.
+ */
+export class Grid {
+  constructor({
+    width, height, cellSize, originX, originY, data, nodata = -99999, crs = null, epsg = null,
+  }) {
+    this.width = width;
+    this.height = height;
+    this.cellSize = cellSize;
+    this.originX = originX;
+    this.originY = originY;
+    this.data = data;
+    this.nodata = nodata;
+    this.crs = crs;
+    this.epsg = epsg;
+  }
+
+  /**
+   * UTM zone and hemisphere, from the EPSG code.
+   *
+   * Needed because GeoJSON is defined in WGS84 lon/lat but every one of these
+   * grids is in UTM metres, and the conversion cannot be guessed from the
+   * numbers: 345308 E is a valid easting in all sixty zones. Returns null rather
+   * than assuming zone 43, so an unprojected or foreign grid fails loudly at the
+   * point of export instead of silently landing the survey in the wrong country.
+   */
+  get utmZone() {
+    if (!Number.isFinite(this.epsg)) return null;
+    if (this.epsg >= 32601 && this.epsg <= 32660) return { zone: this.epsg - 32600, northern: true };
+    if (this.epsg >= 32701 && this.epsg <= 32760) return { zone: this.epsg - 32700, northern: false };
+    return null;
+  }
+
+  get length() {
+    return this.width * this.height;
+  }
+
+  /** Cell area in square metres. Every area and volume in the engine uses this. */
+  get cellArea() {
+    return this.cellSize * this.cellSize;
+  }
+
+  idx(col, row) {
+    return row * this.width + col;
+  }
+
+  get(col, row) {
+    return this.data[row * this.width + col];
+  }
+
+  set(col, row, value) {
+    this.data[row * this.width + col] = value;
+  }
+
+  inside(col, row) {
+    return col >= 0 && row >= 0 && col < this.width && row < this.height;
+  }
+
+  /**
+   * Is this cell nodata?
+   *
+   * NaN is checked separately because `NaN !== nodata` is true, so a NaN would
+   * sail through a plain equality test and be routed as if it were ground.
+   */
+  isNoData(value) {
+    return Number.isNaN(value) || value === this.nodata;
+  }
+
+  isNoDataAt(col, row) {
+    return this.isNoData(this.data[row * this.width + col]);
+  }
+
+  /** Easting of a cell centre. */
+  xOf(col) {
+    return this.originX + (col + 0.5) * this.cellSize;
+  }
+
+  /** Northing of a cell centre. */
+  yOf(row) {
+    return this.originY - (row + 0.5) * this.cellSize;
+  }
+
+  /** The cell containing a projected coordinate, or null if it falls outside. */
+  cellAt(x, y) {
+    const col = Math.floor((x - this.originX) / this.cellSize);
+    const row = Math.floor((this.originY - y) / this.cellSize);
+    return this.inside(col, row) ? { col, row } : null;
+  }
+
+  /** Outer bounds, [minX, minY, maxX, maxY]. */
+  get bounds() {
+    return [
+      this.originX,
+      this.originY - this.height * this.cellSize,
+      this.originX + this.width * this.cellSize,
+      this.originY,
+    ];
+  }
+
+  /** A grid of the same shape, different payload. */
+  like(ArrayType = Float32Array, fill = 0, nodata = this.nodata) {
+    const data = new ArrayType(this.length);
+    if (fill !== 0) data.fill(fill);
+    return new Grid({
+      width: this.width,
+      height: this.height,
+      cellSize: this.cellSize,
+      originX: this.originX,
+      originY: this.originY,
+      data,
+      nodata,
+      crs: this.crs,
+      epsg: this.epsg,
+    });
+  }
+
+  /** Projected coordinate of a grid *corner*, as polygon rings need. */
+  cornerX(col) {
+    return this.originX + col * this.cellSize;
+  }
+
+  cornerY(row) {
+    return this.originY - row * this.cellSize;
+  }
+
+  clone() {
+    const copy = this.like(this.data.constructor);
+    copy.data.set(this.data);
+    return copy;
+  }
+
+  /** Min, max, mean and count over data cells only. */
+  stats() {
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < this.data.length; i += 1) {
+      const v = this.data[i];
+      if (this.isNoData(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+      sum += v;
+      count += 1;
+    }
+    return count === 0
+      ? { min: null, max: null, mean: null, count: 0, validFraction: 0 }
+      : {
+          min,
+          max,
+          mean: sum / count,
+          count,
+          validFraction: count / this.length,
+        };
+  }
+}
+
+const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8 };
+
+/**
+ * Baseline TIFF reader, enough for a single band float or integer DEM.
+ *
+ * Scope is deliberate. It reads uncompressed, strip organised, single sample
+ * rasters, which is what GDAL, SAGA and QGIS all write by default for a DEM and
+ * what the Kherwada fixture is. Anything else throws by name rather than
+ * returning something that looks like elevation, which is the same rule the rest
+ * of this pipeline follows: the orthomosaic fed to the DEM path is refused, not
+ * guessed at.
+ */
+export function readGeoTiff(path) {
+  const buf = readFileSync(path);
+  const little = buf.readUInt16LE(0) === 0x4949;
+  if (!little && buf.readUInt16BE(0) !== 0x4d4d) {
+    throw new Error(`${path}: not a TIFF (bad byte order mark)`);
+  }
+  const u16 = (o) => (little ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+  const u32 = (o) => (little ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+  const f64 = (o) => (little ? buf.readDoubleLE(o) : buf.readDoubleBE(o));
+
+  if (u16(2) !== 42) throw new Error(`${path}: BigTIFF is not supported, convert to classic TIFF`);
+
+  const tags = new Map();
+  const ifd = u32(4);
+  const count = u16(ifd);
+  for (let i = 0; i < count; i += 1) {
+    const entry = ifd + 2 + i * 12;
+    const tag = u16(entry);
+    const type = u16(entry + 2);
+    const n = u32(entry + 4);
+    const size = (TYPE_SIZE[type] ?? 1) * n;
+    const at = size <= 4 ? entry + 8 : u32(entry + 8);
+    const values = [];
+    for (let k = 0; k < n; k += 1) {
+      const o = at + k * (TYPE_SIZE[type] ?? 1);
+      if (type === 3) values.push(u16(o));
+      else if (type === 4) values.push(u32(o));
+      else if (type === 12) values.push(f64(o));
+      else if (type === 2) values.push(String.fromCharCode(buf[o]));
+      else values.push(buf[o]);
+    }
+    tags.set(tag, type === 2 ? values.join("").replace(/\0+$/, "") : values);
+  }
+
+  const one = (tag, fallback) => (tags.has(tag) ? tags.get(tag)[0] : fallback);
+
+  const width = one(256);
+  const height = one(257);
+  if (!width || !height) throw new Error(`${path}: missing image dimensions`);
+
+  const compression = one(259, 1);
+  if (compression !== 1) {
+    throw new Error(
+      `${path}: compression ${compression} is not supported by this reader. ` +
+        `Re-export uncompressed, or run the conversion in the container.`,
+    );
+  }
+  if (tags.has(324)) {
+    throw new Error(`${path}: tiled TIFF is not supported by this reader, only strips`);
+  }
+  const samples = one(277, 1);
+  if (samples !== 1) {
+    throw new Error(
+      `${path}: ${samples} samples per pixel. A DEM has one. ` +
+        `An orthomosaic fed in here would read colour channels as metres.`,
+    );
+  }
+
+  const bits = one(258, 32);
+  const format = one(339, 1); // 1 unsigned, 2 signed, 3 float
+  const stripOffsets = tags.get(273);
+  const stripCounts = tags.get(279);
+  const rowsPerStrip = one(278, height);
+  if (!stripOffsets || !stripCounts) throw new Error(`${path}: missing strip offsets`);
+
+  const read = pixelReader(buf, little, bits, format, path);
+  const data = new Float32Array(width * height);
+
+  let row = 0;
+  for (let s = 0; s < stripOffsets.length && row < height; s += 1) {
+    const offset = stripOffsets[s];
+    const rows = Math.min(rowsPerStrip, height - row);
+    for (let r = 0; r < rows; r += 1) {
+      const base = offset + r * width * (bits / 8);
+      const out = (row + r) * width;
+      for (let c = 0; c < width; c += 1) data[out + c] = read(base + c * (bits / 8));
+    }
+    row += rows;
+  }
+
+  const scale = tags.get(33550);
+  const tie = tags.get(33922);
+  if (!scale || !tie) {
+    throw new Error(`${path}: no georeferencing (needs ModelPixelScale and ModelTiepoint)`);
+  }
+  if (Math.abs(scale[0] - scale[1]) > 1e-9) {
+    throw new Error(`${path}: non square cells ${scale[0]} x ${scale[1]}, not supported`);
+  }
+
+  // NoData is an ASCII tag, and GDAL writes "nan" for a float raster.
+  const rawNoData = tags.has(42113) ? tags.get(42113) : null;
+  const nodata = rawNoData === null ? -99999 : Number(rawNoData);
+
+  // The GeoKey directory is a flat list of 4-value records after a 4-value
+  // header. Key 3072 is ProjectedCSTypeGeoKey, which carries the EPSG code, and
+  // that is the only reliable way to know which UTM zone this is. The GeoAscii
+  // string says "UTM zone 43N" here but is free text and not worth parsing.
+  let epsg = null;
+  const geoKeys = tags.get(34735);
+  if (geoKeys && geoKeys.length >= 4) {
+    for (let i = 4; i + 3 < geoKeys.length; i += 4) {
+      if (geoKeys[i] === 3072 && geoKeys[i + 1] === 0) epsg = geoKeys[i + 3];
+    }
+  }
+
+  return new Grid({
+    width,
+    height,
+    cellSize: scale[0],
+    // The tie point maps a raster coordinate to a model coordinate. For the
+    // usual raster space (0,0) it is the outer corner of the top left cell,
+    // which is exactly what Grid wants.
+    originX: tie[3] - tie[0] * scale[0],
+    originY: tie[4] + tie[1] * scale[1],
+    data,
+    nodata: Number.isFinite(nodata) ? nodata : NaN,
+    crs: tags.get(34737) ?? null,
+    epsg,
+  });
+}
+
+/**
+ * Resample a DEM to a coarser cell size by area-weighted averaging.
+ *
+ * This is the step that makes hydrology tractable and, less obviously, better.
+ * Routing flow across a 2.5 cm photogrammetric surface is not more accurate than
+ * routing it across 1 m: every wheel rut and vegetation artefact becomes a pit,
+ * and the stream network turns into noise driven braiding. Their own SAGA run
+ * used 1 m from a 2.5 cm ortho, a 40x reduction. It is also the difference
+ * between 450 million cells and 180 billion on a site the size of Dang Forest.
+ *
+ * Area weighting rather than picking the nearest source cell, because a DEM is a
+ * continuous field and dropping 39 of every 40 samples throws away exactly the
+ * information that makes the average trustworthy. Nodata is excluded from the
+ * weighting rather than counted as zero, which would drag a coastal or ragged
+ * edge downwards and invent a slope that is not there.
+ *
+ * Refuses to upsample. Inventing detail a survey does not contain, and then
+ * routing water over it, is the kind of quiet wrongness this pipeline exists to
+ * avoid.
+ */
+export function resample(grid, targetCellSize) {
+  if (targetCellSize < grid.cellSize - 1e-12) {
+    throw new Error(
+      `resample: refusing to upsample from ${grid.cellSize} m to ${targetCellSize} m. ` +
+        `That would invent detail the survey does not contain.`,
+    );
+  }
+  if (Math.abs(targetCellSize - grid.cellSize) < 1e-12) return grid;
+
+  const width = Math.max(1, Math.round((grid.width * grid.cellSize) / targetCellSize));
+  const height = Math.max(1, Math.round((grid.height * grid.cellSize) / targetCellSize));
+  const out = new Grid({
+    width,
+    height,
+    cellSize: targetCellSize,
+    originX: grid.originX,
+    originY: grid.originY,
+    data: new Float32Array(width * height),
+    nodata: grid.nodata,
+    crs: grid.crs,
+    epsg: grid.epsg,
+  });
+
+  for (let row = 0; row < height; row += 1) {
+    // Source rows overlapped by this output row, in fractional source units.
+    const y0 = (row * targetCellSize) / grid.cellSize;
+    const y1 = ((row + 1) * targetCellSize) / grid.cellSize;
+    const r0 = Math.max(0, Math.floor(y0));
+    const r1 = Math.min(grid.height, Math.ceil(y1));
+
+    for (let col = 0; col < width; col += 1) {
+      const x0 = (col * targetCellSize) / grid.cellSize;
+      const x1 = ((col + 1) * targetCellSize) / grid.cellSize;
+      const c0 = Math.max(0, Math.floor(x0));
+      const c1 = Math.min(grid.width, Math.ceil(x1));
+
+      let sum = 0;
+      let weight = 0;
+      for (let r = r0; r < r1; r += 1) {
+        const hy = Math.min(y1, r + 1) - Math.max(y0, r);
+        if (hy <= 0) continue;
+        for (let c = c0; c < c1; c += 1) {
+          const hx = Math.min(x1, c + 1) - Math.max(x0, c);
+          if (hx <= 0) continue;
+          const v = grid.data[r * grid.width + c];
+          if (grid.isNoData(v)) continue;
+          const w = hx * hy;
+          sum += v * w;
+          weight += w;
+        }
+      }
+      out.data[row * width + col] = weight > 0 ? sum / weight : out.nodata;
+    }
+  }
+  return out;
+}
+
+function pixelReader(buf, little, bits, format, path) {
+  if (format === 3 && bits === 32) return (o) => (little ? buf.readFloatLE(o) : buf.readFloatBE(o));
+  if (format === 3 && bits === 64) return (o) => (little ? buf.readDoubleLE(o) : buf.readDoubleBE(o));
+  if (format === 2 && bits === 16) return (o) => (little ? buf.readInt16LE(o) : buf.readInt16BE(o));
+  if (format === 2 && bits === 32) return (o) => (little ? buf.readInt32LE(o) : buf.readInt32BE(o));
+  if (format === 1 && bits === 16) return (o) => (little ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+  if (format === 1 && bits === 8) return (o) => buf[o];
+  throw new Error(`${path}: unsupported sample format ${format} at ${bits} bits`);
+}
+
+/**
+ * SAGA grid: a text .sgrd header beside a headerless binary .sdat.
+ *
+ * Two conversions happen here and both are easy to get silently wrong.
+ *
+ * 1. POSITION_XMIN and POSITION_YMIN are the *centre* of the bottom left cell.
+ *    A GeoTIFF origin is the *outer corner* of the top left cell. So the origin
+ *    moves half a cell left, and the northing has to be built up from the bottom
+ *    of the grid rather than read off. Get this wrong and every comparison is
+ *    offset by half a cell, which still produces a respectable looking overlap
+ *    number.
+ *
+ * 2. TOPTOBOTTOM = FALSE means the first row in the file is the *southern* row.
+ *    Rows are flipped on read so that row 0 is north everywhere in this codebase.
+ */
+export function readSagaGrid(sgrdPath) {
+  const header = {};
+  for (const line of readFileSync(sgrdPath, "utf8").split(/\r?\n/)) {
+    const at = line.indexOf("=");
+    if (at === -1) continue;
+    header[line.slice(0, at).trim().toUpperCase()] = line.slice(at + 1).trim();
+  }
+
+  const width = Number(header.CELLCOUNT_X);
+  const height = Number(header.CELLCOUNT_Y);
+  const cellSize = Number(header.CELLSIZE);
+  const xMinCentre = Number(header.POSITION_XMIN);
+  const yMinCentre = Number(header.POSITION_YMIN);
+  if (![width, height, cellSize, xMinCentre, yMinCentre].every(Number.isFinite)) {
+    throw new Error(`${sgrdPath}: incomplete SAGA header`);
+  }
+
+  const format = (header.DATAFORMAT ?? "FLOAT").toUpperCase();
+  const bytes = { FLOAT: 4, DOUBLE: 8, SHORTINT: 2, INTEGER: 4, BYTE: 1 }[format];
+  if (!bytes) throw new Error(`${sgrdPath}: unsupported DATAFORMAT ${format}`);
+
+  const little = (header.BYTEORDER_BIG ?? "FALSE").toUpperCase() !== "TRUE";
+  const buf = readFileSync(sgrdPath.replace(/\.sgrd$/i, ".sdat"));
+  const expected = width * height * bytes;
+  if (buf.length < expected) {
+    throw new Error(
+      `${sgrdPath}: .sdat holds ${buf.length} bytes, header describes ${expected}`,
+    );
+  }
+
+  // "0.000000;0.000000" appears in these files; take the first number only.
+  const nodata = Number(String(header.NODATA_VALUE ?? "-99999").split(";")[0]);
+
+  const readAt = (o) => {
+    if (format === "FLOAT") return little ? buf.readFloatLE(o) : buf.readFloatBE(o);
+    if (format === "DOUBLE") return little ? buf.readDoubleLE(o) : buf.readDoubleBE(o);
+    if (format === "SHORTINT") return little ? buf.readInt16LE(o) : buf.readInt16BE(o);
+    if (format === "INTEGER") return little ? buf.readInt32LE(o) : buf.readInt32BE(o);
+    return buf[o];
+  };
+
+  const flip = (header.TOPTOBOTTOM ?? "FALSE").toUpperCase() !== "TRUE";
+  const data = new Float32Array(width * height);
+  for (let r = 0; r < height; r += 1) {
+    const src = flip ? height - 1 - r : r;
+    for (let c = 0; c < width; c += 1) {
+      data[r * width + c] = readAt((src * width + c) * bytes);
+    }
+  }
+
+  const zFactor = Number(header.Z_FACTOR ?? 1) || 1;
+  const zOffset = Number(header.Z_OFFSET ?? 0) || 0;
+  if (zFactor !== 1 || zOffset !== 0) {
+    for (let i = 0; i < data.length; i += 1) {
+      if (data[i] !== nodata) data[i] = data[i] * zFactor + zOffset;
+    }
+  }
+
+  return new Grid({
+    width,
+    height,
+    cellSize,
+    originX: xMinCentre - cellSize / 2,
+    originY: yMinCentre - cellSize / 2 + height * cellSize,
+    data,
+    nodata,
+  });
+}
+
+/**
+ * Do two grids describe the same cells?
+ *
+ * Called before every comparison in the validation harness. Two grids that are
+ * half a cell apart still overlap by 99 point something percent, so a
+ * misalignment does not announce itself in the agreement figure, it just quietly
+ * caps it. Checking the geometry first turns that into an error instead.
+ *
+ * The tolerance is a thousandth of a cell, which is far tighter than any real
+ * offset and far looser than float noise in a header written as decimal text.
+ */
+export function assertAligned(a, b, labelA = "A", labelB = "B") {
+  const tol = a.cellSize / 1000;
+  const problems = [];
+  if (a.width !== b.width || a.height !== b.height) {
+    problems.push(`size ${a.width}x${a.height} vs ${b.width}x${b.height}`);
+  }
+  if (Math.abs(a.cellSize - b.cellSize) > tol) {
+    problems.push(`cell size ${a.cellSize} vs ${b.cellSize}`);
+  }
+  if (Math.abs(a.originX - b.originX) > tol) {
+    problems.push(`origin X ${a.originX} vs ${b.originX}, off by ${(b.originX - a.originX).toFixed(4)} m`);
+  }
+  if (Math.abs(a.originY - b.originY) > tol) {
+    problems.push(`origin Y ${a.originY} vs ${b.originY}, off by ${(b.originY - a.originY).toFixed(4)} m`);
+  }
+  if (problems.length > 0) {
+    throw new Error(`${labelA} and ${labelB} are not on the same grid: ${problems.join("; ")}`);
+  }
+}
+
+/**
+ * Write a single band float32 GeoTIFF, uncompressed, with UTM georeferencing.
+ *
+ * Enough to hand a result back to Global Mapper or QGIS, which is the point:
+ * every number this engine produces should be checkable in the software the
+ * client already trusts. Not a COG, that is the container's job in B1.
+ */
+export function writeGeoTiff(path, grid, { epsg = grid.epsg ?? 32643 } = {}) {
+  const { width, height, cellSize, originX, originY } = grid;
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < grid.data.length; i += 1) pixels.writeFloatLE(grid.data[i], i * 4);
+
+  const entries = [];
+  const trailing = [];
+  const HEADER = 8;
+  // 8 byte header, 2 byte entry count, 12 bytes per entry, 4 byte next-IFD.
+  const tagCount = 15;
+  const afterIfd = HEADER + 2 + tagCount * 12 + 4;
+  let tail = afterIfd;
+  const stash = (buf) => {
+    const at = tail;
+    trailing.push(buf);
+    tail += buf.length;
+    return at;
+  };
+
+  const scaleAt = stash(doubles([cellSize, cellSize, 0]));
+  const tieAt = stash(doubles([0, 0, 0, originX, originY, 0]));
+  const geoKeys = shorts([
+    1, 1, 0, 4,
+    1024, 0, 1, 1, // GTModelType = projected
+    1025, 0, 1, 1, // GTRasterType = PixelIsArea
+    2054, 0, 1, 9102, // GeogAngularUnits = degree
+    3072, 0, 1, epsg, // ProjectedCSType
+  ]);
+  const geoKeysAt = stash(geoKeys);
+  const nodataText = Buffer.from(`${grid.nodata}\0`, "ascii");
+  const nodataAt = stash(nodataText);
+  const dataAt = tail;
+
+  const add = (tag, type, count, value) => entries.push({ tag, type, count, value });
+  add(256, 3, 1, width);
+  add(257, 3, 1, height);
+  add(258, 3, 1, 32);
+  add(259, 3, 1, 1);
+  add(262, 3, 1, 1);
+  add(273, 4, 1, dataAt);
+  add(277, 3, 1, 1);
+  add(278, 3, 1, height);
+  add(279, 4, 1, pixels.length);
+  add(284, 3, 1, 1);
+  add(339, 3, 1, 3);
+  add(33550, 12, 3, scaleAt);
+  add(33922, 12, 6, tieAt);
+  add(34735, 3, geoKeys.length / 2, geoKeysAt);
+  // Keep the count honest if this list is ever edited.
+  if (entries.length !== tagCount - 1) {
+    throw new Error(`writeGeoTiff: ${entries.length + 1} tags but space reserved for ${tagCount}`);
+  }
+  add(42113, 2, nodataText.length, nodataAt);
+  entries.sort((a, b) => a.tag - b.tag);
+
+  const head = Buffer.alloc(afterIfd);
+  head.write("II", 0, "ascii");
+  head.writeUInt16LE(42, 2);
+  head.writeUInt32LE(HEADER, 4);
+  head.writeUInt16LE(entries.length, HEADER);
+  entries.forEach((e, i) => {
+    const o = HEADER + 2 + i * 12;
+    head.writeUInt16LE(e.tag, o);
+    head.writeUInt16LE(e.type, o + 2);
+    head.writeUInt32LE(e.count, o + 4);
+    if (e.type === 3 && e.count === 1) head.writeUInt16LE(e.value, o + 8);
+    else head.writeUInt32LE(e.value, o + 8);
+  });
+  head.writeUInt32LE(0, HEADER + 2 + entries.length * 12);
+
+  writeFileSync(path, Buffer.concat([head, ...trailing, pixels]));
+}
+
+function doubles(values) {
+  const b = Buffer.alloc(values.length * 8);
+  values.forEach((v, i) => b.writeDoubleLE(v, i * 8));
+  return b;
+}
+
+function shorts(values) {
+  const b = Buffer.alloc(values.length * 2);
+  values.forEach((v, i) => b.writeUInt16LE(v, i * 2));
+  return b;
+}
