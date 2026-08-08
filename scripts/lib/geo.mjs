@@ -233,6 +233,47 @@ function readShpPolylines(path) {
   return shapes;
 }
 
+/**
+ * Point geometry from a .shp.
+ *
+ * Handles Point (1), PointZ (11) and PointM (21). All three start with the same
+ * X and Y pair and differ only in what follows, so one read covers them.
+ *
+ * Added for pour points, which is the one shapefile in the hydrology fixture
+ * that is not lines or polygons. Reading it with readShpPolylines returns a row
+ * of nulls, silently, which is exactly the failure mode that file warns about.
+ */
+function readShpPoints(path) {
+  const buf = readFileSync(path);
+  const fileLength = buf.readInt32BE(24) * 2;
+  const POINT_TYPES = new Set([1, 11, 21]);
+  const points = [];
+  const seen = new Map();
+
+  let pos = 100;
+  while (pos < fileLength) {
+    const contentLength = buf.readInt32BE(pos + 4) * 2;
+    const body = pos + 8;
+    const type = buf.readInt32LE(body);
+    seen.set(type, (seen.get(type) ?? 0) + 1);
+    if (POINT_TYPES.has(type)) {
+      points.push([buf.readDoubleLE(body + 4), buf.readDoubleLE(body + 12)]);
+    } else {
+      points.push(null); // keep indices aligned with the .dbf
+    }
+    pos = body + contentLength;
+  }
+
+  const skipped = [...seen].filter(([type]) => !POINT_TYPES.has(type) && type !== 0);
+  if (skipped.length > 0) {
+    console.warn(
+      `     SKIPPED non point geometry in ${path}: ` +
+        skipped.map(([t, n]) => `${SHAPE_NAMES[t] ?? `type ${t}`} x${n}`).join(", "),
+    );
+  }
+  return points;
+}
+
 const TILE_SIZE = 256;
 const R = 6378137.0;
 
@@ -317,6 +358,6 @@ function tileRange(z, bbox) {
 export {
   MIN_ELEVATION_M, MAX_ELEVATION_M, isElevation,
   utmToLonLat, lonLatToUtm, readProjection, readWorldFile, rasterCorners,
-  readDbf, readShpPolylines, SHAPE_NAMES,
+  readDbf, readShpPolylines, readShpPoints, SHAPE_NAMES,
   lonLatToMercator, mercatorToLonLat, tileBounds, tileRange, MERCATOR_EXTENT, TILE_SIZE,
 };

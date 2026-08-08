@@ -50,6 +50,12 @@ next-env.d.ts
 # raw deliverable screenshots set (processed copies go in public/)
 /Ortho1/
 
+# tool spec and hydrology sample data from Malhar (~87 MB of survey deliverables).
+# The .zip beside it is already caught by *.zip, but the unpacked directory is
+# not, and it is the input to scripts/hydro-validate.mjs rather than something
+# the site ships.
+/Dashbord Tools_Prompt_Datasets/
+
 # reference / demo videos (large, kept locally only)
 *.mp4
 
