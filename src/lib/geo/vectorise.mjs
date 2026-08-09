@@ -22,7 +22,7 @@
  * conversion is never applied twice.
  */
 
-import { utmToLonLat } from "./geo.mjs";
+import { utmToLonLat } from "./projection.mjs";
 import { downstreamOf } from "./hydrology.mjs";
 
 /**

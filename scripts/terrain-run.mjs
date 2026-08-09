@@ -20,13 +20,13 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readGeoTiff, writeGeoTiff } from "./lib/raster.mjs";
+import { readGeoTiff, writeGeoTiff } from "../src/lib/geo/raster.mjs";
 import {
   spotLevel, profile, gridLevels, polygonStats, cutFill, surfaceDifference, REFERENCE,
-} from "./lib/terrain-analysis.mjs";
+} from "../src/lib/geo/terrain-analysis.mjs";
 import {
   pointsToCsv, pointsToTxt, pointsToDxf, pointsToLandXml, profileToCsv, writePrj,
-} from "./lib/export-formats.mjs";
+} from "../src/lib/geo/export-formats.mjs";
 
 function parseArgs(argv) {
   const args = {};

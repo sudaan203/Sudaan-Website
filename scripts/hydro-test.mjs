@@ -16,8 +16,8 @@
  *   node scripts/hydro-test.mjs
  */
 
-import { Grid, resample } from "./lib/raster.mjs";
-import { polygonize, ringArea, vectoriseStreams } from "./lib/vectorise.mjs";
+import { Grid, resample } from "../src/lib/geo/raster.mjs";
+import { polygonize, ringArea, vectoriseStreams } from "../src/lib/geo/vectorise.mjs";
 import {
   fillDepressions,
   d8Pointer,
@@ -28,7 +28,7 @@ import {
   slopeDegrees,
   connectedFlood,
   snapToChannel,
-} from "./lib/hydrology.mjs";
+} from "../src/lib/geo/hydrology.mjs";
 
 let pass = 0;
 let fail = 0;
