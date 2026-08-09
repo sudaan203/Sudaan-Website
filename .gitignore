@@ -84,3 +84,8 @@ next-env.d.ts
 # empty tiles are never written: about 1 MB for Kotba, 17 MB for Aektanagar. Once
 # a site passes the 50 MB trigger in 8h, that site moves to object storage and
 # gets ignored here instead.
+
+# Source terrain models the analysis API reads, symlinked to the gitignored
+# survey folders above. Local only: in production these come from object storage
+# via PORTAL_TERRAIN_DIR, and committing the symlinks would dangle on Vercel.
+/portal-data/terrain/
