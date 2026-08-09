@@ -29,7 +29,7 @@
 import { mkdirSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
-import { readGeoTiff, writeGeoTiff, resample } from "./lib/raster.mjs";
+import { readGeoTiff, writeGeoTiff, resample } from "../src/lib/geo/raster.mjs";
 import {
   fillDepressions,
   d8Pointer,
@@ -42,8 +42,8 @@ import {
   watershedFrom,
   snapToChannel,
   connectedFlood,
-} from "./lib/hydrology.mjs";
-import { polygonize, ringArea, vectoriseStreams, toGeoJson } from "./lib/vectorise.mjs";
+} from "../src/lib/geo/hydrology.mjs";
+import { polygonize, ringArea, vectoriseStreams, toGeoJson } from "../src/lib/geo/vectorise.mjs";
 
 const GENERATOR = "sudaan-hydro/0.1 reference engine";
 

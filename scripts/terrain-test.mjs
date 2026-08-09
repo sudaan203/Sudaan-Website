@@ -13,7 +13,7 @@
  *   node scripts/terrain-test.mjs
  */
 
-import { Grid } from "./lib/raster.mjs";
+import { Grid } from "../src/lib/geo/raster.mjs";
 import {
   spotLevel,
   profile,
@@ -24,7 +24,7 @@ import {
   cutFill,
   surfaceDifference,
   REFERENCE,
-} from "./lib/terrain-analysis.mjs";
+} from "../src/lib/geo/terrain-analysis.mjs";
 import {
   pointsToCsv,
   pointsToTxt,
@@ -32,7 +32,7 @@ import {
   pointsToLandXml,
   profileToCsv,
   writePrj,
-} from "./lib/export-formats.mjs";
+} from "../src/lib/geo/export-formats.mjs";
 
 let pass = 0;
 let fail = 0;

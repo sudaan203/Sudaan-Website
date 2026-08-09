@@ -410,6 +410,12 @@ export const REFERENCE = {
  * over a hectare is 400 m3 out, and that is the number that turns up in a
  * dispute.
  */
+/**
+ * @param {any} grid
+ * @param {number[][]} ring
+ * @param {{ kind: string, at: Function }} reference
+ * @param {{ rmseZ?: number|null }} [options]
+ */
 export function cutFill(grid, ring, reference, { rmseZ = null } = {}) {
   if (!reference || typeof reference.at !== "function") {
     throw new Error(

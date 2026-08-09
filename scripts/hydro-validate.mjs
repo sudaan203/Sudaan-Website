@@ -33,7 +33,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { readGeoTiff, readSagaGrid, assertAligned } from "./lib/raster.mjs";
+import { readGeoTiff, readSagaGrid, assertAligned } from "../src/lib/geo/raster.mjs";
 import { readShpPolylines, readShpPoints, readDbf } from "./lib/geo.mjs";
 import {
   fillDepressions,
@@ -46,7 +46,7 @@ import {
   downstreamOf,
   D8_DCOL,
   D8_DROW,
-} from "./lib/hydrology.mjs";
+} from "../src/lib/geo/hydrology.mjs";
 import { confusion, rasterizeLines, networkAgreement, pct } from "./lib/hydro-compare.mjs";
 
 const ROOT =

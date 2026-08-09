@@ -152,6 +152,12 @@ export function classifySlope(slopeGrid, schemeName) {
  * actually resolve the question, and the honest answer is to say so rather than
  * to produce a confident green map.
  */
+/**
+ * @param {any} surfaceGrid
+ * @param {any} referenceGrid
+ * @param {number} tolerance
+ * @param {{ rmseZ?: number|null }} [options]
+ */
 export function toleranceAnalysis(surfaceGrid, referenceGrid, tolerance, { rmseZ = null } = {}) {
   if (!(tolerance > 0)) throw new Error("toleranceAnalysis: tolerance must be positive metres");
 
@@ -216,6 +222,12 @@ export function toleranceAnalysis(surfaceGrid, referenceGrid, tolerance, { rmseZ
  * drawn wider than the toe and is picking up a ditch or a slope. It is reported
  * rather than discarded.
  */
+/**
+ * @param {any} demGrid
+ * @param {number[][]} ring
+ * @param {{ kind: string, at: Function }} reference
+ * @param {{ rmseZ?: number|null }} [options]
+ */
 export function stockpileVolume(demGrid, ring, reference, { rmseZ = null } = {}) {
   const result = cutFill(demGrid, ring, reference, { rmseZ });
   const baseArea = result.cutArea;
@@ -274,6 +286,12 @@ function pointAtChainage(line, distance) {
  * alignment, which is what a drawing expects: chainage 0+000, 0+025, 0+050. The
  * end of the alignment is always included even when it is not a whole station,
  * because leaving it out loses the end of the road.
+ */
+/**
+ * @param {any} demGrid
+ * @param {number[][]} line
+ * @param {number} interval
+ * @param {{ rmseZ?: number|null }} [options]
  */
 export function chainage(demGrid, line, interval, { rmseZ = null } = {}) {
   if (!(interval > 0)) throw new Error("chainage: interval must be positive metres");
@@ -346,6 +364,11 @@ export function formatChainage(metres) {
  *
  * Offsets run left to right in the direction of travel, so a drafter reading the
  * output knows which side of the centreline they are on. Left is negative.
+ */
+/**
+ * @param {any} demGrid
+ * @param {number[][]} line
+ * @param {{ interval?: number, halfWidth?: number, spacing?: number|null }} [options]
  */
 export function crossSections(demGrid, line, { interval = 10, halfWidth = 15, spacing = null } = {}) {
   const total = alignmentLength(line);
@@ -580,6 +603,11 @@ export function steepSlopeZones(slopeGrid, limitDegrees) {
  *
  * Completion is deliberately volume based rather than area based: eighty percent
  * of the area touched can be twenty percent of the material.
+ */
+/**
+ * @param {{label: string, grid: any}[]} surfaces
+ * @param {number[][]} ring
+ * @param {{ design?: any, rmseZ?: number|null }} [options]
  */
 export function earthworkProgress(surfaces, ring, { design = null, rmseZ = null } = {}) {
   if (!Array.isArray(surfaces) || surfaces.length < 2) {

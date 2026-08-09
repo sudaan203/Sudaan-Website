@@ -10,9 +10,9 @@
  *   node scripts/engineering-test.mjs
  */
 
-import { Grid } from "./lib/raster.mjs";
-import { slopeDegrees } from "./lib/hydrology.mjs";
-import { REFERENCE } from "./lib/terrain-analysis.mjs";
+import { Grid } from "../src/lib/geo/raster.mjs";
+import { slopeDegrees } from "../src/lib/geo/hydrology.mjs";
+import { REFERENCE } from "../src/lib/geo/terrain-analysis.mjs";
 import {
   SLOPE_SCHEMES,
   classifySlope,
@@ -27,7 +27,7 @@ import {
   benchAnalysis,
   steepSlopeZones,
   earthworkProgress,
-} from "./lib/engineering.mjs";
+} from "../src/lib/geo/engineering.mjs";
 
 let pass = 0;
 let fail = 0;
