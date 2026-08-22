@@ -12,16 +12,26 @@ import {
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapLayer } from "@/lib/portal/map-data";
-import { DemSampler } from "@/lib/portal/dem-sampler";
 import {
-  densifyPath,
+  AnalysisClient,
+  AnalysisError,
+  latest,
+  type AnalysisEnvelope,
+  type Pair,
+  type PolygonStatsResult,
+  type ProfileResult,
+  type Surface,
+  type VolumeReference,
+} from "@/lib/portal/analysis-client";
+import {
   formatElevation,
   lonLatToUtm,
-  metresPerPixel,
   pathLength,
   ringArea,
 } from "@/lib/portal/geodesy";
-import { MeasurePanel, type Measurement } from "./MeasurePanel";
+import { MeasurePanel, type ElevationState, type Measurement } from "./MeasurePanel";
+import { SpotLevelPanel, type SpotReading } from "./SpotLevelPanel";
+import { VolumePanel, type VolumeState } from "./VolumePanel";
 
 /**
  * The survey map: georeferenced deliverables drawn over each other, with the
@@ -64,8 +74,26 @@ const RASTER_OPACITY = 0.85;
  */
 setWorkerUrl("/vendor/maplibre-gl-worker.mjs");
 
-/** The survey's own stated accuracy, used to qualify every elevation shown. */
+/**
+ * The survey's own stated accuracy, used to qualify every elevation shown.
+ *
+ * A fallback only. Every analysis response carries the survey's real `rmseZ`
+ * from its own checkpoint report, and that is preferred wherever it arrives;
+ * this is what the hover readout uses before the first response lands.
+ */
 const TOLERANCE_M = 0.04;
+
+/**
+ * How long the pointer must settle before the map asks the server how high the
+ * ground is under it.
+ *
+ * There is exactly one source of elevation in this component and it is the
+ * analysis API, so the hover readout has to go over the network too. Firing per
+ * mousemove would be hundreds of requests a drag; firing on settle is one.
+ * 140 ms is below the ~200 ms that reads as lag and above the gaps inside a
+ * normal drag, so a moving pointer produces no requests at all.
+ */
+const HOVER_SETTLE_MS = 140;
 
 type Group = "Imagery and models" | "Terrain" | "Vectors";
 const GROUPS: readonly Group[] = ["Imagery and models", "Terrain", "Vectors"] as const;
@@ -77,7 +105,63 @@ function groupOf(layer: MapLayer): Group {
   return "Imagery and models";
 }
 
-type MeasureMode = "off" | "distance" | "area";
+/**
+ * `spot` and `volume` are single-purpose tools rather than variations on
+ * measuring: spot accumulates a list of levels and draws no geometry, volume
+ * needs a closed ring *and* a reference surface before it can answer at all.
+ */
+type MeasureMode = "off" | "spot" | "distance" | "area" | "volume";
+
+/** Modes that draw a polygon rather than a path. */
+const CLOSES_A_RING = new Set<MeasureMode>(["area", "volume"]);
+
+/**
+ * Most samples a single profile may ask for.
+ *
+ * A 3 km haul road at Kotba's 24 cm cell is 12,500 samples, and the chart it
+ * feeds is 240 px wide. Past this the extra points are invisible, the response
+ * is megabytes of JSON, and the server walks the raster for no benefit. Below
+ * it, native spacing wins, because sampling finer than the grid shows
+ * interpolation rather than measurement.
+ */
+const MAX_PROFILE_SAMPLES = 2000;
+
+/**
+ * Sample spacing for a profile, or undefined to let the server use the raster's
+ * own cell size, which is what it should do for any ordinary line.
+ */
+function profileSpacing(
+  ring: [number, number][],
+  zone: number,
+  northern: boolean,
+  cellSize: number | null,
+): number | undefined {
+  if (!cellSize) return undefined;
+  const length = pathLength(ring, zone, northern);
+  if (length <= 0) return undefined;
+  const native = length / cellSize;
+  return native > MAX_PROFILE_SAMPLES ? length / MAX_PROFILE_SAMPLES : undefined;
+}
+
+/**
+ * A closed ring is answered with polygon statistics, an open path with a
+ * profile. One lane serves both because they are the same gesture at different
+ * stages, and they must cancel each other: a profile still in flight when the
+ * client closes the ring describes geometry that no longer exists.
+ */
+type ShapeResponse = AnalysisEnvelope & { result: ProfileResult | PolygonStatsResult };
+
+/**
+ * What to show a client when a measurement fails.
+ *
+ * `AnalysisError` messages are already written for a client to read, including
+ * the API's own refusals, so they pass through. Anything else is a bug on our
+ * side and gets wording that does not pretend otherwise.
+ */
+function messageFor(error: unknown): string {
+  if (error instanceof AnalysisError) return error.message;
+  return "The measurement could not be computed.";
+}
 
 export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const container = useRef<HTMLDivElement>(null);
@@ -108,16 +192,90 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   // ---- measurement --------------------------------------------------------
   const [mode, setMode] = useState<MeasureMode>("off");
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  const [elevation, setElevation] = useState<ElevationState>({ state: "idle" });
+  const [spots, setSpots] = useState<SpotReading[]>([]);
+  const [spotBusy, setSpotBusy] = useState(false);
+  const [spotError, setSpotError] = useState<string | null>(null);
+  const [volume, setVolume] = useState<VolumeState>({ state: "idle" });
+  /**
+   * Which model the tools read. A surveyor measuring a stockpile wants the DSM;
+   * one setting out formation levels wants bare earth. Getting this wrong is not
+   * a rounding error, it is the difference between the top of a tree and the
+   * ground under it, so it is a visible control rather than an assumption.
+   */
+  const [surface, setSurface] = useState<Surface>("dtm");
+  /** The accuracy the server last reported for this survey, preferred over the default. */
+  const [rmseZ, setRmseZ] = useState<number | null>(null);
+
   // Points live in a ref as well, because the map's click handler is registered
   // once and would otherwise close over the first render's empty array.
   const drawn = useRef<[number, number][]>([]);
-  const sampler = useRef<DemSampler | null>(null);
   const modeRef = useRef<MeasureMode>("off");
   modeRef.current = mode;
+  const surfaceRef = useRef<Surface>(surface);
+  surfaceRef.current = surface;
+  // The map's handlers are registered once, so anything they read at event time
+  // has to come through a ref rather than a closed-over render value.
+  const toleranceRef = useRef<number>(TOLERANCE_M);
 
   const dem = layers.find((l) => l.kind === "dem");
   const utmZone = dem?.utmZone ?? 43;
   const utmNorthern = dem?.utmNorthern ?? true;
+
+  const tolerance = rmseZ ?? TOLERANCE_M;
+  toleranceRef.current = tolerance;
+
+  /**
+   * The analysis API, bound to this site, with three independent "latest wins"
+   * lanes.
+   *
+   * Separate lanes because these compete for different panels: a hover readout
+   * arriving late must not cancel the profile the client is waiting for, and
+   * vice versa. One shared lane would have them abort each other, which shows up
+   * as a readout that never fills in while a measurement is in flight.
+   */
+  const client = useRef<AnalysisClient>(null as unknown as AnalysisClient);
+  if (!client.current) client.current = new AnalysisClient(siteSlug);
+
+  const hoverLane = useRef(
+    latest((signal: AbortSignal, at: Pair, model: Surface) =>
+      client.current.spot(at, { surface: model }, signal),
+    ),
+  );
+  const shapeLane = useRef(
+    latest(
+      (
+        signal: AbortSignal,
+        points: Pair[],
+        closed: boolean,
+        model: Surface,
+        spacing: number | undefined,
+      ): Promise<ShapeResponse> =>
+        closed
+          ? client.current.polygonStats(points, { surface: model }, signal)
+          : client.current.profile(points, { surface: model, spacing }, signal),
+    ),
+  );
+  const volumeLane = useRef(
+    latest((signal: AbortSignal, ring: Pair[], reference: VolumeReference, model: Surface) =>
+      client.current.volume(ring, reference, { surface: model }, signal),
+    ),
+  );
+
+  /**
+   * The survey's native cell size, learned from whatever response arrives first.
+   *
+   * Only used to keep a profile over a very long line from asking for tens of
+   * thousands of samples. Until something has answered it stays null and the
+   * server picks its own native spacing, which is the right answer anyway.
+   */
+  const cellSizeRef = useRef<number | null>(null);
+
+  /** Record the accuracy and resolution every response carries. */
+  const noteEnvelope = useCallback((response: { cellSize: number; rmseZ: number | null }) => {
+    cellSizeRef.current = response.cellSize;
+    if (response.rmseZ !== null) setRmseZ((current) => (current === response.rmseZ ? current : response.rmseZ));
+  }, []);
 
   const url = useCallback(
     (file: string) => `/api/portal/sites/${siteSlug}/map/${file}`,
@@ -127,18 +285,24 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   /**
    * Redraw the measurement and recompute its numbers.
    *
-   * Geometry goes into a GeoJSON source so MapLibre draws it; the numbers are
-   * computed in UTM by geodesy.ts, never from the map's own coordinates. The
-   * profile is sampled at roughly one DEM cell, because asking for samples closer
-   * together than the data would show interpolation rather than measurement.
+   * The split here is the whole design. **Geometry** — length, area, perimeter —
+   * is exact arithmetic on the vertices the client just placed, projected into
+   * the survey's UTM zone by `geodesy.ts`. It needs no elevation model, so it
+   * lands in the panel on the same frame as the click. **Elevation** goes to the
+   * server, because the only way to compute it here would be to decode a
+   * Terrain-RGB tile, and that is quantised to 0.1 m, nearest-neighbour sampled,
+   * and in the wrong projection (see `analysis-client.ts`).
+   *
+   * So the panel fills in twice, and says which half it is still waiting on.
    */
   const recompute = useCallback(
     async (instance: InstanceType<typeof MapLibreMap>, closed: boolean) => {
       const points = drawn.current;
-      const isArea = modeRef.current === "area";
+      const active = modeRef.current;
+      const isRing = CLOSES_A_RING.has(active);
       const source = instance.getSource("measure");
 
-      const ring = isArea && points.length > 2 ? [...points, points[0]] : points;
+      const ring = isRing && points.length > 2 ? [...points, points[0]] : points;
       const features: GeoJSON.Feature[] = points.map((p) => ({
         type: "Feature",
         properties: {},
@@ -146,7 +310,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       }));
       if (points.length > 1) {
         features.push(
-          isArea && closed && points.length > 2
+          isRing && closed && points.length > 2
             ? {
                 type: "Feature",
                 properties: {},
@@ -168,38 +332,79 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
       if (points.length < 2) {
         setMeasurement(null);
+        setElevation({ state: "idle" });
         return;
       }
 
-      const length = pathLength(ring, utmZone, utmNorthern);
-      const area = isArea ? ringArea(points, utmZone, utmNorthern) : 0;
-
-      // One DEM cell at the deepest zoom we generated, so the profile is sampled
-      // at the resolution the data actually has.
-      const spacing = Math.max(
-        0.5,
-        metresPerPixel(points[0][1], dem?.maxZoom ?? instance.getZoom()),
-      );
-      const samples = densifyPath(ring, spacing, utmZone, utmNorthern);
-      const s = sampler.current;
-      const profile = s ? await s.elevations(samples, dem?.maxZoom ?? instance.getZoom()) : [];
-
+      // Geometry: instant, and independent of whether the server ever answers.
       setMeasurement({
-        mode: isArea ? "area" : "distance",
+        mode: isRing ? "area" : "distance",
         points,
-        length,
-        area,
-        profile,
+        length: pathLength(ring, utmZone, utmNorthern),
+        area: isRing && points.length > 2 ? ringArea(points, utmZone, utmNorthern) : 0,
         utmZone,
         closed,
       });
+
+      // Volume draws the same ring but answers a different question, and its
+      // panel reads none of this: the client picks a reference surface and asks
+      // explicitly. Sampling the polygon on every corner would be work nobody
+      // asked for and an answer nobody sees.
+      if (active === "volume") return;
+
+      // A ring only means something to the server once it is closed and has
+      // three corners; before that it is still a path.
+      const askForStats = isRing && closed && points.length > 2;
+      if (isRing && !askForStats) {
+        setElevation({ state: "idle" });
+        return;
+      }
+
+      setElevation({ state: "loading" });
+      try {
+        const response = await shapeLane.current.call(
+          (askForStats ? ring : points) as Pair[],
+          askForStats,
+          surfaceRef.current,
+          askForStats ? undefined : profileSpacing(ring, utmZone, utmNorthern, cellSizeRef.current),
+        );
+        // Superseded by a newer click. The newer call owns the panel now.
+        if (response === null) return;
+
+        noteEnvelope(response);
+        // `askForStats` chose the op, so it also decides which result came back.
+        setElevation(
+          askForStats
+            ? {
+                state: "stats",
+                data: response.result as PolygonStatsResult,
+                cellSize: response.cellSize,
+                computedIn: response.computedIn,
+              }
+            : {
+                state: "profile",
+                data: response.result as ProfileResult,
+                cellSize: response.cellSize,
+                computedIn: response.computedIn,
+              },
+        );
+      } catch (error) {
+        setElevation({ state: "error", message: messageFor(error) });
+      }
     },
-    [utmZone, utmNorthern, dem?.maxZoom],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [utmZone, utmNorthern],
   );
 
   const clearMeasurement = useCallback(() => {
     drawn.current = [];
     setMeasurement(null);
+    // Cancel rather than merely ignore: a response landing into a cleared panel
+    // would repopulate it with numbers for geometry that is no longer drawn.
+    shapeLane.current.cancel();
+    volumeLane.current.cancel();
+    setElevation({ state: "idle" });
+    setVolume({ state: "idle" });
     const instance = map.current;
     const source = instance?.getSource("measure");
     if (source && "setData" in source) {
@@ -209,6 +414,66 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       });
     }
   }, []);
+
+  /** Tool 4. Explicit reference, explicit request: never computed on a whim. */
+  const computeVolume = useCallback(
+    async (reference: VolumeReference) => {
+      const points = drawn.current;
+      if (points.length < 3) return;
+      const ring = [...points, points[0]] as Pair[];
+
+      setVolume({ state: "loading" });
+      try {
+        const response = await volumeLane.current.call(ring, reference, surfaceRef.current);
+        if (response === null) return;
+        noteEnvelope(response);
+        setVolume({
+          state: "done",
+          data: response.result,
+          reference,
+          surface: response.surface,
+        });
+      } catch (error) {
+        setVolume({ state: "error", message: messageFor(error) });
+      }
+    },
+    [noteEnvelope],
+  );
+
+  /** Tool 1. One click, one authoritative level, appended to the list. */
+  const takeSpot = useCallback(
+    async (lon: number, lat: number) => {
+      setSpotBusy(true);
+      setSpotError(null);
+      try {
+        // Deliberately not on a "latest wins" lane: every click is a level the
+        // client asked for and expects to keep, so they must not cancel each
+        // other the way a hover readout should.
+        const response = await client.current.spot([lon, lat], {
+          surface: surfaceRef.current,
+        });
+        noteEnvelope(response);
+        setSpots((current) => [
+          ...current,
+          {
+            id: Date.now() + current.length,
+            lon,
+            lat,
+            easting: response.result.easting,
+            northing: response.result.northing,
+            elevation: response.result.elevation,
+            surface: response.surface,
+            computedIn: response.computedIn,
+          },
+        ]);
+      } catch (error) {
+        setSpotError(messageFor(error));
+      } finally {
+        setSpotBusy(false);
+      }
+    },
+    [noteEnvelope],
+  );
 
   // ---- build the map once -------------------------------------------------
   useEffect(() => {
@@ -271,6 +536,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
      */
     let pending = false;
     let lastLngLat: { lng: number; lat: number } | null = null;
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
     const refreshReadout = () => {
       pending = false;
@@ -281,18 +547,30 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       const base =
         `${at.lat.toFixed(6)}, ${at.lng.toFixed(6)}` +
         `  ·  ${easting.toFixed(1)} E ${northing.toFixed(1)} N`;
+      // Coordinates are ours to compute and appear on the same frame as the
+      // pointer. Only the height has to be asked for.
       setReadout(base);
 
-      const s = sampler.current;
-      if (!s) return;
-      void s
-        .elevationAt(at.lng, at.lat, instance.getZoom())
-        .then((elevation) => {
-          // Only annotate if the pointer has not moved on since.
-          if (lastLngLat !== at || elevation === null) return;
-          setReadout(`${formatElevation(elevation, TOLERANCE_M)}  ·  ${base}`);
-        })
-        .catch(() => {});
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        const settled = lastLngLat;
+        if (!settled || settled !== at) return;
+        void hoverLane.current
+          .call([settled.lng, settled.lat] as Pair, surfaceRef.current)
+          .then((response) => {
+            // Superseded, or the pointer moved on while this was in flight.
+            if (response === null || lastLngLat !== settled) return;
+            noteEnvelope(response);
+            const height = response.result.elevation;
+            if (height === null) return;
+            setReadout(`${formatElevation(height, toleranceRef.current)}  ·  ${base}`);
+          })
+          .catch(() => {
+            // A hover readout is an aid, not a measurement. If the server cannot
+            // answer, the coordinates still stand and nothing should be shouted
+            // about it; the measure tools report their own failures properly.
+          });
+      }, HOVER_SETTLE_MS);
     };
 
     instance.on("mousemove", (event) => {
@@ -319,17 +597,24 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     });
     instance.on("mouseout", () => {
       lastLngLat = null;
+      clearTimeout(settleTimer);
       setReadout("");
     });
 
     // ---- measure: click to add a vertex, double click to finish ------------
     instance.on("click", (event) => {
       if (modeRef.current === "off") return;
+      // Spot levels take a reading and draw nothing: they are a list, not a
+      // shape, and a run of them should not turn into a polygon.
+      if (modeRef.current === "spot") {
+        void takeSpot(event.lngLat.lng, event.lngLat.lat);
+        return;
+      }
       drawn.current = [...drawn.current, [event.lngLat.lng, event.lngLat.lat]];
       void recompute(instance, false);
     });
     instance.on("dblclick", (event) => {
-      if (modeRef.current === "off") return;
+      if (modeRef.current === "off" || modeRef.current === "spot") return;
       // Stop the default zoom, which would otherwise fire on the gesture that
       // finishes a measurement.
       event.preventDefault();
@@ -357,13 +642,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       for (const layer of layers) {
         if (layer.kind === "dem" && layer.tiles) {
           /**
-           * Terrain-RGB, so the elevation survives into the browser as metres.
+           * Terrain-RGB, used for relief shading and nothing else.
            *
-           * Two things come off this one source. MapLibre renders `hillshade`
-           * from it natively, which is relief the client can turn up or down
-           * rather than a colour ramp baked at ingest. And DemSampler decodes
-           * the same tiles to answer "how high is this point", which is what
-           * makes the measure tool report real heights instead of guesses.
+           * MapLibre renders `hillshade` from this source natively, which gives
+           * the client relief they can turn up or down rather than a colour ramp
+           * baked at ingest. That is the right job for these tiles: shading is a
+           * picture, and Terrain-RGB's 0.1 m quantisation is invisible in one.
+           *
+           * It is emphatically **not** where any reported number comes from. It
+           * used to be, and the measurements were wrong by amounts that looked
+           * plausible; see the header of `analysis-client.ts`. Every height on
+           * this page is now read server side from the source raster.
            */
           instance.addSource(layer.key, {
             type: "raster-dem",
@@ -525,16 +814,95 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The elevation sampler needs the same authorised tile URL the map uses.
+  /**
+   * Which elevation models can this survey actually be measured against?
+   *
+   * Asked, never inferred, and this is load bearing rather than fastidious. The
+   * obvious source is the layer manifest, but the manifest describes what is
+   * *drawn*: the tile pyramids are committed to the repository and deploy with
+   * the site, while the source rasters the analysis reads are gitignored and
+   * reachable only where `PORTAL_TERRAIN_DIR` points at them. So in production
+   * the map renders a terrain layer beautifully and there is nothing behind it
+   * to measure. Trusting the manifest there would offer a client four tools that
+   * look available and fail on the first click.
+   *
+   * The analysis API answers the real question precisely: a 409 means that
+   * surface is not on disk. One spot request per surface at the survey's centre
+   * settles it. A point off the footprint is still a valid answer — `elevation:
+   * null` with a 200 proves the raster exists, which is what is being asked.
+   */
+  type TerrainProbe =
+    | { state: "checking" }
+    | { state: "ready"; dtm: boolean; dsm: boolean }
+    | { state: "unavailable"; message: string };
+
+  const [probe, setProbe] = useState<TerrainProbe>({ state: "checking" });
+
   useEffect(() => {
-    if (!dem?.tiles) return;
-    sampler.current = new DemSampler(
-      url(dem.tiles),
-      dem.minZoom ?? 0,
-      dem.maxZoom ?? 20,
-      dem.encoding ?? "mapbox",
-    );
-  }, [dem?.tiles, dem?.minZoom, dem?.maxZoom, dem?.encoding, url]);
+    const corners = layers.find((l) => l.kind !== "vector" && l.coordinates)?.coordinates;
+    if (!corners) {
+      setProbe({ state: "unavailable", message: "This survey has no georeferenced layers yet." });
+      return;
+    }
+    const centre: Pair = [
+      corners.reduce((s, c) => s + c[0], 0) / corners.length,
+      corners.reduce((s, c) => s + c[1], 0) / corners.length,
+    ];
+
+    let live = true;
+    void (async () => {
+      const ask = (surface: Surface) =>
+        client.current
+          .spot(centre, { surface })
+          .then((response) => {
+            noteEnvelope(response);
+            return true as const;
+          })
+          .catch((error: unknown) => error);
+
+      const [dtm, dsm] = await Promise.all([ask("dtm"), ask("dsm")]);
+      if (!live) return;
+
+      if (dtm === true || dsm === true) {
+        setProbe({ state: "ready", dtm: dtm === true, dsm: dsm === true });
+        // A survey published as surface model only should open on the surface
+        // model, rather than on a terrain model that is not there.
+        if (dtm !== true && dsm === true) setSurface("dsm");
+        return;
+      }
+      // Neither is measurable. The API's own wording is written for a client to
+      // read and distinguishes "not published yet" from "too large to measure",
+      // so it is passed through rather than replaced with something vaguer.
+      setProbe({
+        state: "unavailable",
+        message:
+          dtm instanceof AnalysisError
+            ? dtm.message
+            : "The measurement tools are unavailable for this survey.",
+      });
+    })();
+
+    return () => {
+      live = false;
+    };
+  }, [layers, noteEnvelope]);
+
+  /** Both models present, so offering a choice between them means something. */
+  const hasBothSurfaces = probe.state === "ready" && probe.dtm && probe.dsm;
+  /** Anything at all to measure against. */
+  const measurable = probe.state === "ready";
+
+  /*
+   * There is deliberately no elevation sampler here any more.
+   *
+   * `DemSampler` used to decode the Terrain-RGB tiles and answer every height
+   * question in the browser. It is still what MapLibre renders the hillshade
+   * from, and that is the right job for it: relief shading is a picture, and
+   * 0.1 m quantisation is invisible in one. It is the wrong thing to *measure*
+   * with, and phase 0 of the tools plan asks for exactly this severance — "no
+   * code path computes a reported number from a Terrain RGB tile". Every number
+   * on this page now comes from the analysis API against the source raster.
+   */
 
   // ---- reflect state into the map ----------------------------------------
   useEffect(() => {
@@ -565,7 +933,28 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   useEffect(() => {
     if (mode === "off") return;
     clearMeasurement();
+    setSpotError(null);
   }, [mode, clearMeasurement]);
+
+  /**
+   * Switching between the terrain and surface models re-reads whatever is drawn.
+   *
+   * Leaving the old numbers on screen under a changed label would be the worst
+   * of the options available: the panel would say DSM while showing heights read
+   * off the DTM, and nothing about it would look wrong. A volume is dropped
+   * outright rather than re-run, because it was computed against a reference the
+   * client chose for the other surface and re-running it silently would be
+   * answering a question they did not ask.
+   */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready) return;
+    setVolume({ state: "idle" });
+    if (drawn.current.length < 2) return;
+    void recompute(instance, measurement?.closed ?? false);
+    // Only when the surface changes, not when the measurement does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface]);
 
   useEffect(() => {
     const instance = map.current;
@@ -598,6 +987,11 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     );
   }
 
+  /**
+   * A terrain layer is *drawn*, which is a weaker claim than measurable and is
+   * now only used for the controls that read the tiles: relief shading, and the
+   * surface switch that sits beside it. What the tools may measure is `probe`.
+   */
   const hasTerrain = Boolean(dem);
 
   return (
@@ -610,16 +1004,35 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         </span>
         {(
           [
+            ["spot", "Spot level"],
             ["distance", "Distance"],
             ["area", "Area"],
+            ["volume", "Volume"],
           ] as const
         ).map(([value, label]) => (
           <button
             key={value}
             type="button"
             aria-pressed={mode === value}
+            /*
+             * Every one of these reads the elevation model, so without one they
+             * are decoration. Gated on the server probe rather than on the
+             * presence of a terrain layer in the manifest, because those two
+             * disagree exactly where it matters: a deployment that ships the
+             * tile pyramids without the source rasters draws terrain it cannot
+             * measure. Disabled with a reason beats a tool that answers
+             * "unavailable" only after a client has used it.
+             */
+            disabled={!measurable}
+            title={
+              probe.state === "checking"
+                ? "Checking the elevation model…"
+                : probe.state === "unavailable"
+                  ? probe.message
+                  : undefined
+            }
             onClick={() => setMode(mode === value ? "off" : value)}
-            className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+            className={`rounded-full px-3 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
               mode === value
                 ? "bg-accent-600 text-white"
                 : "border border-ink/15 text-ink/70 hover:border-accent-600 hover:text-accent-700"
@@ -628,21 +1041,70 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             {label}
           </button>
         ))}
-        {mode !== "off" ? (
+        {/*
+          Say why the tools are off, in the toolbar, rather than only in a title
+          attribute nobody hovers. "Not published yet" is a different fact from
+          "too large to measure", and the API distinguishes them.
+        */}
+        {probe.state === "unavailable" ? (
+          <span className="text-[11px] text-ink/55">{probe.message}</span>
+        ) : probe.state === "checking" ? (
+          <span className="text-[11px] text-ink/45">Checking the elevation model…</span>
+        ) : mode === "spot" ? (
+          <span className="text-[11px] text-ink/55">Click anywhere to take a level.</span>
+        ) : mode !== "off" ? (
           <span className="text-[11px] text-ink/55">
             Click to add points, double click to finish.
           </span>
         ) : null}
+
         {hasTerrain ? (
-          <label className="ml-auto flex min-h-6 cursor-pointer items-center gap-2 py-0.5 text-xs text-ink/70">
-            <input
-              type="checkbox"
-              checked={hillshade}
-              onChange={(e) => setHillshade(e.target.checked)}
-              className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
-            />
-            Relief shading
-          </label>
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            {/*
+              Which model the numbers come from. Not buried in the layer tree:
+              the layer tree controls what is *drawn*, and this controls what is
+              *measured*, which are different questions that happen to name the
+              same two files.
+            */}
+            {hasBothSurfaces ? (
+              <div
+                className="flex items-center gap-1"
+                role="group"
+                aria-label="Surface the tools measure"
+              >
+                <span className="text-[11px] text-ink/50">Measure on</span>
+                {(
+                  [
+                    ["dtm", "Terrain"],
+                    ["dsm", "Surface"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={surface === value}
+                    onClick={() => setSurface(value)}
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition ${
+                      surface === value
+                        ? "bg-ink-900 text-white"
+                        : "border border-ink/15 text-ink/70 hover:border-accent-600"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <label className="flex min-h-6 cursor-pointer items-center gap-2 py-0.5 text-xs text-ink/70">
+              <input
+                type="checkbox"
+                checked={hillshade}
+                onChange={(e) => setHillshade(e.target.checked)}
+                className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
+              />
+              Relief shading
+            </label>
+          </div>
         ) : null}
       </div>
 
@@ -677,15 +1139,24 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             small screens rather than covering it. */}
         <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-72 p-3 lg:block">
           <div className="pointer-events-auto max-h-full overflow-y-auto rounded-xl border border-ink/10 bg-panel/95 p-4 shadow-card backdrop-blur">
-            {measurement ? (
-              <div className="mb-4 border-b border-ink/[0.08] pb-4">
-                <MeasurePanel
-                  measurement={measurement}
-                  onClear={clearMeasurement}
-                  toleranceM={TOLERANCE_M}
-                />
-              </div>
-            ) : null}
+            <ToolPanel
+              mode={mode}
+              measurement={measurement}
+              elevation={elevation}
+              surface={surface}
+              spots={spots}
+              spotBusy={spotBusy}
+              spotError={spotError}
+              volume={volume}
+              tolerance={tolerance}
+              onClear={clearMeasurement}
+              onComputeVolume={computeVolume}
+              onRemoveSpot={(id) => setSpots((s) => s.filter((r) => r.id !== id))}
+              onClearSpots={() => {
+                setSpots([]);
+                setSpotError(null);
+              }}
+            />
             <LayerTree
               groups={GROUPS}
               layers={layers}
@@ -718,15 +1189,24 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       </div>
 
       <div className="border-t border-ink/[0.08] p-4 lg:hidden">
-        {measurement ? (
-          <div className="mb-4 border-b border-ink/[0.08] pb-4">
-            <MeasurePanel
-              measurement={measurement}
-              onClear={clearMeasurement}
-              toleranceM={TOLERANCE_M}
-            />
-          </div>
-        ) : null}
+        <ToolPanel
+          mode={mode}
+          measurement={measurement}
+          elevation={elevation}
+          surface={surface}
+          spots={spots}
+          spotBusy={spotBusy}
+          spotError={spotError}
+          volume={volume}
+          tolerance={tolerance}
+          onClear={clearMeasurement}
+          onComputeVolume={computeVolume}
+          onRemoveSpot={(id) => setSpots((s) => s.filter((r) => r.id !== id))}
+          onClearSpots={() => {
+            setSpots([]);
+            setSpotError(null);
+          }}
+        />
         <LayerTree
           groups={GROUPS}
           layers={layers}
@@ -742,6 +1222,75 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       </div>
     </div>
   );
+}
+
+/**
+ * Whichever tool is active gets the top of the panel.
+ *
+ * One component rather than three conditionals at each of the two call sites,
+ * because the desktop panel and the mobile stack have to stay identical and
+ * they drifted once already.
+ */
+function ToolPanel({
+  mode,
+  measurement,
+  elevation,
+  surface,
+  spots,
+  spotBusy,
+  spotError,
+  volume,
+  tolerance,
+  onClear,
+  onComputeVolume,
+  onRemoveSpot,
+  onClearSpots,
+}: {
+  mode: MeasureMode;
+  measurement: Measurement | null;
+  elevation: ElevationState;
+  surface: Surface;
+  spots: SpotReading[];
+  spotBusy: boolean;
+  spotError: string | null;
+  volume: VolumeState;
+  tolerance: number;
+  onClear: () => void;
+  onComputeVolume: (reference: VolumeReference) => void;
+  onRemoveSpot: (id: number) => void;
+  onClearSpots: () => void;
+}) {
+  const body =
+    mode === "spot" ? (
+      <SpotLevelPanel
+        readings={spots}
+        toleranceM={tolerance}
+        busy={spotBusy}
+        error={spotError}
+        onRemove={onRemoveSpot}
+        onClear={onClearSpots}
+      />
+    ) : mode === "volume" ? (
+      <VolumePanel
+        ready={Boolean(measurement?.closed) && (measurement?.points.length ?? 0) > 2}
+        polygonArea={measurement?.area ?? 0}
+        surface={surface}
+        result={volume}
+        onCompute={onComputeVolume}
+        onClear={onClear}
+      />
+    ) : measurement ? (
+      <MeasurePanel
+        measurement={measurement}
+        elevation={elevation}
+        surface={surface}
+        onClear={onClear}
+        toleranceM={tolerance}
+      />
+    ) : null;
+
+  if (!body) return null;
+  return <div className="mb-4 border-b border-ink/[0.08] pb-4">{body}</div>;
 }
 
 function LayerTree({

@@ -186,7 +186,8 @@ export class Grid {
   }
 }
 
-const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8 };
+// 16 is LONG8, a 64 bit unsigned integer, which only BigTIFF uses.
+const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8, 16: 8, 17: 8, 18: 8 };
 
 /**
  * TIFF LZW decompression.
@@ -334,23 +335,62 @@ export function readGeoTiff(path) {
   const u32 = (o) => (little ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
   const f64 = (o) => (little ? buf.readDoubleLE(o) : buf.readDoubleBE(o));
 
-  if (u16(2) !== 42) throw new Error(`${path}: BigTIFF is not supported, convert to classic TIFF`);
+  /**
+   * BigTIFF, which is what a large survey actually arrives as.
+   *
+   * Classic TIFF addresses everything with 32 bit offsets and therefore stops at
+   * 4 GB. Aektanagar's DTM is already past what fits comfortably, and Dang
+   * Forest at 450 km² will be far past it, so every serious deliverable from
+   * here on is BigTIFF. Refusing it would mean the reader only opens the small
+   * sites.
+   *
+   * Three differences, all mechanical: the version word is 43 rather than 42,
+   * offsets and counts become 64 bit, and an IFD entry grows from 12 bytes to
+   * 20 with an 8 byte entry count in front of it.
+   */
+  const version = u16(2);
+  const big = version === 43;
+  if (version !== 42 && !big) {
+    throw new Error(`${path}: not a TIFF or BigTIFF (version word ${version})`);
+  }
+  if (big) {
+    const offsetSize = u16(4);
+    if (offsetSize !== 8) {
+      throw new Error(`${path}: BigTIFF with ${offsetSize} byte offsets is not supported`);
+    }
+  }
+
+  // 64 bit reads. Values past Number.MAX_SAFE_INTEGER cannot occur here: they
+  // would describe a file larger than 9 petabytes.
+  const u64 = (o) => {
+    const lo = little ? buf.readUInt32LE(o) : buf.readUInt32BE(o + 4);
+    const hi = little ? buf.readUInt32LE(o + 4) : buf.readUInt32BE(o);
+    return hi * 4294967296 + lo;
+  };
+
+  const entrySize = big ? 20 : 12;
+  const valueOffsetAt = big ? 12 : 8; // where the inline value or pointer sits
+  const inlineCapacity = big ? 8 : 4;
+  const readOffset = big ? u64 : u32;
 
   const tags = new Map();
-  const ifd = u32(4);
-  const count = u16(ifd);
+  const ifd = big ? u64(8) : u32(4);
+  const count = big ? u64(ifd) : u16(ifd);
+  const firstEntry = ifd + (big ? 8 : 2);
+
   for (let i = 0; i < count; i += 1) {
-    const entry = ifd + 2 + i * 12;
+    const entry = firstEntry + i * entrySize;
     const tag = u16(entry);
     const type = u16(entry + 2);
-    const n = u32(entry + 4);
+    const n = big ? u64(entry + 4) : u32(entry + 4);
     const size = (TYPE_SIZE[type] ?? 1) * n;
-    const at = size <= 4 ? entry + 8 : u32(entry + 8);
+    const at = size <= inlineCapacity ? entry + valueOffsetAt : readOffset(entry + valueOffsetAt);
     const values = [];
     for (let k = 0; k < n; k += 1) {
       const o = at + k * (TYPE_SIZE[type] ?? 1);
       if (type === 3) values.push(u16(o));
       else if (type === 4) values.push(u32(o));
+      else if (type === 16) values.push(u64(o)); // LONG8, BigTIFF only
       else if (type === 12) values.push(f64(o));
       else if (type === 2) values.push(String.fromCharCode(buf[o]));
       else values.push(buf[o]);
@@ -378,9 +418,6 @@ export function readGeoTiff(path) {
         `does not implement. Re-export with PREDICTOR=1, or convert in the container.`,
     );
   }
-  if (tags.has(324)) {
-    throw new Error(`${path}: tiled TIFF is not supported by this reader, only strips`);
-  }
   const samples = one(277, 1);
   if (samples !== 1) {
     throw new Error(
@@ -394,35 +431,72 @@ export function readGeoTiff(path) {
   const stripOffsets = tags.get(273);
   const stripCounts = tags.get(279);
   const rowsPerStrip = one(278, height);
-  if (!stripOffsets || !stripCounts) throw new Error(`${path}: missing strip offsets`);
+  if (!tags.has(324) && (!stripOffsets || !stripCounts)) {
+    throw new Error(`${path}: missing both strip offsets and tile offsets`);
+  }
 
   const bytesPerSample = bits / 8;
   const data = new Float32Array(width * height);
 
-  let row = 0;
-  for (let s = 0; s < stripOffsets.length && row < height; s += 1) {
-    const rows = Math.min(rowsPerStrip, height - row);
-    const wanted = rows * width * bytesPerSample;
+  /** Decompress one strip or tile into a readable buffer. */
+  const decodeChunk = (offset, byteCount, expectedBytes, rowWidth) => {
+    if (compression !== 5) return { source: buf, base: offset };
+    const raw = buf.subarray(offset, offset + byteCount);
+    let decoded = lzwDecode(raw, expectedBytes);
+    if (predictor === 2) decoded = undoHorizontalPredictor(decoded, rowWidth, samples, bits);
+    return { source: Buffer.from(decoded.buffer, decoded.byteOffset, decoded.length), base: 0 };
+  };
 
-    // Compressed strips decode into their own buffer; uncompressed ones are read
-    // in place, so an uncompressed file still costs no extra copy.
-    let source = buf;
-    let base = stripOffsets[s];
-    if (compression === 5) {
-      const raw = buf.subarray(stripOffsets[s], stripOffsets[s] + stripCounts[s]);
-      let decoded = lzwDecode(raw, wanted);
-      if (predictor === 2) decoded = undoHorizontalPredictor(decoded, width, samples, bits);
-      source = Buffer.from(decoded.buffer, decoded.byteOffset, decoded.length);
-      base = 0;
+  if (tags.has(324)) {
+    // Tiled layout, which is what every large raster and every COG uses. Tiles
+    // run left to right then top to bottom, each one a full tileWidth by
+    // tileLength block even at the right and bottom edges, where the surplus is
+    // padding that must be skipped rather than copied.
+    const tileWidth = one(322);
+    const tileLength = one(323);
+    const tileOffsets = tags.get(324);
+    const tileCounts = tags.get(325);
+    if (!tileWidth || !tileLength || !tileOffsets || !tileCounts) {
+      throw new Error(`${path}: tiled TIFF is missing its tile geometry tags`);
     }
 
-    const read = pixelReader(source, little, bits, format, path);
-    for (let r = 0; r < rows; r += 1) {
-      const rowBase = base + r * width * bytesPerSample;
-      const out = (row + r) * width;
-      for (let c = 0; c < width; c += 1) data[out + c] = read(rowBase + c * bytesPerSample);
+    const across = Math.ceil(width / tileWidth);
+    const down = Math.ceil(height / tileLength);
+    const tileBytes = tileWidth * tileLength * bytesPerSample;
+
+    for (let ty = 0; ty < down; ty += 1) {
+      for (let tx = 0; tx < across; tx += 1) {
+        const index = ty * across + tx;
+        if (index >= tileOffsets.length) continue;
+        const { source, base } = decodeChunk(
+          tileOffsets[index], tileCounts[index], tileBytes, tileWidth,
+        );
+        const read = pixelReader(source, little, bits, format, path);
+
+        const rows = Math.min(tileLength, height - ty * tileLength);
+        const cols = Math.min(tileWidth, width - tx * tileWidth);
+        for (let r = 0; r < rows; r += 1) {
+          const from = base + r * tileWidth * bytesPerSample;
+          const to = (ty * tileLength + r) * width + tx * tileWidth;
+          for (let c = 0; c < cols; c += 1) data[to + c] = read(from + c * bytesPerSample);
+        }
+      }
     }
-    row += rows;
+  } else {
+    let row = 0;
+    for (let s = 0; s < stripOffsets.length && row < height; s += 1) {
+      const rows = Math.min(rowsPerStrip, height - row);
+      const { source, base } = decodeChunk(
+        stripOffsets[s], stripCounts[s], rows * width * bytesPerSample, width,
+      );
+      const read = pixelReader(source, little, bits, format, path);
+      for (let r = 0; r < rows; r += 1) {
+        const rowBase = base + r * width * bytesPerSample;
+        const out = (row + r) * width;
+        for (let c = 0; c < width; c += 1) data[out + c] = read(rowBase + c * bytesPerSample);
+      }
+      row += rows;
+    }
   }
 
   const scale = tags.get(33550);

@@ -33,10 +33,11 @@
  * Elevation at an arbitrary point, by bilinear interpolation.
  *
  * Bilinear rather than nearest neighbour, which is what the browser side
- * `dem-sampler.ts` currently does. Nearest returns the value of whichever cell
- * the click happened to land in, so on a 1 m grid a spot level can be half a
- * cell away from where the client pointed. On a 15 degree slope that is 13 cm of
- * error invented by the sampler, three times the survey's own accuracy.
+ * `dem-sampler.ts` used to do before the portal measured server side. Nearest
+ * returns the value of whichever cell the click happened to land in, so on a 1 m
+ * grid a spot level can be half a cell away from where the client pointed. On a
+ * 15 degree slope that is 13 cm of error invented by the sampler, three times
+ * the survey's own accuracy. That sampler now only feeds the hillshade.
  *
  * Returns null rather than a number where any contributing cell is nodata.
  * Interpolating across the edge of a survey would invent ground, and a hole has
