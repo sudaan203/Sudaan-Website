@@ -223,6 +223,35 @@ export async function GET(
     const rampName = url.searchParams.get("ramp") ?? spec.ramp;
     const stops = rampFor(rampName);
 
+    /**
+     * Flow accumulation is not a linear quantity and must not be drawn as one.
+     *
+     * On Kotba it runs from 1 to 7,246 cells, and the distribution is what a
+     * drainage network always is: almost every cell drains almost nothing, and a
+     * thin thread of channel cells carries everything. Stretched linearly, more
+     * than 99% of the map sits in the bottom colour and the channels are a
+     * handful of bright pixels. The picture is technically a faithful
+     * representation of the numbers and tells a client nothing at all.
+     *
+     * A logarithmic stretch is the standard treatment for exactly this, and the
+     * legend says which was used so nobody reads the colours as proportional.
+     * `?scale=linear` opts out.
+     */
+    const askedScale = url.searchParams.get("scale");
+    const logarithmic =
+      askedScale === "log" || (Boolean((spec as { log?: boolean }).log) && askedScale !== "linear");
+
+    /*
+     * Relief is computed first, and it has to be.
+     *
+     * The log transform below rewrites the sampled values in place, and a
+     * hillshade of log-elevations is not a hillshade of anything: the gradients
+     * would be of the logarithm, so slope would be compressed at height and
+     * exaggerated near zero. No layer combines the two today, because everything
+     * with a log stretch has `relief: false`, but that is a coincidence of the
+     * current table rather than a property anybody enforced, and reordering
+     * these two blocks later would be an easy and silent mistake.
+     */
     const wantsRelief = url.searchParams.get("relief") !== "0" && spec.relief;
     const relief = wantsRelief
       ? hillshade(sampled, {
@@ -236,6 +265,18 @@ export async function GET(
           }),
         })
       : null;
+
+    if (logarithmic) {
+      // log1p keeps zero at zero, which matters: an accumulation of 0 and of 1
+      // are meaningfully different and neither should become -Infinity.
+      for (let i = 0; i < sampled.data.length; i += 1) {
+        const v = sampled.data[i];
+        if (!sampled.isNoData(v)) sampled.data[i] = Math.log1p(Math.max(0, v));
+      }
+      lo = Math.log1p(Math.max(0, lo));
+      hi = Math.log1p(Math.max(0, hi));
+      if (!(hi > lo)) hi = lo + 1;
+    }
 
     const rgba = renderGrid(sampled, {
       stops,

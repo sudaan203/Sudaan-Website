@@ -239,6 +239,35 @@ for (const layer of ["slope_degrees", "flow_accumulation", "filled"]) {
   check(`${layer} renders with pixels`, opaque(png.pixels) > 0, `${opaque(png.pixels)} painted`);
 }
 
+console.log("\nFlow accumulation is drawn logarithmically, or it is a blank map");
+{
+  /*
+   * A drainage network's accumulation is 1 for nearly every cell and thousands
+   * for a thin thread of channel. Stretched linearly the whole survey collapses
+   * into the bottom colour, which is a faithful rendering of the numbers and
+   * tells a client nothing. The check is that the two are genuinely different
+   * pictures and that the logarithmic one actually uses the ramp.
+   */
+  const spread = (png) => {
+    const seen = new Set();
+    for (let i = 0; i < png.pixels.length; i += 4) {
+      if (png.pixels[i + 3] === 0) continue;
+      // Quantised, so this counts distinguishable tones rather than noise.
+      seen.add(`${png.pixels[i] >> 4},${png.pixels[i + 1] >> 4},${png.pixels[i + 2] >> 4}`);
+    }
+    return seen.size;
+  };
+
+  const range = "?min=1&max=7246";
+  const log = decodePng((await tile("flow_accumulation", Z, X, Y, range)).body);
+  const linear = decodePng((await tile("flow_accumulation", Z, X, Y, `${range}&scale=linear`)).body);
+
+  check("the two scales produce different pictures", Buffer.compare(log.pixels, linear.pixels) !== 0);
+  check("and the logarithmic one uses far more of the ramp",
+    spread(log) > spread(linear) * 2,
+    `${spread(log)} tones against ${spread(linear)}`);
+}
+
 console.log("\nRefusals and isolation");
 {
   const r = await fetch(`${BASE}/api/portal/sites/${SITE}/render/dtm/${Z}/${X}/${Y}.png`);
