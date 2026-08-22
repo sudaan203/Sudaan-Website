@@ -95,6 +95,27 @@ for (const tool of ["Spot level", "Distance", "Area", "Volume"]) {
   check(`the ${tool} tool is offered`, labels.includes(tool));
 }
 
+/*
+ * The tools start disabled and enable once the page has asked the server which
+ * elevation models this survey can actually be measured against. Waiting for
+ * that is both what a client does and the only way this test is not a race: on
+ * a cold server the probe lands well after the first paint, and clicking into
+ * the gap fails every check downstream for a reason that is not a defect.
+ */
+const toolsEnabled = await page
+  .waitForFunction(
+    () => {
+      const b = [...document.querySelectorAll("button")].find(
+        (e) => e.textContent.trim() === "Spot level",
+      );
+      return Boolean(b) && !b.disabled;
+    },
+    { timeout: 45000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check("the terrain probe completes and enables the tools", toolsEnabled);
+
 /** Click a tool button by its visible label. */
 async function clickTool(label) {
   const handles = await page.$$("button");

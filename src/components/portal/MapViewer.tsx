@@ -815,41 +815,82 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   }, []);
 
   /**
-   * Does this survey carry a surface model as well as a terrain model?
+   * Which elevation models can this survey actually be measured against?
    *
-   * Asked rather than inferred. The manifest names its layers by pipeline key
-   * (`kotba-dem`, `kotba-dtm`), and reading intent out of a key is how a site
-   * that happened to name things differently ends up offering a button that
-   * always fails. The analysis API already answers this precisely: a 409 means
-   * that surface is not on disk. One spot request at the survey's centre on
-   * mount settles it, and a point off the footprint is still a valid answer —
-   * `elevation: null` with a 200 proves the raster exists, which is the question.
+   * Asked, never inferred, and this is load bearing rather than fastidious. The
+   * obvious source is the layer manifest, but the manifest describes what is
+   * *drawn*: the tile pyramids are committed to the repository and deploy with
+   * the site, while the source rasters the analysis reads are gitignored and
+   * reachable only where `PORTAL_TERRAIN_DIR` points at them. So in production
+   * the map renders a terrain layer beautifully and there is nothing behind it
+   * to measure. Trusting the manifest there would offer a client four tools that
+   * look available and fail on the first click.
+   *
+   * The analysis API answers the real question precisely: a 409 means that
+   * surface is not on disk. One spot request per surface at the survey's centre
+   * settles it. A point off the footprint is still a valid answer — `elevation:
+   * null` with a 200 proves the raster exists, which is what is being asked.
    */
-  const [hasBothSurfaces, setHasBothSurfaces] = useState(false);
+  type TerrainProbe =
+    | { state: "checking" }
+    | { state: "ready"; dtm: boolean; dsm: boolean }
+    | { state: "unavailable"; message: string };
+
+  const [probe, setProbe] = useState<TerrainProbe>({ state: "checking" });
 
   useEffect(() => {
     const corners = layers.find((l) => l.kind !== "vector" && l.coordinates)?.coordinates;
-    if (!corners) return;
+    if (!corners) {
+      setProbe({ state: "unavailable", message: "This survey has no georeferenced layers yet." });
+      return;
+    }
     const centre: Pair = [
       corners.reduce((s, c) => s + c[0], 0) / corners.length,
       corners.reduce((s, c) => s + c[1], 0) / corners.length,
     ];
+
     let live = true;
-    void client.current
-      .spot(centre, { surface: "dsm" })
-      .then((response) => {
-        if (!live) return;
-        noteEnvelope(response);
-        setHasBothSurfaces(true);
-      })
-      .catch(() => {
-        // No DSM, or no session. Either way the toggle stays hidden and the
-        // terrain model, which the map already proved it has, keeps working.
+    void (async () => {
+      const ask = (surface: Surface) =>
+        client.current
+          .spot(centre, { surface })
+          .then((response) => {
+            noteEnvelope(response);
+            return true as const;
+          })
+          .catch((error: unknown) => error);
+
+      const [dtm, dsm] = await Promise.all([ask("dtm"), ask("dsm")]);
+      if (!live) return;
+
+      if (dtm === true || dsm === true) {
+        setProbe({ state: "ready", dtm: dtm === true, dsm: dsm === true });
+        // A survey published as surface model only should open on the surface
+        // model, rather than on a terrain model that is not there.
+        if (dtm !== true && dsm === true) setSurface("dsm");
+        return;
+      }
+      // Neither is measurable. The API's own wording is written for a client to
+      // read and distinguishes "not published yet" from "too large to measure",
+      // so it is passed through rather than replaced with something vaguer.
+      setProbe({
+        state: "unavailable",
+        message:
+          dtm instanceof AnalysisError
+            ? dtm.message
+            : "The measurement tools are unavailable for this survey.",
       });
+    })();
+
     return () => {
       live = false;
     };
   }, [layers, noteEnvelope]);
+
+  /** Both models present, so offering a choice between them means something. */
+  const hasBothSurfaces = probe.state === "ready" && probe.dtm && probe.dsm;
+  /** Anything at all to measure against. */
+  const measurable = probe.state === "ready";
 
   /*
    * There is deliberately no elevation sampler here any more.
@@ -946,6 +987,11 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     );
   }
 
+  /**
+   * A terrain layer is *drawn*, which is a weaker claim than measurable and is
+   * now only used for the controls that read the tiles: relief shading, and the
+   * surface switch that sits beside it. What the tools may measure is `probe`.
+   */
   const hasTerrain = Boolean(dem);
 
   return (
@@ -968,11 +1014,23 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             key={value}
             type="button"
             aria-pressed={mode === value}
-            // Every one of these reads the elevation model, so without one they
-            // are decoration. Disabled with a reason beats a tool that answers
-            // "unavailable" only after it has been used.
-            disabled={!hasTerrain}
-            title={hasTerrain ? undefined : "This survey has no elevation model yet."}
+            /*
+             * Every one of these reads the elevation model, so without one they
+             * are decoration. Gated on the server probe rather than on the
+             * presence of a terrain layer in the manifest, because those two
+             * disagree exactly where it matters: a deployment that ships the
+             * tile pyramids without the source rasters draws terrain it cannot
+             * measure. Disabled with a reason beats a tool that answers
+             * "unavailable" only after a client has used it.
+             */
+            disabled={!measurable}
+            title={
+              probe.state === "checking"
+                ? "Checking the elevation model…"
+                : probe.state === "unavailable"
+                  ? probe.message
+                  : undefined
+            }
             onClick={() => setMode(mode === value ? "off" : value)}
             className={`rounded-full px-3 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
               mode === value
@@ -983,7 +1041,16 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             {label}
           </button>
         ))}
-        {mode === "spot" ? (
+        {/*
+          Say why the tools are off, in the toolbar, rather than only in a title
+          attribute nobody hovers. "Not published yet" is a different fact from
+          "too large to measure", and the API distinguishes them.
+        */}
+        {probe.state === "unavailable" ? (
+          <span className="text-[11px] text-ink/55">{probe.message}</span>
+        ) : probe.state === "checking" ? (
+          <span className="text-[11px] text-ink/45">Checking the elevation model…</span>
+        ) : mode === "spot" ? (
           <span className="text-[11px] text-ink/55">Click anywhere to take a level.</span>
         ) : mode !== "off" ? (
           <span className="text-[11px] text-ink/55">

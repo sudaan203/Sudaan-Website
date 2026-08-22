@@ -253,6 +253,26 @@ export class AnalysisClient {
   }
 }
 
+/**
+ * Client wording for the three ways a survey can have nothing to measure.
+ *
+ * Each is a different fact and deserves different words. "Not published yet"
+ * invites the client to wait; "too large" is our limitation and should not be
+ * dressed up as theirs; "not projected" is a data problem someone has to fix.
+ */
+function terrainMessage(reason: string | undefined): string {
+  switch (reason) {
+    case "missing":
+      return "Measurements are not available for this survey yet.";
+    case "too-large":
+      return "This survey is too large to measure interactively. Ask us for the figures you need.";
+    case "not-projected":
+      return "This survey is not in a projected coordinate system, so it cannot be measured.";
+    default:
+      return "Measurements are not available for this survey.";
+  }
+}
+
 async function errorFor(response: Response): Promise<AnalysisError> {
   let payload: { error?: string; reason?: string } = {};
   try {
@@ -273,11 +293,15 @@ async function errorFor(response: Response): Promise<AnalysisError> {
       // distinguish them either.
       return new AnalysisError(kind, "This survey is no longer available.");
     case "no-terrain":
-      return new AnalysisError(
-        kind,
-        payload.error ?? "This survey has no elevation model to measure yet.",
-        payload.reason,
-      );
+      /*
+       * Deliberately NOT `payload.error`. A 409's message is written for whoever
+       * operates the pipeline and reads like it: "Place the source GeoTIFF at
+       * portal-data/terrain/<slug>/dtm.tif, in UTM, and restart." Putting that
+       * in front of a client is both meaningless to them and a needless
+       * disclosure of the server's directory layout. The machine readable
+       * `reason` carries everything the UI actually needs to distinguish.
+       */
+      return new AnalysisError(kind, terrainMessage(payload.reason), payload.reason);
     case "bad-request":
       // Written by the API for the client to read: the reference-surface
       // refusal, the point cap, the CRS contract. Passing it through verbatim
