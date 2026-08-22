@@ -187,7 +187,7 @@ export class Grid {
 }
 
 // 16 is LONG8, a 64 bit unsigned integer, which only BigTIFF uses.
-const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8, 16: 8, 17: 8, 18: 8 };
+export const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8, 16: 8, 17: 8, 18: 8 };
 
 /**
  * TIFF LZW decompression.
@@ -206,7 +206,7 @@ const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8, 16: 8, 17: 8, 18
  *   hundred bytes perfectly and then produces garbage, which looks like corrupt
  *   input rather than a decoder bug.
  */
-function lzwDecode(input, expectedBytes) {
+export function lzwDecode(input, expectedBytes) {
   const CLEAR = 256;
   const EOI = 257;
   const out = new Uint8Array(expectedBytes);
@@ -299,7 +299,7 @@ function lzwDecode(input, expectedBytes) {
 }
 
 /** Undo horizontal differencing (TIFF Predictor 2). */
-function undoHorizontalPredictor(bytes, width, samples, bitsPerSample) {
+export function undoHorizontalPredictor(bytes, width, samples, bitsPerSample) {
   if (bitsPerSample !== 8) {
     throw new Error(
       `Predictor 2 is only implemented for 8 bit samples, this file has ${bitsPerSample}. ` +
@@ -617,7 +617,7 @@ export function resample(grid, targetCellSize) {
   return out;
 }
 
-function pixelReader(buf, little, bits, format, path) {
+export function pixelReader(buf, little, bits, format, path) {
   if (format === 3 && bits === 32) return (o) => (little ? buf.readFloatLE(o) : buf.readFloatBE(o));
   if (format === 3 && bits === 64) return (o) => (little ? buf.readDoubleLE(o) : buf.readDoubleBE(o));
   if (format === 2 && bits === 16) return (o) => (little ? buf.readInt16LE(o) : buf.readInt16BE(o));
