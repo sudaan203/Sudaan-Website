@@ -222,7 +222,10 @@ console.log("\nTool 3, distance and profile");
 
   await page.waitForFunction(
     () => /Lowest|no data under this line/.test(document.body.innerText),
-    { timeout: 25000 },
+    // Generous because this wait covers a cold server compiling the route and,
+    // where the rasters live in R2, the first range requests over the network.
+    // Both are one off and neither is what the check is about.
+    { timeout: 60000 },
   ).catch(() => {});
   const withHeights = await panelText();
   check("heights arrive from the server", /Lowest/.test(withHeights));
@@ -261,7 +264,7 @@ console.log("\nTool 4, cut and fill");
 
   await page.waitForFunction(
     () => /m³|no survey data/i.test(document.body.innerText),
-    { timeout: 40000 },
+    { timeout: 60000 },
   ).catch(() => {});
   const result = await panelText();
   check(

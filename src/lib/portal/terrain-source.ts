@@ -32,6 +32,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readGeoTiff } from "@/lib/geo/raster.mjs";
+import { cached, fileSource, httpSource } from "@/lib/geo/raster-source.mjs";
+import { openRaster } from "@/lib/geo/raster-window.mjs";
+import { createTileGrant, TILE_GRANT_COOKIE } from "@/lib/portal/tile-grant";
 
 /**
  * Biggest raster to load whole, in cells.
@@ -116,6 +119,145 @@ export function loadTerrain(siteSlug: string, kind: TerrainKind = "dtm") {
 
   cache.set(path, { grid, loadedAt: Date.now() });
   return grid;
+}
+
+/**
+ * Where a site's rasters live, which is not always a disk.
+ *
+ * `PORTAL_TERRAIN_URL` points at a base that serves the same
+ * `<slug>/<kind>.tif` layout over HTTP with Range support: in practice the tile
+ * Worker in front of the private R2 bucket, which already forwards Range headers
+ * and authorises with the short lived grant cookie. Unset, everything behaves
+ * exactly as before and reads the local directory.
+ *
+ * This is the setting that makes measurement possible in production at all. The
+ * rasters are gitignored and total 316 MB, a serverless bundle caps out around
+ * 250 MB, and the filesystem is read only, so there is no value of
+ * `PORTAL_TERRAIN_DIR` that can work there. Reading byte ranges is not an
+ * optimisation, it is the only route.
+ */
+function terrainLocation(siteSlug: string, kind: TerrainKind) {
+  const base = process.env.PORTAL_TERRAIN_URL;
+  if (base) {
+    return { remote: true as const, ref: `${base.replace(/\/+$/, "")}/${siteSlug}/${kind}.tif` };
+  }
+  return { remote: false as const, ref: join(terrainDir(siteSlug), `${kind}.tif`) };
+}
+
+type OpenRaster = Awaited<ReturnType<typeof openRaster>>;
+const openCache = new Map<string, Promise<OpenRaster>>();
+
+/**
+ * Open a raster for windowed reading, without decoding any of it.
+ *
+ * Returns after parsing the directory only, which is a few tens of kilobytes
+ * however large the file is, so the metadata a caller needs to project its
+ * geometry (the UTM zone, the cell size) costs almost nothing. The pixels come
+ * later and only for the window asked for.
+ *
+ * Cached per path because a client measuring a site makes many requests against
+ * the same raster and re-reading the directory each time would be the dominant
+ * cost of a spot level.
+ */
+export async function openTerrain(siteSlug: string, kind: TerrainKind = "dtm") {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(siteSlug)) {
+    throw new TerrainUnavailable("missing", `"${siteSlug}" is not a valid site slug`);
+  }
+
+  const { remote, ref } = terrainLocation(siteSlug, kind);
+  const hit = openCache.get(ref);
+  if (hit) return hit;
+
+  const opening = (async () => {
+    if (!remote && !existsSync(ref)) {
+      throw new TerrainUnavailable(
+        "missing",
+        `No ${kind.toUpperCase()} published for this site. Place the source GeoTIFF at ` +
+          `portal-data/terrain/${siteSlug}/${kind}.tif, in UTM, and restart.`,
+      );
+    }
+
+    let raster: OpenRaster;
+    try {
+      raster = await openRaster(
+        cached(
+          remote
+            ? httpSource(ref, {
+                /**
+                 * The portal authorises itself to the tile Worker exactly the
+                 * way a browser does, with a short lived, site scoped grant.
+                 *
+                 * Reusing that path rather than giving the server R2 keys keeps
+                 * one set of rules in one file: the Worker still cannot be
+                 * talked into serving another site, and a compromised portal
+                 * process leaks the same thirty minutes of one survey a
+                 * compromised browser would. Minted per request because the
+                 * grant outlives neither the cache nor a long lived process.
+                 */
+                headers: async () => ({
+                  Cookie: `${TILE_GRANT_COOKIE}=${await createTileGrant(siteSlug)}`,
+                }),
+              })
+            : await fileSource(ref),
+        ),
+      );
+    } catch (error) {
+      // A remote 404 is the same fact as a missing file: this survey has no
+      // such raster. Anything else is a real failure and must not be dressed up
+      // as "not published", which would send an operator looking in the wrong
+      // place.
+      const message = error instanceof Error ? error.message : String(error);
+      if (remote && /not found|not authorised/i.test(message)) {
+        throw new TerrainUnavailable(
+          "missing",
+          `No ${kind.toUpperCase()} published for this site at ${ref}.`,
+        );
+      }
+      throw error;
+    }
+
+    if (!raster.utmZone) {
+      throw new TerrainUnavailable(
+        "not-projected",
+        `The ${kind.toUpperCase()} for this site is EPSG ${raster.epsg ?? "unknown"}, which is ` +
+          `not a UTM zone. Area and volume computed on it would be meaningless. Re-export in UTM.`,
+      );
+    }
+    return raster;
+  })();
+
+  // Only a successful open is worth remembering. Caching the rejection would
+  // make a raster that was published a minute ago stay missing for the life of
+  // the process.
+  openCache.set(ref, opening);
+  opening.catch(() => openCache.delete(ref));
+  return opening;
+}
+
+/**
+ * Read the part of a survey that a piece of geometry actually touches.
+ *
+ * The window is the geometry's bounding box, padded, and the guard is on the
+ * *window* rather than the file: a hectare is the same number of cells whether
+ * it sits in Kotba or in Dang Forest, and refusing it because the survey around
+ * it is large would be refusing the thing this reader exists to make possible.
+ */
+export async function readTerrainWindow(
+  raster: OpenRaster,
+  bounds: [number, number, number, number],
+) {
+  const window = raster.windowFor(bounds);
+  if (!window) return null;
+
+  if (window.cols * window.rows > MAX_CELLS) {
+    throw new TerrainUnavailable(
+      "too-large",
+      `That area covers ${window.cols} x ${window.rows} cells at this survey's ` +
+        `${raster.cellSize.toFixed(3)} m resolution, which is past what can be measured in one ` +
+        `request. Draw a smaller area.`,
+    );
+  }
+  return raster.readWindow(window);
 }
 
 /** Which terrain models a site actually has, for the map to offer. */

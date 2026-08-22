@@ -3,7 +3,14 @@ import { getSession } from "@/lib/portal/auth";
 import { getSite } from "@/lib/portal/store";
 import { queryDb } from "@/lib/portal/db/client";
 import { logPortalEvent } from "@/lib/portal/log";
-import { loadTerrain, surveyRmseZ, TerrainUnavailable } from "@/lib/portal/terrain-source";
+import {
+  loadTerrain,
+  openTerrain,
+  readTerrainWindow,
+  surveyRmseZ,
+  TerrainUnavailable,
+} from "@/lib/portal/terrain-source";
+import { boundsOf } from "@/lib/geo/raster-window.mjs";
 import { lonLatToUtm } from "@/lib/geo/projection.mjs";
 import {
   spotLevel,
@@ -98,16 +105,49 @@ export async function POST(
   const kind = body.surface === "dsm" ? "dsm" : "dtm";
 
   try {
-    const dem = loadTerrain(siteSlug, kind);
-    const utm = dem.utmZone!;
+    /**
+     * Open the directory first, read pixels later.
+     *
+     * This ordering is what makes windowed reads possible at all, and it is a
+     * genuine chicken and egg: projecting the client's lon/lat geometry needs
+     * the survey's UTM zone, and knowing which part of the raster to read needs
+     * the projected geometry. Parsing the TIFF directory costs tens of
+     * kilobytes whatever the file weighs, so the zone is cheap to learn and the
+     * pixels are then fetched once, for the bounding box that was actually
+     * drawn.
+     */
+    const raster = await openTerrain(siteSlug, kind);
+    const utm = raster.utmZone!;
     const rmseZ = surveyRmseZ();
     const project = (g: Geometry) => toProjected(g, crs, utm.zone, utm.northern);
     const common = {
       site: siteSlug,
       surface: kind,
-      computedIn: `EPSG:${dem.epsg}`,
-      cellSize: dem.cellSize,
+      computedIn: `EPSG:${raster.epsg}`,
+      cellSize: raster.cellSize,
       rmseZ,
+    };
+
+    /**
+     * The window a piece of geometry needs, in projected metres.
+     *
+     * `pad` is not cosmetic. A cross section samples perpendicular offsets out
+     * to `halfWidth`, and a corridor the same, so a window sized to the centre
+     * line alone would run out of raster exactly where those samples land and
+     * quietly return nodata for the shoulders.
+     */
+    const windowed = async (geometry: Geometry, pad = 0) => {
+      const [minX, minY, maxX, maxY] = boundsOf(geometry);
+      const grid = await readTerrainWindow(raster, [minX - pad, minY - pad, maxX + pad, maxY + pad]);
+      if (!grid) {
+        // The geometry misses the survey entirely. Not an error: the honest
+        // answer is that there is nothing there, and the analysis functions
+        // already say so cell by cell.
+        throw new BadRequest(
+          "That area does not overlap this survey. Draw it over the surveyed ground.",
+        );
+      }
+      return grid;
     };
 
     let result: Record<string, unknown>;
@@ -116,7 +156,10 @@ export async function POST(
       // Tool 1
       case "spot": {
         const [[x, y]] = project(readGeometry(body, "at", 1));
-        const elevation = spotLevel(dem, x, y);
+        // A point still needs its neighbours: the read is bilinear, and
+        // `windowFor` pads by enough cells to supply them.
+        const grid = await windowed([[x, y]]);
+        const elevation = spotLevel(grid, x, y);
         result = {
           easting: x, northing: y, elevation,
           method: "bilinear from the source raster",
@@ -128,8 +171,8 @@ export async function POST(
       // Tool 3
       case "profile": {
         const line = project(readGeometry(body, "line", 2));
-        const spacing = Number(body.spacing) > 0 ? Number(body.spacing) : dem.cellSize;
-        result = profile(dem, line, { spacing });
+        const spacing = Number(body.spacing) > 0 ? Number(body.spacing) : raster.cellSize;
+        result = profile(await windowed(line), line, { spacing });
         break;
       }
 
@@ -137,13 +180,15 @@ export async function POST(
       case "grid-levels": {
         const ring = project(readGeometry(body, "polygon", 3));
         const spacing = Number(body.spacing) > 0 ? Number(body.spacing) : 1;
-        result = { ...gridLevels(dem, ring, spacing), stats: polygonStats(dem, ring) };
+        const grid = await windowed(ring);
+        result = { ...gridLevels(grid, ring, spacing), stats: polygonStats(grid, ring) };
         break;
       }
 
       // Drawing tools: area, perimeter, min, max, mean
       case "polygon-stats": {
-        result = polygonStats(dem, project(readGeometry(body, "polygon", 3)));
+        const ring = project(readGeometry(body, "polygon", 3));
+        result = polygonStats(await windowed(ring), ring);
         break;
       }
 
@@ -151,12 +196,25 @@ export async function POST(
       case "volume":
       case "stockpile": {
         const ring = project(readGeometry(body, "polygon", 3));
+        const grid = await windowed(ring);
         const spec = String(body.reference ?? "");
         let reference;
-        if (spec === "boundary") reference = REFERENCE.boundaryPlane(dem, ring);
+        if (spec === "boundary") reference = REFERENCE.boundaryPlane(grid, ring);
         else if (spec.startsWith("plane:")) reference = REFERENCE.plane(Number(spec.slice(6)));
         else if (spec === "dsm" || spec === "dtm") {
-          reference = REFERENCE.surface(loadTerrain(siteSlug, spec));
+          // The other surface, windowed to the same ground. Two rasters of the
+          // same site need not share an origin or a cell size, and they do not
+          // have to: `REFERENCE.surface` samples by world coordinate.
+          const other = await openTerrain(siteSlug, spec);
+          const [minX, minY, maxX, maxY] = boundsOf(ring);
+          const otherGrid = await readTerrainWindow(other, [minX, minY, maxX, maxY]);
+          if (!otherGrid) {
+            throw new BadRequest(
+              `That area does not overlap this site's ${spec.toUpperCase()}, so there is ` +
+                "nothing to measure against.",
+            );
+          }
+          reference = REFERENCE.surface(otherGrid);
         } else {
           // Deliberately not defaulted. Cut and fill against a flat plane, the
           // polygon's own rim and a second surface are three different questions
@@ -168,15 +226,25 @@ export async function POST(
         }
         result =
           op === "stockpile"
-            ? stockpileVolume(dem, ring, reference, { rmseZ })
-            : cutFill(dem, ring, reference, { rmseZ });
+            ? stockpileVolume(grid, ring, reference, { rmseZ })
+            : cutFill(grid, ring, reference, { rmseZ });
         break;
       }
 
-      // Tool 14
+      /**
+       * Tool 14. The one operation here that genuinely needs the whole raster:
+       * a slope legend reports the area falling in each band across the entire
+       * survey, so there is no window that answers it.
+       *
+       * It therefore still reads the file whole, and on a deployment without
+       * local rasters, or on a survey past the cell cap, it fails the way it
+       * always did. Making this windowed means computing it per band from the
+       * overviews, which is a different piece of work; until then the honest
+       * position is that this one op has not moved.
+       */
       case "slope": {
         const scheme = String(body.scheme ?? "");
-        const classified = classifySlope(slopeDegrees(dem), scheme);
+        const classified = classifySlope(slopeDegrees(loadTerrain(siteSlug, kind)), scheme);
         // The raster itself is not returned: it is megabytes of Int16 and the
         // map renders slope from the tiler. The legend and the areas are what a
         // client reads off a slope map.
@@ -188,24 +256,28 @@ export async function POST(
       case "chainage": {
         const line = project(readGeometry(body, "line", 2));
         const interval = Number(body.interval) > 0 ? Number(body.interval) : 25;
-        result = chainage(dem, line, interval, { rmseZ });
+        result = chainage(await windowed(line), line, interval, { rmseZ });
         break;
       }
 
-      // Tools 20 and 21
+      // Tools 20 and 21. Both sample out to `halfWidth` either side of the
+      // centre line, so the window has to reach that far or the shoulders come
+      // back as nodata and the section looks like it ran off the survey.
       case "cross-sections": {
         const line = project(readGeometry(body, "line", 2));
-        result = crossSections(dem, line, {
+        const halfWidth = Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15;
+        result = crossSections(await windowed(line, halfWidth), line, {
           interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
-          halfWidth: Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15,
+          halfWidth,
         });
         break;
       }
       case "corridor": {
         const line = project(readGeometry(body, "line", 2));
-        result = corridorAnalysis(dem, line, {
+        const halfWidth = Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15;
+        result = corridorAnalysis(await windowed(line, halfWidth), line, {
           interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
-          halfWidth: Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15,
+          halfWidth,
           maxGradePercent: Number(body.maxGradePercent) > 0 ? Number(body.maxGradePercent) : 10,
         });
         break;
