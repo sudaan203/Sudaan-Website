@@ -33,6 +33,7 @@ import {
   HydrologyClient,
   type FloodResult,
   type InspectResult,
+  type LayerSummary,
   type SinksResult,
   type WatershedResult,
 } from "@/lib/portal/hydrology-client";
@@ -45,6 +46,7 @@ import {
   type HydrologyMode,
   type HydrologyState,
 } from "./HydrologyPanel";
+import { RenderedLayersPanel, type RenderedLayer } from "./RenderedLayers";
 
 /**
  * The survey map: georeferenced deliverables drawn over each other, with the
@@ -942,6 +944,159 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   /** Anything at all to measure against. */
   const measurable = probe.state === "ready";
 
+  /**
+   * Declared here rather than beside the rest of the hydrology state, because
+   * the rendered-layer list below is assembled from it and a const cannot be
+   * read above its own declaration.
+   */
+  const [hydroLayers, setHydroLayers] = useState<LayerSummary[]>([]);
+
+  // ---- rendered raster layers --------------------------------------------
+  const [renderable, setRenderable] = useState<RenderedLayer[]>([]);
+  const [activeRender, setActiveRender] = useState<string | null>(null);
+  const [renderOpacity, setRenderOpacity] = useState(0.85);
+  const [renderExaggeration, setRenderExaggeration] = useState(1.6);
+  const [renderRamp, setRenderRamp] = useState<string | null>(null);
+
+  /**
+   * Assemble what the tiler can draw for this survey, with an explicit range per
+   * layer.
+   *
+   * The ranges come from statistics the pipeline already recorded — the DEM
+   * layer's elevation range in the map manifest, and each hydrology layer's
+   * min and max in its own manifest — because the alternative is letting each
+   * tile stretch to its own contents, which produces a chessboard where the
+   * seams outshine the terrain.
+   */
+  useEffect(() => {
+    const out: RenderedLayer[] = [];
+
+    if (probe.state === "ready") {
+      const dem = layers.find((l) => l.kind === "dem" && l.elevation) ?? layers.find((l) => l.elevation);
+      const range = dem?.elevation;
+      if (range) {
+        if (probe.dtm) {
+          out.push({
+            key: "dtm", title: "Terrain, shaded", unit: "m",
+            description: "Bare earth, coloured by height with relief shading composited in.",
+            min: range.min, max: range.max, ramp: "rainbow", relief: true, logarithmic: false,
+          });
+        }
+        if (probe.dsm) {
+          out.push({
+            key: "dsm", title: "Surface, shaded", unit: "m",
+            description: "Everything the survey saw, canopy and structures included.",
+            min: range.min, max: range.max, ramp: "rainbow", relief: true, logarithmic: false,
+          });
+        }
+      }
+    }
+
+    /** Plain-language meaning, which the manifest's own wording does not carry. */
+    const MEANING: Record<string, { title: string; description: string; unit: string; ramp: string; log?: boolean }> = {
+      slope_degrees: {
+        title: "Slope", unit: "°", ramp: "viridis",
+        description: "Steepness of the ground. Shown in degrees; 15° is about 27%.",
+      },
+      flow_accumulation: {
+        title: "Flow accumulation", unit: "cells", ramp: "water", log: true,
+        description: "How much ground drains through each cell. Channels stand out.",
+      },
+      sinks: {
+        title: "Depression depth", unit: "m", ramp: "water",
+        description: "How deep each hollow is before water would spill out of it.",
+      },
+      filled: {
+        title: "Filled terrain", unit: "m", ramp: "rainbow",
+        description: "The terrain after depressions are filled, which is what water was routed over.",
+      },
+    };
+
+    for (const summary of hydroLayers) {
+      const meaning = MEANING[summary.key];
+      const stats = summary.stats;
+      if (!meaning || !stats || !Number.isFinite(stats.min) || !Number.isFinite(stats.max)) continue;
+      if (stats.max === stats.min) continue; // nothing to colour
+      out.push({
+        key: summary.key,
+        title: meaning.title,
+        description: meaning.description,
+        unit: meaning.unit,
+        min: stats.min as number,
+        max: stats.max as number,
+        ramp: meaning.ramp,
+        relief: summary.key === "filled",
+        logarithmic: Boolean(meaning.log),
+      });
+    }
+
+    setRenderable(out);
+  }, [probe, layers, hydroLayers]);
+
+  /**
+   * Point the map at the tiler.
+   *
+   * The source is torn down and rebuilt whenever the layer or its parameters
+   * change, rather than mutated: MapLibre caches tiles by URL, so changing the
+   * query string on an existing source leaves the old images on screen until
+   * something evicts them, which looks like the control having no effect.
+   */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready) return;
+
+    for (const id of ["rendered-raster"]) {
+      if (instance.getLayer(id)) instance.removeLayer(id);
+      if (instance.getSource(id)) instance.removeSource(id);
+    }
+    const spec = renderable.find((l) => l.key === activeRender);
+    if (!spec) return;
+
+    const query = new URLSearchParams({
+      min: String(spec.min),
+      max: String(spec.max),
+      opacity: "1",
+    });
+    if (renderRamp) query.set("ramp", renderRamp);
+    if (spec.relief) query.set("exaggeration", String(renderExaggeration));
+
+    instance.addSource("rendered-raster", {
+      type: "raster",
+      tiles: [
+        `${window.location.origin}/api/portal/sites/${siteSlug}` +
+          `/render/${spec.key}/{z}/{x}/{y}.png?${query.toString()}`,
+      ],
+      tileSize: 256,
+      // Below the deepest level the survey can honestly answer at, MapLibre will
+      // stretch the last real tiles rather than asking for ones that would be
+      // interpolation dressed as data.
+      maxzoom: 22,
+      ...(dem?.bounds ? { bounds: dem.bounds } : {}),
+    });
+
+    // Under the measurement and hydrology overlays, over the imagery.
+    const firstOverlay = ["hydro-result-fill", "measure-fill", "hydro-streams"].find((id) =>
+      instance.getLayer(id),
+    );
+    instance.addLayer(
+      {
+        id: "rendered-raster",
+        type: "raster",
+        source: "rendered-raster",
+        paint: { "raster-opacity": renderOpacity, "raster-fade-duration": 0 },
+      },
+      firstOverlay,
+    );
+  }, [activeRender, renderable, renderRamp, renderExaggeration, ready, siteSlug, dem?.bounds]);
+
+  // Opacity alone is a paint property, so it does not need the source rebuilt.
+  useEffect(() => {
+    const instance = map.current;
+    if (instance?.getLayer("rendered-raster")) {
+      instance.setPaintProperty("rendered-raster", "raster-opacity", renderOpacity);
+    }
+  }, [renderOpacity]);
+
   // ---- hydrology ----------------------------------------------------------
   const hydroClient = useRef<HydrologyClient>(null as unknown as HydrologyClient);
   if (!hydroClient.current) hydroClient.current = new HydrologyClient(siteSlug);
@@ -984,6 +1139,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           generatedAt: response.generatedAt,
           maxStreamOrder: 0,
         });
+        setHydroLayers(response.result.layers);
       })
       .catch(() => {
         // No hydrology for this site. The section stays hidden rather than
@@ -1458,6 +1614,21 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 setSpotError(null);
               }}
             />
+            {renderable.length > 0 ? (
+              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+                <RenderedLayersPanel
+                  layers={renderable}
+                  active={activeRender}
+                  setActive={setActiveRender}
+                  opacity={renderOpacity}
+                  setOpacity={setRenderOpacity}
+                  exaggeration={renderExaggeration}
+                  setExaggeration={setRenderExaggeration}
+                  ramp={renderRamp}
+                  setRamp={setRenderRamp}
+                />
+              </div>
+            ) : null}
             {hydro ? (
               <div className="mb-4 border-b border-ink/[0.08] pb-4">
                 <HydrologyPanel
