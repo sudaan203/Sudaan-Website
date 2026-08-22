@@ -238,7 +238,15 @@ export async function openRaster(source) {
       if (epsg >= 32701 && epsg <= 32760) return { zone: epsg - 32700, northern: false };
       return null;
     },
-    /** Outer bounds of the whole raster, [minX, minY, maxX, maxY]. */
+    /**
+     * Outer bounds of the whole raster.
+     *
+     * Typed as a fixed four-tuple rather than an array, because it is fed
+     * straight into `windowFor`, which destructures exactly four corners and
+     * would otherwise accept a short array and produce a window full of NaN.
+     *
+     * @returns {[number, number, number, number]} [minX, minY, maxX, maxY]
+     */
     get bounds() {
       return [originX, originY - height * cellSize, originX + width * cellSize, originY];
     },
