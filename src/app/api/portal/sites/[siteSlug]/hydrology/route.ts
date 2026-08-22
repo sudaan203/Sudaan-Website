@@ -373,9 +373,21 @@ export async function POST(
 
         const flood = connectedFlood(filled, level, [seed]);
         const mask = filled.like(Uint8Array, 0, 255);
+        /*
+         * The deepest water, found by looking.
+         *
+         * This was `level - ground`, which is the depth at the *seed* and is
+         * only the maximum if the seed happens to sit at the lowest point of the
+         * lake. Seed a level 1.5 m above a hillside and the water runs down into
+         * a valley 30 m below: the figure said 1.5 m while the panel labelled it
+         * "Deepest". Plausible, wrong, and invisible.
+         */
+        let deepest = 0;
         for (let i = 0; i < flood.depth.length; i += 1) {
           const d = flood.depth.data[i];
-          mask.data[i] = !flood.depth.isNoData(d) && d > 0 ? 1 : 0;
+          const wet = !flood.depth.isNoData(d) && d > 0;
+          mask.data[i] = wet ? 1 : 0;
+          if (wet && d > deepest) deepest = d;
         }
 
         result = {
@@ -385,7 +397,8 @@ export async function POST(
           area_m2: flood.area,
           area_ha: flood.area / 10000,
           storage_m3: flood.volume,
-          maxDepth_m: level - ground,
+          maxDepth_m: deepest,
+          depthAtSeed_m: level - ground,
           method:
             "Connected fill from the seed you chose. Hollows at this elevation with no path " +
             "from the seed stay dry, which a simple threshold would flood.",

@@ -29,9 +29,22 @@ import {
   pathLength,
   ringArea,
 } from "@/lib/portal/geodesy";
+import {
+  HydrologyClient,
+  type FloodResult,
+  type InspectResult,
+  type SinksResult,
+  type WatershedResult,
+} from "@/lib/portal/hydrology-client";
 import { MeasurePanel, type ElevationState, type Measurement } from "./MeasurePanel";
 import { SpotLevelPanel, type SpotReading } from "./SpotLevelPanel";
 import { VolumePanel, type VolumeState } from "./VolumePanel";
+import {
+  HydrologyPanel,
+  STREAM_ORDER_COLOURS,
+  type HydrologyMode,
+  type HydrologyState,
+} from "./HydrologyPanel";
 
 /**
  * The survey map: georeferenced deliverables drawn over each other, with the
@@ -440,6 +453,14 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     [noteEnvelope],
   );
 
+  /**
+   * The map's click handler is registered once and must reach a function
+   * defined further down this component, so it goes through a ref rather than a
+   * closure. Same reason `modeRef` exists: a handler that captured the first
+   * render's callback would keep calling it forever.
+   */
+  const askHydrologyRef = useRef<(lon: number, lat: number) => void>(() => {});
+
   /** Tool 1. One click, one authoritative level, appended to the list. */
   const takeSpot = useCallback(
     async (lon: number, lat: number) => {
@@ -603,6 +624,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     // ---- measure: click to add a vertex, double click to finish ------------
     instance.on("click", (event) => {
+      // Hydrology tools take precedence: they are single-click questions about a
+      // point, and they draw their own answer rather than accumulating geometry.
+      if (hydroModeRef.current !== "off") {
+        askHydrologyRef.current(event.lngLat.lng, event.lngLat.lat);
+        return;
+      }
       if (modeRef.current === "off") return;
       // Spot levels take a reading and draw nothing: they are a list, not a
       // shape, and a run of them should not turn into a polygon.
@@ -768,6 +795,29 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         }
       }
 
+      /*
+       * Whatever the hydrology tools last answered: a catchment, a flood, or a
+       * set of depressions. Added below the measurement geometry so a drawn
+       * polygon is never hidden by a traced one, and in a water blue that does
+       * not compete with the warm accent the measure tools use.
+       */
+      instance.addSource("hydro-result", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "hydro-result-fill",
+        type: "fill",
+        source: "hydro-result",
+        paint: { "fill-color": "#0284c7", "fill-opacity": 0.25 },
+      });
+      instance.addLayer({
+        id: "hydro-result-edge",
+        type: "line",
+        source: "hydro-result",
+        paint: { "line-color": "#075985", "line-width": 1.5, "line-opacity": 0.9 },
+      });
+
       // Measurement geometry, always on top of the deliverables.
       instance.addSource("measure", {
         type: "geojson",
@@ -892,6 +942,58 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   /** Anything at all to measure against. */
   const measurable = probe.state === "ready";
 
+  // ---- hydrology ----------------------------------------------------------
+  const hydroClient = useRef<HydrologyClient>(null as unknown as HydrologyClient);
+  if (!hydroClient.current) hydroClient.current = new HydrologyClient(siteSlug);
+
+  const [hydro, setHydro] = useState<HydrologyState | null>(null);
+  const [hydroMode, setHydroMode] = useState<HydrologyMode>("off");
+  const [showStreams, setShowStreams] = useState(false);
+  const [showBasins, setShowBasins] = useState(false);
+  const [inspected, setInspected] = useState<InspectResult | null>(null);
+  const [watershed, setWatershed] = useState<WatershedResult | null>(null);
+  const [flood, setFlood] = useState<FloodResult | null>(null);
+  const [sinks, setSinks] = useState<SinksResult | null>(null);
+  const [floodLevel, setFloodLevel] = useState("");
+  const [sinkDepth, setSinkDepth] = useState(0.25);
+  const [hydroBusy, setHydroBusy] = useState(false);
+  const [hydroError, setHydroError] = useState<string | null>(null);
+  const hydroModeRef = useRef<HydrologyMode>("off");
+  hydroModeRef.current = hydroMode;
+  const floodLevelRef = useRef("");
+  floodLevelRef.current = floodLevel;
+
+  /**
+   * Has hydrology been computed for this survey?
+   *
+   * Asked once on load, exactly as the terrain probe is, and for the same
+   * reason: hydrology is an operator step (`hydro-run.mjs`) rather than a
+   * deliverable, so a site can have a perfectly good terrain model and no
+   * hydrology at all. Offering the tools and failing on the first click would
+   * be the same mistake in a different module.
+   */
+  useEffect(() => {
+    let live = true;
+    void hydroClient.current
+      .layers()
+      .then((response) => {
+        if (!live) return;
+        setHydro({
+          analysis: response.result.analysis,
+          resolutionNote: response.resolutionNote,
+          generatedAt: response.generatedAt,
+          maxStreamOrder: 0,
+        });
+      })
+      .catch(() => {
+        // No hydrology for this site. The section stays hidden rather than
+        // showing controls that cannot answer.
+      });
+    return () => {
+      live = false;
+    };
+  }, [siteSlug]);
+
   /*
    * There is deliberately no elevation sampler here any more.
    *
@@ -928,6 +1030,205 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       }
     }
   }, [visible, opacity, ready, layers, hillshade]);
+
+  /**
+   * Fetch and draw a hydrology vector layer the first time it is asked for.
+   *
+   * Fetched here rather than handed to MapLibre as a URL for the same reason the
+   * contours are: GeoJSON is loaded inside MapLibre's worker, that request does
+   * not carry the session cookie, and the authorised route answers 401 with no
+   * error on screen and no missing tile. The source simply never fills.
+   */
+  const ensureVector = useCallback(
+    async (name: "streams" | "basins") => {
+      const instance = map.current;
+      if (!instance || !ready) return;
+      const id = `hydro-${name}`;
+      if (instance.getSource(id)) return;
+
+      let data: GeoJSON.FeatureCollection;
+      try {
+        const response = await hydroClient.current.vector(name);
+        data = response.result.geojson;
+      } catch (error) {
+        setHydroError(messageFor(error));
+        return;
+      }
+      if (!map.current) return;
+
+      instance.addSource(id, { type: "geojson", data });
+
+      if (name === "streams") {
+        // Width and colour both carry Strahler order, so the network reads as a
+        // system rather than as a mess of identical blue lines. Order is a small
+        // integer, so a step expression is exact where an interpolation would
+        // imply values between orders that cannot exist.
+        // A MapLibre expression is a heterogeneous nested array, which no useful
+        // TypeScript type describes; the library's own typings fall back to
+        // `unknown[]` for exactly this reason.
+        const colour: unknown[] = ["step", ["coalesce", ["get", "strahler_order"], 1]];
+        colour.push(STREAM_ORDER_COLOURS[0]);
+        for (let order = 2; order <= STREAM_ORDER_COLOURS.length; order += 1) {
+          colour.push(order, STREAM_ORDER_COLOURS[order - 1]);
+        }
+        instance.addLayer({
+          id,
+          type: "line",
+          source: id,
+          paint: {
+            "line-color": colour as unknown as string,
+            "line-width": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              14,
+              ["*", 0.4, ["coalesce", ["get", "strahler_order"], 1]],
+              20,
+              ["*", 1.3, ["coalesce", ["get", "strahler_order"], 1]],
+            ],
+            "line-opacity": 0.95,
+          },
+          layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
+        });
+
+        const orders = data.features.map(
+          (f) => Number(f.properties?.strahler_order ?? 0) || 0,
+        );
+        const max = orders.length ? Math.max(...orders) : 0;
+        setHydro((current) => (current ? { ...current, maxStreamOrder: max } : current));
+      } else {
+        instance.addLayer({
+          id,
+          type: "fill",
+          source: id,
+          paint: { "fill-color": "#0ea5e9", "fill-opacity": 0.12 },
+          layout: { visibility: "none" },
+        });
+        instance.addLayer({
+          id: `${id}-edge`,
+          type: "line",
+          source: id,
+          paint: { "line-color": "#0369a1", "line-width": 0.8, "line-opacity": 0.5 },
+          layout: { visibility: "none" },
+        });
+      }
+    },
+    [ready],
+  );
+
+  useEffect(() => {
+    if (showStreams) void ensureVector("streams");
+    const instance = map.current;
+    if (instance?.getLayer("hydro-streams")) {
+      instance.setLayoutProperty("hydro-streams", "visibility", showStreams ? "visible" : "none");
+    }
+  }, [showStreams, ensureVector]);
+
+  useEffect(() => {
+    if (showBasins) void ensureVector("basins");
+    const instance = map.current;
+    for (const id of ["hydro-basins", "hydro-basins-edge"]) {
+      if (instance?.getLayer(id)) {
+        instance.setLayoutProperty(id, "visibility", showBasins ? "visible" : "none");
+      }
+    }
+  }, [showBasins, ensureVector]);
+
+  /** Draw whatever the hydrology tools last returned, as one overlay. */
+  const drawHydroResult = useCallback((data: GeoJSON.FeatureCollection | null) => {
+    const instance = map.current;
+    const source = instance?.getSource("hydro-result");
+    if (source && "setData" in source) {
+      (source as { setData: (d: unknown) => void }).setData(
+        data ?? { type: "FeatureCollection", features: [] },
+      );
+    }
+  }, []);
+
+  const clearHydrology = useCallback(() => {
+    setInspected(null);
+    setWatershed(null);
+    setFlood(null);
+    setSinks(null);
+    setHydroError(null);
+    drawHydroResult(null);
+  }, [drawHydroResult]);
+
+  /**
+   * Tools 26 to 28: one click, one question about that point.
+   *
+   * Not on a "latest wins" lane. Each of these is a deliberate question whose
+   * answer the client expects to keep, the same reasoning as spot levels, and a
+   * watershed trace is fast enough that overlapping requests are not the problem
+   * here that a dragged hover readout would be.
+   *
+   * Only one of the three results is ever on screen: they answer different
+   * questions about the same click, and leaving a stale catchment beside a fresh
+   * flood would invite reading them as one another.
+   */
+  const askHydrology = useCallback(
+    async (lon: number, lat: number) => {
+      const mode = hydroModeRef.current;
+      if (mode === "off") return;
+
+      /*
+       * `Number("")` is 0, and 0 is finite, so a blank box would sail through a
+       * plain isFinite check and ask the server to flood this site to sea level.
+       * On a survey sitting at 340 m that comes back as a refusal, which is the
+       * right answer arriving from the wrong place: the client should be told
+       * what is missing without a round trip.
+       */
+      const level = floodLevelRef.current.trim() === "" ? NaN : Number(floodLevelRef.current);
+      if (mode === "flood" && !Number.isFinite(level)) {
+        setHydroError("Enter a water level in metres before clicking the map.");
+        return;
+      }
+
+      setHydroBusy(true);
+      setHydroError(null);
+      try {
+        if (mode === "inspect") {
+          const response = await hydroClient.current.inspect([lon, lat]);
+          setInspected(response.result);
+          setWatershed(null);
+          setFlood(null);
+          drawHydroResult(null);
+        } else if (mode === "watershed") {
+          const response = await hydroClient.current.watershed([lon, lat]);
+          setWatershed(response.result);
+          setInspected(null);
+          setFlood(null);
+          drawHydroResult(response.result.geojson);
+        } else {
+          const response = await hydroClient.current.flood([lon, lat], level);
+          setFlood(response.result);
+          setInspected(null);
+          setWatershed(null);
+          drawHydroResult(response.result.geojson);
+        }
+      } catch (error) {
+        setHydroError(messageFor(error));
+      } finally {
+        setHydroBusy(false);
+      }
+    },
+    [drawHydroResult],
+  );
+  askHydrologyRef.current = (lon, lat) => void askHydrology(lon, lat);
+
+  const findSinks = useCallback(async () => {
+    setHydroBusy(true);
+    setHydroError(null);
+    try {
+      const response = await hydroClient.current.sinks(sinkDepth);
+      setSinks(response.result);
+      drawHydroResult(response.result.geojson);
+    } catch (error) {
+      setHydroError(messageFor(error));
+    } finally {
+      setHydroBusy(false);
+    }
+  }, [sinkDepth, drawHydroResult]);
 
   // Switching mode starts a new measurement rather than extending the last one.
   useEffect(() => {
@@ -1157,6 +1458,31 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 setSpotError(null);
               }}
             />
+            {hydro ? (
+              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+                <HydrologyPanel
+                  state={hydro}
+                  mode={hydroMode}
+                  setMode={setHydroMode}
+                  showStreams={showStreams}
+                  setShowStreams={setShowStreams}
+                  showBasins={showBasins}
+                  setShowBasins={setShowBasins}
+                  inspected={inspected}
+                  watershed={watershed}
+                  flood={flood}
+                  sinks={sinks}
+                  floodLevel={floodLevel}
+                  setFloodLevel={setFloodLevel}
+                  sinkDepth={sinkDepth}
+                  setSinkDepth={setSinkDepth}
+                  onFindSinks={() => void findSinks()}
+                  busy={hydroBusy}
+                  error={hydroError}
+                  onClear={clearHydrology}
+                />
+              </div>
+            ) : null}
             <LayerTree
               groups={GROUPS}
               layers={layers}

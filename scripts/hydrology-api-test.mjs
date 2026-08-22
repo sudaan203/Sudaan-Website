@@ -292,6 +292,25 @@ console.log("\nFlood: a connected fill, never a bathtub");
     check("a flood cannot cover more than the survey",
       r.area_ha <= analysis.surveyArea_ha * 1.001, `${r.area_ha.toFixed(2)} ha`);
 
+    /*
+     * The deepest water is a property of the lake, not of where you seeded it.
+     *
+     * This was reported as `level - groundAtSeed`, which is only the maximum
+     * when the seed happens to be the lowest point flooded. Seeding 1.5 m above
+     * a hillside floods the valley 30 m below and the figure still said 1.5 m,
+     * under a label reading "Deepest".
+     */
+    check("the deepest water is at least the depth at the seed",
+      r.maxDepth_m >= r.depthAtSeed_m - 1e-9,
+      `deepest ${r.maxDepth_m.toFixed(2)} m vs at the seed ${r.depthAtSeed_m.toFixed(2)} m`);
+    check("and no deeper than the level above the lowest ground it could reach",
+      r.maxDepth_m <= r.level_m, `${r.maxDepth_m.toFixed(2)} m`);
+    // Mean depth cannot exceed the deepest point. A max taken from the wrong
+    // cell would routinely fail this on real terrain.
+    check("mean depth does not exceed the deepest",
+      r.storage_m3 / r.area_m2 <= r.maxDepth_m + 1e-9,
+      `mean ${(r.storage_m3 / r.area_m2).toFixed(2)} m vs deepest ${r.maxDepth_m.toFixed(2)} m`);
+
     // Monotonic: raising the water cannot shrink the lake.
     const { payload: higher } = await post({
       op: "flood", at: sample, crs: "lonlat", level: ground + 3,
