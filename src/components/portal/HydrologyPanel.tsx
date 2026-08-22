@@ -53,7 +53,6 @@ export type HydrologyState = {
 export function HydrologyPanel({
   state,
   mode,
-  setMode,
   showStreams,
   setShowStreams,
   showBasins,
@@ -73,7 +72,6 @@ export function HydrologyPanel({
 }: {
   state: HydrologyState;
   mode: HydrologyMode;
-  setMode: (m: HydrologyMode) => void;
   showStreams: boolean;
   setShowStreams: (v: boolean) => void;
   showBasins: boolean;
@@ -139,42 +137,13 @@ export function HydrologyPanel({
         <StreamOrderLegend max={state.maxStreamOrder} />
       ) : null}
 
-      {/* ---- tools --------------------------------------------------------- */}
-      <fieldset className="space-y-1.5">
-        <legend className="text-[11px] font-semibold text-ink/60">Ask the map</legend>
-        <div className="flex flex-wrap gap-1.5">
-          {(
-            [
-              ["inspect", "Inspect"],
-              ["watershed", "Watershed"],
-              ["flood", "Flood"],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={mode === value}
-              onClick={() => setMode(mode === value ? "off" : value)}
-              className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
-                mode === value
-                  ? "bg-accent-600 text-white"
-                  : "border border-ink/15 text-ink/70 hover:border-accent-600"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {mode !== "off" ? (
-          <p className="text-[10px] leading-snug text-ink/55">
-            {mode === "inspect"
-              ? "Click anywhere to read the terrain and the water at that point."
-              : mode === "watershed"
-                ? "Click a point on a channel. Everything draining through it is traced upstream."
-                : "Set a water level, then click where the water starts."}
-          </p>
-        ) : null}
-      </fieldset>
+      {/*
+        Tools 24, 26 and 28 used to be chosen here. They now live in the tool
+        rail above the map with the rest of Malhar's numbered tools, so that one
+        control switches a tool on and switches every other tool off. Two places
+        to start a mode meant two ways to leave a measure tool and a hydrology
+        tool both listening for the same click.
+      */}
 
       {mode === "flood" ? (
         <div className="flex items-center gap-1.5">

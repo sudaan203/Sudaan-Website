@@ -152,6 +152,25 @@ export type VolumeResult = {
 };
 
 /**
+ * Tool 15. Everything cut and fill returns, plus the three figures Malhar asks
+ * a stockpile for by name: volume, base area and height.
+ *
+ * `volume` is the cut alone, not the net. A pile measured against its own rim
+ * has fill only where the polygon has been drawn past the toe and dips below the
+ * fitted base, and adding that back in would quietly shrink the pile. It is
+ * reported separately as `volumeBelowBase` so an overdrawn polygon is visible
+ * rather than absorbed.
+ */
+export type StockpileResult = VolumeResult & {
+  volume: number;
+  baseArea: number;
+  maxHeight: number;
+  meanHeight: number | null;
+  volumeBelowBase: number;
+  footprintArea: number;
+};
+
+/**
  * How a volume is measured against. Never defaulted, here or on the server:
  * cut and fill against a flat plane, against the polygon's own rim, and against
  * a second surface are three different questions with three different answers,
@@ -248,6 +267,28 @@ export class AnalysisClient {
   ) {
     return this.run<VolumeResult>(
       { op: "volume", polygon, reference: referenceToWire(reference), ...options },
+      signal,
+    );
+  }
+
+  /**
+   * Tool 15, stockpile volume.
+   *
+   * A separate method rather than a flag on `volume`, because it is a separate
+   * op on the server returning a wider result, and because the reference a
+   * stockpile wants is almost always "boundary" — the pile's own toe — while a
+   * cut and fill against the toe is the unusual choice. Keeping them apart lets
+   * each panel default the way its tool should and neither inherit the other's
+   * habit.
+   */
+  stockpile(
+    polygon: Pair[],
+    reference: VolumeReference,
+    options: { surface?: Surface; crs?: Crs } = {},
+    signal?: AbortSignal,
+  ) {
+    return this.run<StockpileResult>(
+      { op: "stockpile", polygon, reference: referenceToWire(reference), ...options },
       signal,
     );
   }

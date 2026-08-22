@@ -81,9 +81,14 @@ for (const { slug } of sites) {
       check(`  ${slug} has no map yet, and says so plainly`, true, "empty state");
     } else {
       // The server-rendered shell must carry what the client hydrates.
-      check(`  ${slug} map ships the measure toolbar`, map.body.includes("Spot level"));
+      check(`  ${slug} map ships the tool rail`, map.body.includes("Spot Level"));
       check(`  ${slug} map ships the layer tree`, map.body.includes("Base map"));
-      check(`  ${slug} map offers the terrain and surface tools`, map.body.includes("Volume"));
+      check(
+        `  ${slug} map offers the tool groups from the specification`,
+        ["Universal", "Hydrology", "Contractor", "Mining", "Roads"].every((g) =>
+          map.body.includes(g),
+        ),
+      );
     }
     /*
      * Next's flight payload contains the literal string `"digest":"$undefined"`

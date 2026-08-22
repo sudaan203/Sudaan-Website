@@ -89,9 +89,21 @@ await page.goto(`${BASE}/portal/${SITE}/map`, { waitUntil: "networkidle2", timeo
 await page.waitForSelector("canvas.maplibregl-canvas", { timeout: 30000 }).catch(() => {});
 check("the map canvas exists", (await page.$("canvas.maplibregl-canvas")) !== null);
 
-const buttons = () => page.$$eval("button", (els) => els.map((e) => e.textContent.trim()));
+/*
+ * Tools are found by accessible name, not by button text.
+ *
+ * The rail prints Malhar's tool number beside each name, so the text content of
+ * the spot level button is "1Spot Level". The number is `aria-hidden` and each
+ * button carries an `aria-label` of the tool's name alone, which is both what a
+ * screen reader announces and a handle that does not move when a tool is
+ * renumbered or the visual treatment changes.
+ */
+const buttons = () =>
+  page.$$eval("button", (els) =>
+    els.map((e) => e.getAttribute("aria-label") ?? e.textContent.trim()),
+  );
 const labels = await buttons();
-for (const tool of ["Spot level", "Distance", "Area", "Volume"]) {
+for (const tool of ["Spot Level", "Cross Section", "Area", "Cut & Fill"]) {
   check(`the ${tool} tool is offered`, labels.includes(tool));
 }
 
@@ -106,7 +118,7 @@ const toolsEnabled = await page
   .waitForFunction(
     () => {
       const b = [...document.querySelectorAll("button")].find(
-        (e) => e.textContent.trim() === "Spot level",
+        (e) => (e.getAttribute("aria-label") ?? e.textContent.trim()) === "Spot Level",
       );
       return Boolean(b) && !b.disabled;
     },
@@ -120,7 +132,8 @@ check("the terrain probe completes and enables the tools", toolsEnabled);
 async function clickTool(label) {
   const handles = await page.$$("button");
   for (const h of handles) {
-    const text = (await h.evaluate((e) => e.textContent.trim())) ?? "";
+    const text =
+      (await h.evaluate((e) => e.getAttribute("aria-label") ?? e.textContent.trim())) ?? "";
     if (text === label) {
       const disabled = await h.evaluate((e) => e.disabled);
       if (disabled) return false;
@@ -131,9 +144,24 @@ async function clickTool(label) {
   return false;
 }
 
-/** The whole panel's text, which is what a client actually reads. */
+/** The same landmark, for use inside `page.waitForFunction`. */
+const PANEL_SELECTOR = '[role="region"][aria-label="Measurement"]';
+
+/**
+ * The measurement panel's text, which is what a client reads for an answer.
+ *
+ * Scoped to the panel's own landmark rather than to `document.body`. Reading the
+ * whole page made every assertion here match text belonging to some other
+ * control: the contour panel's "Lowest shown" slider satisfied a wait for the
+ * word "Lowest", so the wait returned instantly and the profile assertion after
+ * it failed against a panel that had not been filled in yet. Falls back to the
+ * body only so a missing landmark fails loudly rather than throwing.
+ */
 const panelText = () =>
-  page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
+  page.evaluate(() => {
+    const panel = document.querySelector('[role="region"][aria-label="Measurement"]');
+    return (panel ?? document.body).innerText.replace(/\s+/g, " ");
+  });
 
 /**
  * Click at an offset from the canvas centre, in CSS pixels.
@@ -174,12 +202,13 @@ async function doubleClickMap(dx, dy) {
 
 console.log("\nTool 1, spot level");
 {
-  check("the spot tool activates", await clickTool("Spot level"));
+  check("the spot tool activates", await clickTool("Spot Level"));
   const before = analysisCalls.length;
   await clickMap(0, 0);
   await page.waitForFunction(
-    () => /\d+\.\d{3} m/.test(document.body.innerText),
+    (sel) => /\d+\.\d{3} m/.test(document.querySelector(sel)?.innerText ?? ""),
     { timeout: 20000 },
+    PANEL_SELECTOR,
   ).catch(() => {});
 
   const text = await panelText();
@@ -194,8 +223,10 @@ console.log("\nTool 1, spot level");
   // A second click must accumulate rather than replace: the spec asks for a list.
   await clickMap(60, 40);
   await page.waitForFunction(
-    () => (document.body.innerText.match(/\d+\.\d{3} m/g) ?? []).length >= 2,
+    (sel) =>
+      ((document.querySelector(sel)?.innerText ?? "").match(/\d+\.\d{3} m/g) ?? []).length >= 2,
     { timeout: 20000 },
+    PANEL_SELECTOR,
   ).catch(() => {});
   const two = await panelText();
   check(
@@ -208,24 +239,27 @@ console.log("\nTool 1, spot level");
 
 console.log("\nTool 3, distance and profile");
 {
-  check("the distance tool activates", await clickTool("Distance"));
+  check("the distance tool activates", await clickTool("Cross Section"));
   const before = analysisCalls.length;
   await clickMap(-120, -60);
   await clickMap(120, 60);
 
   // Geometry is computed in the browser and must appear without waiting on the
   // network at all. This is the half of the design that should never be blocked.
-  await page.waitForFunction(() => /Length/.test(document.body.innerText), { timeout: 10000 }).catch(() => {});
+  await page
+    .waitForFunction((sel) => /Length/.test(document.querySelector(sel)?.innerText ?? ""), { timeout: 10000 }, PANEL_SELECTOR)
+    .catch(() => {});
   const text = await panelText();
   check("a length appears", /Length/.test(text), text.match(/Length [\d.]+ ?\w+/)?.[0] ?? "");
   check("computed in the survey's own UTM zone, and it says so", /UTM zone \d+/.test(text));
 
   await page.waitForFunction(
-    () => /Lowest|no data under this line/.test(document.body.innerText),
+    (sel) => /Lowest|no data under this line/.test(document.querySelector(sel)?.innerText ?? ""),
     // Generous because this wait covers a cold server compiling the route and,
     // where the rasters live in R2, the first range requests over the network.
     // Both are one off and neither is what the check is about.
     { timeout: 60000 },
+    PANEL_SELECTOR,
   ).catch(() => {});
   const withHeights = await panelText();
   check("heights arrive from the server", /Lowest/.test(withHeights));
@@ -237,7 +271,7 @@ console.log("\nTool 3, distance and profile");
 
 console.log("\nTool 4, cut and fill");
 {
-  check("the volume tool activates", await clickTool("Volume"));
+  check("the volume tool activates", await clickTool("Cut & Fill"));
   const prompt = await panelText();
   check("it asks for a polygon before offering anything", /Draw a polygon/i.test(prompt));
 
@@ -250,7 +284,7 @@ console.log("\nTool 4, cut and fill");
   await doubleClickMap(-90, 70);
 
   await page
-    .waitForFunction(() => /Measure against/i.test(document.body.innerText), { timeout: 15000 })
+    .waitForFunction((sel) => /Measure against/i.test(document.querySelector(sel)?.innerText ?? ""), { timeout: 15000 }, PANEL_SELECTOR)
     .catch(() => {});
   const text = await panelText();
   check("the ring closed and the panel woke up", /Cut and fill/i.test(text));
@@ -263,8 +297,9 @@ console.log("\nTool 4, cut and fill");
   check("the compute button is available once a reference is picked", clicked);
 
   await page.waitForFunction(
-    () => /m³|no survey data/i.test(document.body.innerText),
+    (sel) => /m³|no survey data/i.test(document.querySelector(sel)?.innerText ?? ""),
     { timeout: 60000 },
+    PANEL_SELECTOR,
   ).catch(() => {});
   const result = await panelText();
   check(
