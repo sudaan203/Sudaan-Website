@@ -107,10 +107,27 @@ export type HydrologyManifest = {
  * Same two-mode arrangement as terrain, and for the same reason: the derived
  * layers are gitignored and a serverless deployment has no disk to keep them on.
  * `PORTAL_HYDROLOGY_URL` wins when set.
+ *
+ * ## The `/hydrology` segment is not decoration
+ *
+ * Remotely, everything for a site already shares one prefix, because that is
+ * what the Worker's grant check enforces: `sites/<slug>/...` and nothing else.
+ * The map pyramid put its own `manifest.json` at `sites/<slug>/manifest.json`
+ * when the site was published, and `hydro-run.mjs` writes a file of the same
+ * name. Uploading hydrology to the root of the site prefix would overwrite the
+ * map's manifest with a hydrology one, and the symptom would be the map losing
+ * its layers rather than anything mentioning hydrology.
+ *
+ * So the remote layout nests: `sites/<slug>/hydrology/manifest.json`. Locally
+ * the two live in separate trees already (`portal-data/map` and
+ * `portal-data/hydrology`), so no segment is needed there. The asymmetry is
+ * deliberate and is the reason for this comment.
  */
 function hydrologyLocation(siteSlug: string) {
   const url = process.env.PORTAL_HYDROLOGY_URL;
-  if (url) return { remote: true as const, base: `${url.replace(/\/+$/, "")}/${siteSlug}` };
+  if (url) {
+    return { remote: true as const, base: `${url.replace(/\/+$/, "")}/${siteSlug}/hydrology` };
+  }
   const dir = process.env.PORTAL_HYDROLOGY_DIR ?? join(process.cwd(), "portal-data", "hydrology");
   return { remote: false as const, base: join(dir, siteSlug) };
 }
