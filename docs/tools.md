@@ -10,6 +10,10 @@ honestly still missing.
 
 ---
 
+> **The tool-by-tool table lives in [`tool-catalogue.md`](./tool-catalogue.md)**,
+> generated from the same list the dashboard reads so the two cannot disagree.
+> This document is the story: what was built, why, and what is still missing.
+
 ## 1. The requirement
 
 On 8 Aug 2026 Malhar delivered a numbered 40-tool dashboard specification as
@@ -216,6 +220,105 @@ image, so it is screen-readable and restylable.
 
 ---
 
+### 3.5 The tools grouped the way the client grouped them (#47)
+
+The specification arrived as five Word documents, each a discipline — Universal,
+Hydrology, Contractor, Mining, Roads — numbered 1..40 across all of them. The map
+presented none of that: a flat row of four measure buttons, with the hydrology
+tools pushed into a sidebar panel. That is the right set of tools in the wrong
+shape. A mining client should not read past the road tools to reach stockpile
+volume.
+
+`src/lib/portal/tool-catalogue.ts` is now the single list. The tool rail on the
+map reads it, and so does `docs/tool-catalogue.md`, which is generated from it,
+so the document and the dashboard cannot drift.
+
+**Gaps are shown as gaps.** A tool nobody specified, a tool whose engine is
+written but has no way to draw its input, and a tool blocked on a second flight
+are three different facts. Hiding them would make the dashboard look finished
+and leave the client to discover the truth by asking for something. The Roads
+group is the honest case: three tools listed, three disabled, with the group
+stating that the calculations exist and need an alignment tool.
+
+Two side effects worth naming:
+
+- **Tool 15 stopped being tool 4 wearing another name.** Both draw a ring and
+  return a volume, but a stockpile is quoted as volume, base area and height,
+  and the server has always had a separate `stockpile` op. The panel now asks
+  for the one the client pressed, and reports material below the fitted base
+  separately rather than netting it off — so a polygon drawn past the toe is
+  visible instead of quietly shrinking the pile.
+- **Measure mode and hydrology mode became exclusive.** They were two
+  independent state machines that both claimed the map's click, and nothing
+  stopped both being on. Every activation now goes through one place.
+
+### 3.6 Contours give up their elevation (#47)
+
+Contours arrive with an `elevation` on every line and nothing let a client use
+it: the lines were one flat brown, and a height was readable only by pointing at
+one and waiting for the hover readout. That is a drawing, not data.
+
+Four controls, each answering a question a surveyor asks of a contour sheet:
+**labels** (the number on the line), **index contours** (every fifth heavier, as
+a printed sheet is drawn), **colour by height**, and an **elevation band** that
+shows only the levels between two elevations.
+
+Three decisions inside that:
+
+- **Labels are HTML, not a symbol layer.** MapLibre renders text from glyph
+  PBFs, and the only two sources are a font CDN the site's CSP blocks or a
+  self-hosted glyph set larger than the contours themselves. Markers cost
+  nothing at this count and rotate with the map for free.
+- **One label per level per screen, not per feature.** A single 372 m contour is
+  forty LineStrings after clipping, and labelling each turns the map into a wall
+  of the same number.
+- **Colour is stretched across the band shown, not the survey.** Banding to
+  360–380 m while keeping the survey's 338–424 m ramp would paint those twenty
+  metres in two indistinguishable shades, which defeats turning colour on.
+
+A band is stated as a filter on the drawing, never as a claim about the ground.
+Hiding everything above 380 m does not mean nothing is up there.
+
+### 3.7 The LiDAR point cloud, in the same map (#48)
+
+Aektanagar was flown with LiDAR. The portal's only record of it was a PDF
+describing the cloud: 50,183,644 points at 181.7 per m², LAS 1.2, 1.7 GB.
+Nothing opened it.
+
+It is now a **quadtree of streamable nodes**, prepared offline by
+`scripts/prepare-point-cloud.mjs` and drawn into MapLibre's own GL context.
+
+**Drawn into the survey map, not in a viewer of its own.** Potree and its kind
+open a cloud in their own canvas with their own camera, and the client then has
+two maps of one site that disagree about where things are. A custom layer puts
+the cloud under the contours and over the orthomosaic, in the same projection,
+moved by the same pan — and costs no new dependency.
+
+**A quadtree, not an octree.** A survey cloud is a *surface*: the points occupy
+a thin shell over 500 m of ground with 74 m of relief. Splitting in Z would give
+mostly empty nodes and one crowded one at every level.
+
+**A point is written to the first level whose grid cell is free.** That is
+Potree's scheme, and it has the property that matters: a node is a complete
+picture of its region on its own, and its children *add* detail rather than
+replacing it, so the viewer can stop descending at any depth and still show a
+whole cloud. 13,265,886 of the 50 million points survive thinning at 13.6 cm, in
+989 nodes and 126 MB.
+
+**Ten bytes a point**, three uint16 quantised into the node's own box plus
+colour and classification. That is 8.5 mm at the root node against a survey
+accurate to 4 cm; float32 positions would be 60% larger for precision nobody
+could measure. Positions are converted to mercator in the *pipeline*, so the
+browser projects nothing and the numbers are computed once in double precision
+rather than fifty million times in float.
+
+The panel offers colour by RGB, height or ASPRS class, filters by class, and
+states how many points are on screen against how many were flown — because a
+viewer silently drawing a twentieth of a cloud looks identical to one drawing
+all of it until somebody measures off it.
+
+---
+
 ## 4. Judgement calls
 
 These were decisions with real alternatives, taken deliberately.
@@ -325,6 +428,17 @@ centralised in `src/lib/portal/numbers.ts` (`numberParam`, `finiteOrNull`,
 `clampedParam`). **Use those, never bare `Number()`, on anything from a URL or an
 input box.**
 
+### From the tool rail, contours and the point cloud
+
+| # | Defect | How it was caught |
+|---|---|---|
+| 9 | A group labelled "1–10" listing twelve tools | The rail suite counted them |
+| 10 | A blocked tool whose reason read "Blocked" rather than naming what it waits for | The rail suite required a reason a client could read |
+| 11 | `modelViewProjectionMatrix` takes world pixels, not mercator. Fed mercator, every point landed within a rounding error of the map's origin: the cloud loaded, reported its point count, drew, and was nowhere | Differencing screenshots. Nothing that counts points can find this |
+| 12 | MapLibre leaves a stencil mask and its own VAO bound. A custom layer that assumes otherwise is clipped by someone else's tile mask and reads attributes from someone else's buffers | Same |
+| 13 | The cloud was drawn at height above **sea level**. MapLibre's camera is perspective even looking straight down, so a cloud floating 30–103 m above the map plane projects 6.5% outward — 50 m on the ground at the survey edge, and it no longer sat on the orthomosaic | Same. Anchored to the survey's own lowest ground instead |
+| 14 | Node longitude/latitude boxes built from two corners of a UTM rectangle. Grid convergence turns that rectangle half a degree against true north here, so the box missed ground the other two corners cover, and edge nodes would have been culled while still on screen | The browser suite's containment check, then arithmetic |
+
 ### Test-harness traps worth remembering
 
 These cost real time and will recur:
@@ -340,6 +454,37 @@ These cost real time and will recur:
   through" matched the channel network's own hint text, returned instantly, and
   every later assertion read an unfilled panel, while the suite printed green.
 
+**The same trap, four more times, always from matching `document.body`.** This
+is now the single most productive source of false results in this codebase:
+
+- A wait for the word "Lowest" was satisfied by the contour panel's "Lowest
+  shown" slider, so a profile assertion ran against an unfilled panel.
+- A check that no measurement panel had opened was satisfied by the tool rail's
+  own "Grid Spot Levels" entry.
+- A check for "&lt;number&gt; drawn" matched the page's intro copy — "every layer we
+  produced for this site, drawn over each other" — whose comma satisfied
+  `[\d,.]+`, reporting a viewer drawing 53,238 points as drawing none.
+- A slope layer's description, "Shown in degrees", was found by a search for a
+  checkbox labelled "Show".
+
+**The fix is structural, not another regex.** The measurement, contour and point
+cloud panels are now `role="region"` landmarks with names, and the suites read
+*that region's* text. It is also the right thing for a screen reader, which is
+usually how these coincidences resolve.
+
+Two more, both specific to drawing:
+
+- `getStyle().layers` **omits custom layers** — they cannot be serialised into a
+  style document. Looking for the point cloud there reported a perfectly working
+  layer as absent. `getLayer(id)` finds it.
+- `readPixels` on MapLibre's context **returns nothing**: the map has no
+  preserved drawing buffer, and asking for a context with that flag returns the
+  existing one. Screenshots are composited by the browser and do not care.
+- A marker given a **custom element keeps only that element's classes**;
+  MapLibre adds `maplibregl-marker` only to elements it creates. The contour
+  labels survived a sweep meant to hide overlays, then differed against the
+  canvas beneath them and were counted as points 14 px west of the survey.
+
 ---
 
 ## 6. Where it stands
@@ -354,14 +499,20 @@ These cost real time and will recur:
 | #43 | 22 Aug 2026 | Hydrology remote prefix, avoiding a manifest collision |
 | #44 | 22 Aug 2026 | Dynamic tiler |
 | #45 | 22 Aug 2026 | Rendered raster layers and the vertical colourbar |
+| #46 | 22 Aug 2026 | This document |
+| #47 | 23 Aug 2026 | Tools grouped by discipline; contour elevation controls |
+| #48 | 23 Aug 2026 | LiDAR point cloud: pipeline, route and in-map viewer |
 
 ### Infrastructure
 
 - **Cloudflare R2 + Worker** live, serving both surveys' terrain *and* hydrology
   by byte range, authorised by the same short-lived grant a browser gets
 - Verified against a server with **no local data files of any kind**
+- The point cloud follows the same two-mode arrangement (`PORTAL_CLOUD_URL` /
+  `PORTAL_CLOUD_DIR`) but **has not been uploaded to R2 yet**: 126 MB across 989
+  node files, built locally and served from disk. See gap 7.9.
 
-### Tests: 654 checks
+### Tests: 821 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -376,30 +527,53 @@ These cost real time and will recur:
 | `analysis-api-test` | 47 | measurement over HTTP |
 | `hydrology-api-test` | 61 | hydrology over HTTP |
 | `render-api-test` | 26 | tiles over HTTP, decoded |
+| `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |
 | `portal-map-browser-test` | 36 | measure tools in a real browser |
-| `portal-hydrology-browser-test` | 33 | hydrology panel in a real browser |
+| `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
+| `portal-tool-rail-test` | 39 | the tool groups, and that one tool is armed at a time |
+| `portal-contours-browser-test` | 26 | contour labels, bands, index lines, colour |
+| `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
+| `portal-map-no-terrain-test` | 16 | the production case: tiles without rasters |
+| `portal-assets-test` | 7 | asset serving |
+| `portal-map-test` | 19 | manifest handling |
+| `portal-ux-test` | n/a | navigation feedback (no count reported) |
 | `portal-smoke-test` | n/a | every route, every site (no count reported) |
+
+`portal-map-no-terrain-test` needs its own server, started with the terrain
+pointed nowhere; the rest run against an ordinary `npm run dev`.
+
+Two suites fail against a development server and are expected to:
+`portal-security-test`'s "no `unsafe-eval` in a production build" check, and
+`portal-tracing-test`, which reads a production build's trace files. Both pass
+against `npm run build`.
 
 Also: `hydro-validate` still agrees with SAGA at 98.1% / 98.3% catchment IoU.
 
 ### Tool coverage against the specification
 
-| Tool | State |
-|---|---|
-| 1 Spot level | **on the map** |
-| 2 Grid spot levels | served (`grid-levels`), no UI |
-| 3 Cross section / profile | **on the map** |
-| 4 Cut and fill | **on the map** |
-| 5 Surface comparison | engine only |
-| 6–9 Timeline, annotation, bookmarks, share | not started |
-| 10 Export centre | engine only, not wired |
-| 11–13 Contractor | engine only |
-| 14 Slope | served; **whole-raster, see gaps** |
-| 15 Stockpile | served (`stockpile`), no UI |
-| 19–21 Roads | served, no UI |
-| 24–28 Hydrology | **on the map** |
-| 37 CAD export | engine only |
+The full table, generated from the same list the dashboard reads, is
+`docs/tool-catalogue.md`. In summary:
+
+| State | Count | Tools |
+|---|---|---|
+| **Live** — usable on the map today | 5 | 1, 25, 26, 27, 28 |
+| **Partly built** | 8 | 3, 4, 10, 14, 15, 18, 24, 37 |
+| **Engine only** — written and tested, nothing calls it | 9 | 2, 5, 11, 13, 16, 17, 19, 20, 21 |
+| **Not built** | 5 | 7, 8, 9, 12, 40 |
+| **Blocked on data** | 1 | 6 |
+| **Never specified by Malhar** | 12 | 22, 23, 29–36, 38, 39 |
+
+Nine of the twenty-eight tools that exist are engine-only, and eight of those
+nine are waiting on the same thing: **a way to draw the input**. Roads (19–21)
+and bench analysis (16) need an alignment tool; grid levels (2) needs a polygon
+routed to an op the UI does not call yet. That is one piece of UI work standing
+between four tools and being live, which makes it the highest-value item on the
+list.
+
+Outside the numbering: **the LiDAR point cloud** is live on the map, and
+**Area** and **Inspect** — both specified in prose rather than as numbered
+tools — are offered at the end of their groups.
 
 ---
 
@@ -488,22 +662,67 @@ Unchanged from 8 Aug, and none of it blocks current work:
 
 ---
 
+### 7.9 The point cloud is not in object storage yet
+
+`scripts/prepare-point-cloud.mjs` writes to `portal-data/cloud/<slug>/`, which is
+gitignored — 126 MB across 989 node files for Aektanagar alone. `cloud-source.ts`
+already reads from `PORTAL_CLOUD_URL` the way terrain and hydrology do, and the
+Worker's grant check already covers the prefix, so this is an upload and two
+environment variables, not code. Until it is done **the cloud works locally and
+not in production**, and the panel simply does not appear there.
+
+### 7.10 The cloud is drawn, not measured
+
+Nothing reads a height off the point cloud. It is a layer, not a tool: the spot
+level, profile and volume tools all read the source GeoTIFF, as they should,
+because that is the surface with a stated accuracy attached. A client clicking
+the cloud gets nothing. That is the honest position rather than an oversight —
+quoting a level from a rendered point would be quoting the nearest point within
+a pixel, which is not the same measurement and would not carry the survey's
+±4 cm.
+
+### 7.11 LAZ is not supported, and is not a small addition
+
+`las.mjs` reads LAS and refuses LAZ with a stated reason. LAZ is an arithmetic
+coder with per-field context models, not a container to skip past. A client
+sending one has to have it expanded with `laszip` before the pipeline runs. Both
+surveys here arrived as LAS, so nothing is blocked today.
+
+### 7.12 Depth 5 is a choice, not a limit
+
+The quadtree is built to 13.6 cm spacing, which keeps 26% of the flown points.
+`--max-depth 6` would take it to 6.8 cm — essentially every point — at roughly
+four times the storage and a build that holds about a gigabyte. Worth doing if
+anyone asks to see the cloud at full density; not worth doing on spec.
+
+---
+
 ## 8. What to do next
 
 In order, and none of it blocked:
 
 1. **Confirm production** with one click, per 7.1.
-2. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
+2. **Upload the point cloud to R2** and set `PORTAL_CLOUD_URL`, per 7.9. One
+   command and two environment variables; the code is already in place.
+3. **Draw an alignment.** One piece of UI — a polyline the client draws and
+   names — makes tools 19, 20, 21 and 16 live at once. Four tools already
+   written and tested are waiting on it, which makes this the best return on the
+   list by a wide margin.
+4. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
    the contradiction. Share links need signing, expiry, revocation, site scoping
    and an owner kill switch, and belong in `portal-security-test.mjs` before they
    ship.
-3. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
+5. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
    already exist in `export-formats.mjs` and are unreachable from the UI. GeoTIFF
    export matters more than it looks: it lets a client open the exact grid we
    computed against in Global Mapper and check our numbers, and none of Propeller,
    PIX4Dcloud or DroneDeploy offers it.
-4. **Slope from overviews**, closing 7.2.
-5. **The weighted overlay engine** for B4, with weights in configuration, ready
+6. **Tool 40, the dashboard summary.** Every figure on Malhar's list except
+   stockpile count and cut/fill volume is already computable from the manifest
+   and the recorded raster statistics. It is a panel, not an engine, and it is
+   the first thing a client sees.
+7. **Slope from overviews**, closing 7.2.
+8. **The weighted overlay engine** for B4, with weights in configuration, ready
    for the day his model arrives.
 
 The thing worth preserving from this round is the testing habit rather than any
