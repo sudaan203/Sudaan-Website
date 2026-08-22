@@ -93,3 +93,8 @@ next-env.d.ts
 # Wrangler's local state for the tile Worker: build output and a dev cache,
 # rewritten on every deploy and specific to one machine's login.
 /.wrangler/
+
+# Derived hydrology layers, written by scripts/hydro-run.mjs from the gitignored
+# terrain above. Regenerable from one command, several megabytes per site, and
+# in production they come from object storage like everything else.
+/portal-data/hydrology/

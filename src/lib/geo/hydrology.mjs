@@ -256,6 +256,37 @@ export function toEsriCodes(dir) {
   return out;
 }
 
+/**
+ * ESRI codes back to this engine's internal direction indices.
+ *
+ * The inverse of `toEsriCodes`, and it has to exist because the two
+ * representations serve different masters. What gets written to disk is ESRI
+ * (1, 2, 4 ... 128), because that is what QGIS and Global Mapper understand and
+ * the whole argument for exporting our grids is that a client can check our
+ * answer in their own software. What the traversals here use is an index into
+ * `D8_DCOL` and `D8_DROW`, because that is what makes them a table lookup rather
+ * than a switch.
+ *
+ * Reading a written grid back therefore needs decoding, and forgetting to is a
+ * silent failure rather than a loud one: `D8_DCOL[16]` is `undefined`, the
+ * neighbour test never matches, and a watershed trace returns the one cell it
+ * started from. A perfectly plausible polygon, no error, wrong answer.
+ */
+export function fromEsriCodes(grid) {
+  const out = grid.like(Int8Array, 0, -1);
+  for (let i = 0; i < grid.length; i += 1) {
+    const code = grid.data[i];
+    if (!(code > 0) || grid.isNoData(code)) {
+      out.data[i] = -1;
+      continue;
+    }
+    // The codes are powers of two by construction, so the index is the exponent.
+    const index = Math.log2(code);
+    out.data[i] = Number.isInteger(index) && index >= 0 && index < 8 ? index : -1;
+  }
+  return out;
+}
+
 /** Index of the cell a given cell drains into, or -1. */
 export function downstreamOf(dir, i) {
   const k = dir.data[i];

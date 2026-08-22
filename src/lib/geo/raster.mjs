@@ -128,7 +128,19 @@ export class Grid {
     ];
   }
 
-  /** A grid of the same shape, different payload. */
+  /**
+   * A grid of the same shape, different payload.
+   *
+   * The payload type is genuinely open: the engine already builds Int8 pointer
+   * grids, Int16 Strahler orders, Uint8 masks and Float32 surfaces from this.
+   * Annotated because the default argument otherwise narrows the inferred type
+   * to Float32Array alone, and every other caller then needs a cast that says
+   * nothing except "the annotation is missing".
+   *
+   * @param {Float32ArrayConstructor|Float64ArrayConstructor|Int8ArrayConstructor|Uint8ArrayConstructor|Int16ArrayConstructor|Uint16ArrayConstructor|Int32ArrayConstructor|Uint32ArrayConstructor} [ArrayType]
+   * @param {number} [fill]
+   * @param {number} [nodata]
+   */
   like(ArrayType = Float32Array, fill = 0, nodata = this.nodata) {
     const data = new ArrayType(this.length);
     if (fill !== 0) data.fill(fill);
