@@ -138,6 +138,33 @@ const nextConfig = {
           { key: "Cache-Control", value: "private, no-store, max-age=0, must-revalidate" },
         ],
       },
+      /*
+       * Rendered tiles are the one exception, and they must be, because
+       * `no-store` here is not merely wasteful: a map view is roughly twenty
+       * tiles, each is read from the source raster, reprojected per pixel,
+       * shaded and encoded, and without caching every pan repeats all of it.
+       *
+       * `private` still does the work the blanket rule was written for. It keeps
+       * survey imagery out of every shared cache; only the end user's own
+       * browser may keep a copy, which is the same thing it does with the
+       * decoded pixels on screen anyway. `immutable` is honest here in a way it
+       * would not be for a page: a tile is a pure function of the survey, the
+       * layer and the query, so the only thing that can change it is
+       * republishing, which changes the survey.
+       *
+       * This has to live in next.config rather than in the route handler. A
+       * header set here overrides one the handler sets, which is exactly how the
+       * route's own Cache-Control was being discarded, and how the client files
+       * rule below lost its CSP. Later entries win, so this must stay after the
+       * general rule above.
+       */
+      {
+        source: "/api/portal/sites/:slug/render/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "private, max-age=86400, immutable" },
+        ],
+      },
       // Client files get a far tighter policy than the app around them, and it
       // has to be declared here rather than in the route handler: a header set
       // in next.config overrides one the handler sets, so the route's own
