@@ -89,3 +89,7 @@ next-env.d.ts
 # survey folders above. Local only: in production these come from object storage
 # via PORTAL_TERRAIN_DIR, and committing the symlinks would dangle on Vercel.
 /portal-data/terrain/
+
+# Wrangler's local state for the tile Worker: build output and a dev cache,
+# rewritten on every deploy and specific to one machine's login.
+/.wrangler/
