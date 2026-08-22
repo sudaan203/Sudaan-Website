@@ -115,7 +115,9 @@ export function ContourPanel({
     contours.levels.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a), min);
 
   return (
-    <div className="space-y-3">
+    // A named landmark, for the same reason the measurement panel has one: so a
+    // reader, human or otherwise, can address this panel rather than the page.
+    <div role="region" aria-label="Contours" className="space-y-3">
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink/50">
           {contours.title}

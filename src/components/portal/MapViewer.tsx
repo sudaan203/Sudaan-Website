@@ -55,6 +55,13 @@ import {
   type ContourControls,
   type ContourState,
 } from "./ContourPanel";
+import {
+  PointCloudPanel,
+  type CloudControls,
+  type CloudStats,
+} from "./PointCloudPanel";
+import type { CloudManifest } from "@/lib/portal/cloud-source";
+import { PointCloudLayer } from "@/lib/portal/point-cloud-layer";
 import type { ToolGroupKey } from "@/lib/portal/tool-catalogue";
 
 /**
@@ -1637,9 +1644,18 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         contours.interval % 1 === 0
           ? String(candidate.level)
           : candidate.level.toFixed(1);
+      /*
+       * `portal-contour-label` is a hook, not a style.
+       *
+       * MapLibre adds its own `maplibregl-marker` class only to elements it
+       * creates itself; a marker given a custom element keeps exactly the
+       * classes it arrived with. Anything that needs to find these — a test
+       * hiding overlays before comparing what the map painted, or someone
+       * debugging in the console — has nothing else to hold on to.
+       */
       element.className =
-        "pointer-events-none select-none rounded bg-panel/85 px-1 font-mono text-[10px] " +
-        "font-semibold leading-tight text-ink-900 shadow-sm";
+        "portal-contour-label pointer-events-none select-none rounded bg-panel/85 px-1 " +
+        "font-mono text-[10px] font-semibold leading-tight text-ink-900 shadow-sm";
       labelMarkers.current.push(
         new Marker({ element, anchor: "center" }).setLngLat(candidate.at).addTo(instance),
       );
@@ -1660,6 +1676,117 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       labelMarkers.current = [];
     };
   }, [placeLabels, ready]);
+
+  // ---- the LiDAR point cloud ----------------------------------------------
+
+  /**
+   * Aektanagar's cloud is 50,183,644 points in a 1.7 GB LAS file, and until now
+   * the portal's only record of it was a PDF describing it. It is served as a
+   * quadtree of nodes and drawn into MapLibre's own GL context, so it sits in
+   * the same map, in the same projection, as everything else — rather than in a
+   * second viewer that would disagree with this one about where things are.
+   */
+  const [cloud, setCloud] = useState<CloudManifest | null>(null);
+  const [cloudControls, setCloudControls] = useState<CloudControls>({
+    visible: false,
+    colourMode: "rgb",
+    pointSize: 2,
+    opacity: 1,
+    classes: new Set<number>(),
+    budget: 2_000_000,
+  });
+  const [cloudStats, setCloudStats] = useState<CloudStats>({
+    points: 0,
+    nodes: 0,
+    loading: 0,
+  });
+  const cloudLayer = useRef<PointCloudLayer | null>(null);
+
+  /**
+   * Ask once whether this survey has a cloud, exactly as the terrain probe does.
+   *
+   * A 409 here is an ordinary answer, not a failure: most surveys are
+   * photogrammetric and have no LiDAR at all. The panel simply does not appear.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/portal/sites/${siteSlug}/cloud`, {
+          credentials: "same-origin",
+        });
+        if (!response.ok || cancelled) return;
+        const manifest = (await response.json()) as CloudManifest;
+        if (!cancelled) {
+          setCloud(manifest);
+          // A cloud with no RGB cannot be shown in colour, so the control that
+          // would be disabled must not also be the one selected.
+          if (!manifest.hasColour) {
+            setCloudControls((c) => ({ ...c, colourMode: "elevation" }));
+          }
+        }
+      } catch {
+        // No cloud, or the request was abandoned on navigation. Either way the
+        // panel stays away and nothing else on the map is affected.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [siteSlug]);
+
+  /** Add and remove the custom layer as the client turns the cloud on and off. */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready || !cloud) return;
+
+    if (!cloudControls.visible) {
+      if (cloudLayer.current && instance.getLayer("lidar-cloud")) {
+        instance.removeLayer("lidar-cloud");
+      }
+      cloudLayer.current = null;
+      setCloudStats({ points: 0, nodes: 0, loading: 0 });
+      return;
+    }
+
+    if (!cloudLayer.current) {
+      const layer = new PointCloudLayer(
+        "lidar-cloud",
+        cloud,
+        async (key) => {
+          const response = await fetch(`/api/portal/sites/${siteSlug}/cloud/${key}`, {
+            credentials: "same-origin",
+          });
+          if (!response.ok) throw new Error(`${response.status} for node ${key}`);
+          return response.arrayBuffer();
+        },
+        {
+          colourMode: cloudControls.colourMode,
+          pointSize: cloudControls.pointSize,
+          opacity: cloudControls.opacity,
+          classes: cloudControls.classes,
+          budget: cloudControls.budget,
+        },
+        setCloudStats,
+      );
+      cloudLayer.current = layer;
+      try {
+        instance.addLayer(layer);
+      } catch (error) {
+        console.error("[portal map] the point cloud layer would not start", error);
+        cloudLayer.current = null;
+        setCloudControls((c) => ({ ...c, visible: false }));
+      }
+    } else {
+      cloudLayer.current.setOptions({
+        colourMode: cloudControls.colourMode,
+        pointSize: cloudControls.pointSize,
+        opacity: cloudControls.opacity,
+        classes: cloudControls.classes,
+        budget: cloudControls.budget,
+      });
+    }
+  }, [cloud, cloudControls, ready, siteSlug]);
 
   // ---- the tool rail ------------------------------------------------------
 
@@ -2010,6 +2137,16 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   busy={hydroBusy}
                   error={hydroError}
                   onClear={clearHydrology}
+                />
+              </div>
+            ) : null}
+            {cloud ? (
+              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+                <PointCloudPanel
+                  manifest={cloud}
+                  controls={cloudControls}
+                  setControls={setCloudControls}
+                  stats={cloudStats}
                 />
               </div>
             ) : null}
