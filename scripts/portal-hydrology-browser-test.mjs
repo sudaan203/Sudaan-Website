@@ -75,9 +75,17 @@ check("it asked the route what exists", calls.some((c) => c.op === "layers"));
 
 const text = () => page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
 
+/**
+ * Click a tool by its accessible name.
+ *
+ * The rail prints Malhar's tool number beside each name, so the button's text
+ * content is "26Watershed Delineation". The number is `aria-hidden` and the
+ * button carries an `aria-label` of the name alone, which is what a screen
+ * reader announces and what does not move when the visual treatment changes.
+ */
 async function clickLabel(label) {
   for (const h of await page.$$("button")) {
-    if ((await h.evaluate((e) => e.textContent.trim())) === label) {
+    if ((await h.evaluate((e) => e.getAttribute("aria-label") ?? e.textContent.trim())) === label) {
       await h.click();
       await new Promise((r) => setTimeout(r, 400));
       return true;
@@ -131,6 +139,23 @@ console.log("\nLayers");
 }
 
 let groundLevel = NaN;
+/*
+ * The tool rail opens on the universal group, so the hydrology tools are not in
+ * the document until that tab is chosen. This is the client's first click too.
+ */
+{
+  const picked = await page.evaluate(() => {
+    const tab = [...document.querySelectorAll('[role="tab"]')].find((t) =>
+      t.textContent.trim().startsWith("Hydrology"),
+    );
+    if (!tab) return false;
+    tab.click();
+    return true;
+  });
+  await new Promise((r) => setTimeout(r, 600));
+  check("the hydrology group can be opened from the tool rail", picked);
+}
+
 console.log("\nInspect");
 {
   check("the inspect tool activates", await clickLabel("Inspect"));
@@ -174,7 +199,7 @@ console.log("\nInspect");
 
 console.log("\nWatershed");
 {
-  check("the watershed tool activates", await clickLabel("Watershed"));
+  check("the watershed tool activates", await clickLabel("Watershed Delineation"));
   await clickMap(0, 0);
   await page.waitForFunction(
     () => /Catchment\s+[\d.]+\s*ha/.test(document.body.innerText),
@@ -192,7 +217,7 @@ console.log("\nWatershed");
 
 console.log("\nFlood");
 {
-  check("the flood tool activates", await clickLabel("Flood"));
+  check("the flood tool activates", await clickLabel("Flood Simulation"));
   // Clicking with no level must be refused in the UI, not sent to the server.
   const before = calls.filter((c) => c.op === "flood").length;
   await clickMap(0, 0);

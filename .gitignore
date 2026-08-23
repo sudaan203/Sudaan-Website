@@ -98,3 +98,8 @@ next-env.d.ts
 # terrain above. Regenerable from one command, several megabytes per site, and
 # in production they come from object storage like everything else.
 /portal-data/hydrology/
+
+# Point cloud quadtrees, written by scripts/prepare-point-cloud.mjs from the
+# gitignored LAS above. 126 MB for Aektanagar alone, regenerable from one
+# command, and in production they come from object storage like the rest.
+/portal-data/cloud/

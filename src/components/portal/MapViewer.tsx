@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // Named imports: maplibre-gl v6 removed the default export, and importing it
 // as a namespace builds fine but fails at runtime with "not a constructor".
 import {
@@ -8,6 +8,7 @@ import {
   NavigationControl,
   ScaleControl,
   FullscreenControl,
+  Marker,
   setWorkerUrl,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -47,6 +48,21 @@ import {
   type HydrologyState,
 } from "./HydrologyPanel";
 import { RenderedLayersPanel, type RenderedLayer } from "./RenderedLayers";
+import { ToolRail, type RailAction } from "./ToolRail";
+import {
+  ContourPanel,
+  describeContours,
+  type ContourControls,
+  type ContourState,
+} from "./ContourPanel";
+import {
+  PointCloudPanel,
+  type CloudControls,
+  type CloudStats,
+} from "./PointCloudPanel";
+import type { CloudManifest } from "@/lib/portal/cloud-source";
+import { PointCloudLayer } from "@/lib/portal/point-cloud-layer";
+import type { ToolGroupKey } from "@/lib/portal/tool-catalogue";
 
 /**
  * The survey map: georeferenced deliverables drawn over each other, with the
@@ -126,6 +142,16 @@ function groupOf(layer: MapLayer): Group {
  * needs a closed ring *and* a reference surface before it can answer at all.
  */
 type MeasureMode = "off" | "spot" | "distance" | "area" | "volume";
+
+/**
+ * Which question the volume mode is asking.
+ *
+ * Tools 4 and 15 share a mode because they share an act — draw a ring, choose a
+ * reference — and differ in what the server is asked for and what is worth
+ * printing. A stockpile is quoted as volume, base area and height; an earthwork
+ * is quoted as cut, fill and net.
+ */
+type VolumeOp = "volume" | "stockpile";
 
 /** Modes that draw a polygon rather than a path. */
 const CLOSES_A_RING = new Set<MeasureMode>(["area", "volume"]);
@@ -212,6 +238,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [spotBusy, setSpotBusy] = useState(false);
   const [spotError, setSpotError] = useState<string | null>(null);
   const [volume, setVolume] = useState<VolumeState>({ state: "idle" });
+  const [volumeOp, setVolumeOp] = useState<VolumeOp>("volume");
   /**
    * Which model the tools read. A surveyor measuring a stockpile wants the DSM;
    * one setting out formation levels wants bare earth. Getting this wrong is not
@@ -227,6 +254,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const drawn = useRef<[number, number][]>([]);
   const modeRef = useRef<MeasureMode>("off");
   modeRef.current = mode;
+  const volumeOpRef = useRef<VolumeOp>("volume");
+  volumeOpRef.current = volumeOp;
   const surfaceRef = useRef<Surface>(surface);
   surfaceRef.current = surface;
   // The map's handlers are registered once, so anything they read at event time
@@ -272,8 +301,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     ),
   );
   const volumeLane = useRef(
-    latest((signal: AbortSignal, ring: Pair[], reference: VolumeReference, model: Surface) =>
-      client.current.volume(ring, reference, { surface: model }, signal),
+    latest(
+      (
+        signal: AbortSignal,
+        ring: Pair[],
+        reference: VolumeReference,
+        model: Surface,
+        op: VolumeOp,
+      ) =>
+        op === "stockpile"
+          ? client.current.stockpile(ring, reference, { surface: model }, signal)
+          : client.current.volume(ring, reference, { surface: model }, signal),
     ),
   );
 
@@ -430,7 +468,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     }
   }, []);
 
-  /** Tool 4. Explicit reference, explicit request: never computed on a whim. */
+  /** Tools 4 and 15. Explicit reference, explicit request: never on a whim. */
   const computeVolume = useCallback(
     async (reference: VolumeReference) => {
       const points = drawn.current;
@@ -439,7 +477,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
       setVolume({ state: "loading" });
       try {
-        const response = await volumeLane.current.call(ring, reference, surfaceRef.current);
+        const response = await volumeLane.current.call(
+          ring,
+          reference,
+          surfaceRef.current,
+          volumeOpRef.current,
+        );
         if (response === null) return;
         noteEnvelope(response);
         setVolume({
@@ -541,6 +584,23 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     }
 
     map.current = instance;
+
+    /*
+     * A handle for the browser tests, and only for them.
+     *
+     * Asserting that contours are *filtered* rather than merely looking sparse
+     * means reading the live style, and the style lives on this object. The
+     * alternative was to assert on pixels, which cannot tell a filter from a
+     * layer that happens to have drawn nothing at this zoom.
+     *
+     * Guarded on NODE_ENV so it is absent from the production bundle: a client's
+     * map should not expose an object with `setFilter` on it to anything that
+     * can run script on the page.
+     */
+    if (process.env.NODE_ENV !== "production") {
+      (window as unknown as Record<string, unknown>).__portalMap = instance;
+    }
+
     instance.addControl(new NavigationControl({ showCompass: true }), "top-left");
     instance.addControl(new ScaleControl({ unit: "metric" }), "bottom-left");
     instance.addControl(new FullscreenControl(), "top-left");
@@ -778,6 +838,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               if (source && "setData" in source) {
                 (source as { setData: (d: unknown) => void }).setData(data);
               }
+              /*
+               * Kept, not just handed to MapLibre. The elevation controls need
+               * the levels present in the data — to size the band sliders, to
+               * work out the interval, and to place labels — and MapLibre will
+               * only answer questions about features it has decided to render,
+               * which at low zoom is a fraction of them.
+               */
+              contourData.current.set(layer.key, data as GeoJSON.FeatureCollection);
+              setContours((current) =>
+                current ?? describeContours(layer.key, layer.title, data.features ?? []),
+              );
             } catch (err) {
               console.error("[portal map] could not load", layer.key, err);
               setVectorError(layer.title);
@@ -1386,6 +1457,435 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     }
   }, [sinkDepth, drawHydroResult]);
 
+  // ---- contours -----------------------------------------------------------
+
+  /**
+   * The contour GeoJSON as fetched, keyed by layer.
+   *
+   * A ref rather than state: nothing renders from it directly, and putting a
+   * few hundred LineStrings into React state would re-render the whole viewer
+   * every time a label moved.
+   */
+  const contourData = useRef(new Map<string, GeoJSON.FeatureCollection>());
+  const [contours, setContours] = useState<ContourState | null>(null);
+  const [contourControls, setContourControls] = useState<ContourControls>({
+    labels: true,
+    colour: true,
+    indexEvery: 5,
+    low: -Infinity,
+    high: Infinity,
+  });
+  const [labelCount, setLabelCount] = useState(0);
+  const labelMarkers = useRef<InstanceType<typeof Marker>[]>([]);
+
+  /** Open the band to the survey's full range once the levels are known. */
+  useEffect(() => {
+    if (!contours) return;
+    setContourControls((c) =>
+      Number.isFinite(c.low) && Number.isFinite(c.high)
+        ? c
+        : {
+            ...c,
+            low: contours.levels[0],
+            high: contours.levels[contours.levels.length - 1],
+          },
+    );
+  }, [contours]);
+
+  /**
+   * Restyle and filter the contour layer from the controls.
+   *
+   * The filter is a MapLibre expression on the feature's own `elevation`, so
+   * hiding a band costs nothing and needs no second copy of the data. The colour
+   * ramp is interpolated across the *band shown*, not across the survey: banding
+   * to 360-380 m and keeping the survey's 338-424 m ramp would paint those
+   * twenty metres in two barely distinguishable shades, which defeats the point
+   * of turning colour on.
+   */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready || !contours) return;
+    if (!instance.getLayer(contours.key)) return;
+
+    const { low, high, colour, indexEvery } = contourControls;
+    if (!Number.isFinite(low) || !Number.isFinite(high)) return;
+
+    instance.setFilter(contours.key, [
+      "all",
+      [">=", ["coalesce", ["get", "elevation"], -1e9], low],
+      ["<=", ["coalesce", ["get", "elevation"], 1e9], high],
+    ] as unknown as never);
+
+    const span = Math.max(high - low, contours.interval);
+    instance.setPaintProperty(
+      contours.key,
+      "line-color",
+      colour
+        ? ([
+            "interpolate",
+            ["linear"],
+            ["coalesce", ["get", "elevation"], low],
+            low,
+            "#1d4ed8",
+            low + span * 0.35,
+            "#15803d",
+            low + span * 0.7,
+            "#ca8a04",
+            high,
+            "#b91c1c",
+          ] as unknown as string)
+        : "#7c2d12",
+    );
+
+    /*
+     * Index contours as a width expression rather than a second layer.
+     *
+     * `elevation % (interval * n) == 0` is the printed-sheet rule, and doing it
+     * in the style keeps one layer, one filter and one hover target. The modulo
+     * is taken on a rounded value because a level of 372.00000000000006 is a
+     * perfectly ordinary thing to find in a shapefile and would silently never
+     * be an index contour.
+     */
+    const step = contours.interval * (indexEvery || 1);
+    const isIndex = [
+      "==",
+      ["%", ["round", ["*", ["coalesce", ["get", "elevation"], 0], 1000]], Math.round(step * 1000)],
+      0,
+    ];
+    instance.setPaintProperty(
+      contours.key,
+      "line-width",
+      (indexEvery > 0
+        ? [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            14,
+            ["case", isIndex, 1.2, 0.4],
+            20,
+            ["case", isIndex, 3, 1.1],
+          ]
+        : ["interpolate", ["linear"], ["zoom"], 14, 0.5, 20, 1.6]) as unknown as never,
+    );
+  }, [contours, contourControls, ready]);
+
+  /**
+   * Elevation labels, as HTML markers.
+   *
+   * There is no symbol layer here because there are no glyphs: MapLibre renders
+   * text from font PBFs, the only convenient source of those is a font CDN that
+   * the site's CSP blocks, and self-hosting a glyph set would ship more bytes
+   * than the contours themselves. Markers cost nothing at this count and rotate
+   * and pitch with the map for free.
+   *
+   * One label per level per screen, not one per feature. A single 372 m contour
+   * can be forty separate LineStrings after clipping, and labelling each of them
+   * turns the map into a wall of the same number.
+   */
+  const placeLabels = useCallback(() => {
+    const instance = map.current;
+    for (const marker of labelMarkers.current) marker.remove();
+    labelMarkers.current = [];
+
+    if (!instance || !contours || !contourControls.labels) {
+      setLabelCount(0);
+      return;
+    }
+    if (!visible[contours.key]) {
+      setLabelCount(0);
+      return;
+    }
+    const data = contourData.current.get(contours.key);
+    if (!data) {
+      setLabelCount(0);
+      return;
+    }
+
+    const bounds = instance.getBounds();
+    const { low, high, indexEvery } = contourControls;
+    const step = contours.interval * (indexEvery || 1);
+    const seen = new Set<number>();
+    let placed = 0;
+    const MAX = 36;
+
+    /*
+     * Index contours first, then the rest. Zooming out drops labels, and the
+     * ones worth keeping are the ones a printed sheet would have labelled.
+     */
+    const priority = (level: number) =>
+      indexEvery > 0 && Math.abs((level / step) - Math.round(level / step)) < 1e-6 ? 0 : 1;
+
+    const candidates = (data.features ?? [])
+      .map((feature) => {
+        const level = feature.properties?.elevation;
+        if (typeof level !== "number" || level < low || level > high) return null;
+        const line =
+          feature.geometry?.type === "LineString"
+            ? (feature.geometry.coordinates as [number, number][])
+            : feature.geometry?.type === "MultiLineString"
+              ? ((feature.geometry.coordinates as [number, number][][])[0] ?? [])
+              : [];
+        // The vertex nearest the middle of the visible part of the line, so a
+        // label sits on the line rather than off the edge of the screen.
+        const inside = line.filter((c) => bounds.contains(c));
+        if (inside.length === 0) return null;
+        return { level, at: inside[Math.floor(inside.length / 2)] };
+      })
+      .filter((c): c is { level: number; at: [number, number] } => c !== null)
+      .sort((a, b) => priority(a.level) - priority(b.level) || a.level - b.level);
+
+    for (const candidate of candidates) {
+      if (placed >= MAX) break;
+      if (seen.has(candidate.level)) continue;
+      seen.add(candidate.level);
+
+      const element = document.createElement("span");
+      element.textContent =
+        contours.interval % 1 === 0
+          ? String(candidate.level)
+          : candidate.level.toFixed(1);
+      /*
+       * `portal-contour-label` is a hook, not a style.
+       *
+       * MapLibre adds its own `maplibregl-marker` class only to elements it
+       * creates itself; a marker given a custom element keeps exactly the
+       * classes it arrived with. Anything that needs to find these — a test
+       * hiding overlays before comparing what the map painted, or someone
+       * debugging in the console — has nothing else to hold on to.
+       */
+      element.className =
+        "portal-contour-label pointer-events-none select-none rounded bg-panel/85 px-1 " +
+        "font-mono text-[10px] font-semibold leading-tight text-ink-900 shadow-sm";
+      labelMarkers.current.push(
+        new Marker({ element, anchor: "center" }).setLngLat(candidate.at).addTo(instance),
+      );
+      placed += 1;
+    }
+    setLabelCount(placed);
+  }, [contours, contourControls, visible]);
+
+  /** Re-label whenever the view or the controls change. */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready) return;
+    placeLabels();
+    instance.on("moveend", placeLabels);
+    return () => {
+      instance.off("moveend", placeLabels);
+      for (const marker of labelMarkers.current) marker.remove();
+      labelMarkers.current = [];
+    };
+  }, [placeLabels, ready]);
+
+  // ---- the LiDAR point cloud ----------------------------------------------
+
+  /**
+   * Aektanagar's cloud is 50,183,644 points in a 1.7 GB LAS file, and until now
+   * the portal's only record of it was a PDF describing it. It is served as a
+   * quadtree of nodes and drawn into MapLibre's own GL context, so it sits in
+   * the same map, in the same projection, as everything else — rather than in a
+   * second viewer that would disagree with this one about where things are.
+   */
+  const [cloud, setCloud] = useState<CloudManifest | null>(null);
+  const [cloudControls, setCloudControls] = useState<CloudControls>({
+    visible: false,
+    colourMode: "rgb",
+    pointSize: 2,
+    opacity: 1,
+    classes: new Set<number>(),
+    budget: 2_000_000,
+  });
+  const [cloudStats, setCloudStats] = useState<CloudStats>({
+    points: 0,
+    nodes: 0,
+    loading: 0,
+  });
+  const cloudLayer = useRef<PointCloudLayer | null>(null);
+
+  /**
+   * Ask once whether this survey has a cloud, exactly as the terrain probe does.
+   *
+   * A 409 here is an ordinary answer, not a failure: most surveys are
+   * photogrammetric and have no LiDAR at all. The panel simply does not appear.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/portal/sites/${siteSlug}/cloud`, {
+          credentials: "same-origin",
+        });
+        if (!response.ok || cancelled) return;
+        const manifest = (await response.json()) as CloudManifest;
+        if (!cancelled) {
+          setCloud(manifest);
+          // A cloud with no RGB cannot be shown in colour, so the control that
+          // would be disabled must not also be the one selected.
+          if (!manifest.hasColour) {
+            setCloudControls((c) => ({ ...c, colourMode: "elevation" }));
+          }
+        }
+      } catch {
+        // No cloud, or the request was abandoned on navigation. Either way the
+        // panel stays away and nothing else on the map is affected.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [siteSlug]);
+
+  /** Add and remove the custom layer as the client turns the cloud on and off. */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready || !cloud) return;
+
+    if (!cloudControls.visible) {
+      if (cloudLayer.current && instance.getLayer("lidar-cloud")) {
+        instance.removeLayer("lidar-cloud");
+      }
+      cloudLayer.current = null;
+      setCloudStats({ points: 0, nodes: 0, loading: 0 });
+      return;
+    }
+
+    if (!cloudLayer.current) {
+      const layer = new PointCloudLayer(
+        "lidar-cloud",
+        cloud,
+        async (key) => {
+          const response = await fetch(`/api/portal/sites/${siteSlug}/cloud/${key}`, {
+            credentials: "same-origin",
+          });
+          if (!response.ok) throw new Error(`${response.status} for node ${key}`);
+          return response.arrayBuffer();
+        },
+        {
+          colourMode: cloudControls.colourMode,
+          pointSize: cloudControls.pointSize,
+          opacity: cloudControls.opacity,
+          classes: cloudControls.classes,
+          budget: cloudControls.budget,
+        },
+        setCloudStats,
+      );
+      cloudLayer.current = layer;
+      try {
+        instance.addLayer(layer);
+      } catch (error) {
+        console.error("[portal map] the point cloud layer would not start", error);
+        cloudLayer.current = null;
+        setCloudControls((c) => ({ ...c, visible: false }));
+      }
+    } else {
+      cloudLayer.current.setOptions({
+        colourMode: cloudControls.colourMode,
+        pointSize: cloudControls.pointSize,
+        opacity: cloudControls.opacity,
+        classes: cloudControls.classes,
+        budget: cloudControls.budget,
+      });
+    }
+  }, [cloud, cloudControls, ready, siteSlug]);
+
+  // ---- the tool rail ------------------------------------------------------
+
+  /**
+   * Which of Malhar's five documents is on screen.
+   *
+   * Universal to begin with, because it is the group whose tools work on every
+   * survey regardless of what the site is for. A mining client landing on the
+   * road tools would be a worse first impression than one extra click.
+   */
+  const [group, setGroup] = useState<ToolGroupKey>("universal");
+
+  /** The keys of the layers this survey can actually render, for the rail. */
+  const renderableKeys = useMemo(() => renderable.map((l) => l.key), [renderable]);
+
+  /**
+   * What the rail should show as pressed, derived rather than stored.
+   *
+   * Storing it as its own state would give two sources of truth for one fact —
+   * the mode the map is in, and the button that claims to have set it — and they
+   * would drift the first time anything turned a mode off from somewhere else.
+   */
+  const railAction: RailAction | null = useMemo(
+    () =>
+      mode !== "off"
+        ? mode === "volume"
+          ? { kind: "measure", mode: "volume", op: volumeOp }
+          : { kind: "measure", mode }
+        : hydroMode !== "off"
+          ? { kind: "hydrology", mode: hydroMode }
+          : sinks
+            ? { kind: "sinks" }
+            : activeRender
+              ? { kind: "layer", layer: activeRender }
+              : null,
+    [mode, volumeOp, hydroMode, sinks, activeRender],
+  );
+
+  /**
+   * One place where a tool is switched on, and where every other tool is
+   * switched off.
+   *
+   * Measure mode and hydrology mode used to be two independent state machines
+   * that both claimed the map's click. Nothing stopped both being on at once,
+   * and when they were, one click asked the server two unrelated questions and
+   * filled two panels, only one of which the client had asked for. Routing every
+   * activation through here makes them exclusive by construction rather than by
+   * everyone remembering to turn the other one off.
+   */
+  const runAction = useCallback(
+    (action: RailAction) => {
+      const already =
+        railAction !== null &&
+        railAction.kind === action.kind &&
+        (action.kind !== "measure" ||
+          (railAction.kind === "measure" &&
+            railAction.mode === action.mode &&
+            (railAction.op ?? "volume") === (action.op ?? "volume"))) &&
+        (action.kind !== "hydrology" ||
+          (railAction.kind === "hydrology" && railAction.mode === action.mode)) &&
+        (action.kind !== "layer" ||
+          (railAction.kind === "layer" && railAction.layer === action.layer));
+
+      // Pressing the tool that is already on turns it off, which is how the
+      // toolbar behaved before and is the only way to get back to plain panning.
+      if (already) {
+        if (action.kind === "measure") setMode("off");
+        else if (action.kind === "hydrology") setHydroMode("off");
+        else if (action.kind === "layer") setActiveRender(null);
+        else clearHydrology();
+        return;
+      }
+
+      switch (action.kind) {
+        case "measure":
+          setHydroMode("off");
+          setVolumeOp(action.op ?? "volume");
+          setMode(action.mode);
+          break;
+        case "hydrology":
+          setMode("off");
+          setHydroMode(action.mode);
+          break;
+        case "sinks":
+          setMode("off");
+          setHydroMode("off");
+          void findSinks();
+          break;
+        case "layer":
+          // A drawn layer is not a mode: it does not take the click, so it does
+          // not turn a measurement off. It is here so the rail can offer tools
+          // 14 and 25, which are layers rather than actions.
+          setActiveRender(action.layer);
+          break;
+      }
+    },
+    [railAction, findSinks, clearHydrology],
+  );
+
   // Switching mode starts a new measurement rather than extending the last one.
   useEffect(() => {
     if (mode === "off") return;
@@ -1453,51 +1953,25 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
   return (
     <div className="surface overflow-hidden">
-      {/* Toolbar. The reference dashboard puts its draw and measure tools here;
-          ours carries the two that produce a number a client can rely on. */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-ink/[0.08] px-4 py-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink/50">
-          Measure
-        </span>
-        {(
-          [
-            ["spot", "Spot level"],
-            ["distance", "Distance"],
-            ["area", "Area"],
-            ["volume", "Volume"],
-          ] as const
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={mode === value}
-            /*
-             * Every one of these reads the elevation model, so without one they
-             * are decoration. Gated on the server probe rather than on the
-             * presence of a terrain layer in the manifest, because those two
-             * disagree exactly where it matters: a deployment that ships the
-             * tile pyramids without the source rasters draws terrain it cannot
-             * measure. Disabled with a reason beats a tool that answers
-             * "unavailable" only after a client has used it.
-             */
-            disabled={!measurable}
-            title={
-              probe.state === "checking"
-                ? "Checking the elevation model…"
-                : probe.state === "unavailable"
-                  ? probe.message
-                  : undefined
-            }
-            onClick={() => setMode(mode === value ? "off" : value)}
-            className={`rounded-full px-3 py-1 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
-              mode === value
-                ? "bg-accent-600 text-white"
-                : "border border-ink/15 text-ink/70 hover:border-accent-600 hover:text-accent-700"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      {/*
+        The tool rail: Malhar's five documents as five groups, one visible at a
+        time. This replaced a flat row of four measure buttons, which was the
+        right set of tools in the wrong shape — the specification is organised by
+        discipline, and a client who opens a mining survey should not have to
+        read past the road tools to find stockpile volume.
+      */}
+      <ToolRail
+        group={group}
+        setGroup={setGroup}
+        active={railAction}
+        onAction={runAction}
+        measurable={measurable}
+        unavailable={probe.state === "unavailable" ? probe.message : undefined}
+        hasHydrology={Boolean(hydro)}
+        renderable={renderableKeys}
+      />
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-ink/[0.08] px-4 py-2">
         {/*
           Say why the tools are off, in the toolbar, rather than only in a title
           attribute nobody hovers. "Not published yet" is a different fact from
@@ -1513,7 +1987,19 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           <span className="text-[11px] text-ink/55">
             Click to add points, double click to finish.
           </span>
-        ) : null}
+        ) : hydroMode !== "off" ? (
+          <span className="text-[11px] text-ink/55">
+            {hydroMode === "flood"
+              ? "Set a water level, then click where the water would stand."
+              : hydroMode === "watershed"
+                ? "Click a point on a channel to trace everything draining through it."
+                : "Click anywhere to read the hydrology under that point."}
+          </span>
+        ) : (
+          <span className="text-[11px] text-ink/45">
+            Pick a tool above, or turn on a layer on the right.
+          </span>
+        )}
 
         {hasTerrain ? (
           <div className="ml-auto flex flex-wrap items-center gap-3">
@@ -1605,6 +2091,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               spotBusy={spotBusy}
               spotError={spotError}
               volume={volume}
+              volumeOp={volumeOp}
               tolerance={tolerance}
               onClear={clearMeasurement}
               onComputeVolume={computeVolume}
@@ -1634,7 +2121,6 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 <HydrologyPanel
                   state={hydro}
                   mode={hydroMode}
-                  setMode={setHydroMode}
                   showStreams={showStreams}
                   setShowStreams={setShowStreams}
                   showBasins={showBasins}
@@ -1651,6 +2137,30 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   busy={hydroBusy}
                   error={hydroError}
                   onClear={clearHydrology}
+                />
+              </div>
+            ) : null}
+            {cloud ? (
+              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+                <PointCloudPanel
+                  manifest={cloud}
+                  controls={cloudControls}
+                  setControls={setCloudControls}
+                  stats={cloudStats}
+                />
+              </div>
+            ) : null}
+            {contours ? (
+              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+                <ContourPanel
+                  contours={contours}
+                  controls={contourControls}
+                  setControls={setContourControls}
+                  visible={visible[contours.key] ?? false}
+                  setVisible={(on) =>
+                    setVisible((v) => ({ ...v, [contours.key]: on }))
+                  }
+                  labelCount={labelCount}
                 />
               </div>
             ) : null}
@@ -1695,6 +2205,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           spotBusy={spotBusy}
           spotError={spotError}
           volume={volume}
+          volumeOp={volumeOp}
           tolerance={tolerance}
           onClear={clearMeasurement}
           onComputeVolume={computeVolume}
@@ -1737,6 +2248,7 @@ function ToolPanel({
   spotBusy,
   spotError,
   volume,
+  volumeOp,
   tolerance,
   onClear,
   onComputeVolume,
@@ -1751,6 +2263,7 @@ function ToolPanel({
   spotBusy: boolean;
   spotError: string | null;
   volume: VolumeState;
+  volumeOp: VolumeOp;
   tolerance: number;
   onClear: () => void;
   onComputeVolume: (reference: VolumeReference) => void;
@@ -1773,6 +2286,7 @@ function ToolPanel({
         polygonArea={measurement?.area ?? 0}
         surface={surface}
         result={volume}
+        pile={volumeOp === "stockpile"}
         onCompute={onComputeVolume}
         onClear={onClear}
       />
@@ -1787,7 +2301,26 @@ function ToolPanel({
     ) : null;
 
   if (!body) return null;
-  return <div className="mb-4 border-b border-ink/[0.08] pb-4">{body}</div>;
+  /*
+   * A named region, not just a div.
+   *
+   * It is the landmark a screen reader user jumps to for the answer they just
+   * asked for, and it is the only reliable way for anything driving the page to
+   * read *this* panel's text rather than the whole document's. The latter is not
+   * hypothetical: a browser test waited for the word "Lowest" to appear anywhere
+   * on the page, and the contour panel's "Lowest shown" slider made that wait
+   * return before the profile had arrived, turning a real assertion into a
+   * silent skip.
+   */
+  return (
+    <div
+      role="region"
+      aria-label="Measurement"
+      className="mb-4 border-b border-ink/[0.08] pb-4"
+    >
+      {body}
+    </div>
+  );
 }
 
 function LayerTree({

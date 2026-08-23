@@ -1,13 +1,25 @@
 "use client";
 
 import { useState } from "react";
-import type { Surface, VolumeReference, VolumeResult } from "@/lib/portal/analysis-client";
+import type {
+  StockpileResult,
+  Surface,
+  VolumeReference,
+  VolumeResult,
+} from "@/lib/portal/analysis-client";
 import { describeReference } from "@/lib/portal/analysis-client";
 import { formatArea, formatDistance } from "@/lib/portal/geodesy";
 
 /**
- * Tool 4, cut and fill. The important one, and the one most likely to be quietly
- * wrong.
+ * Tools 4 and 15: cut and fill, and stockpile volume. The important ones, and
+ * the ones most likely to be quietly wrong.
+ *
+ * One panel for both because they are the same act — draw a polygon, pick what
+ * to measure against, get a volume — and splitting it would duplicate the three
+ * rules below, which is where the risk lives. What changes in `pile` mode is the
+ * wording and the figures reported: a stockpile is quoted as volume, base area
+ * and height, and its net is meaningless because a pile is all cut by
+ * construction.
  *
  * Three rules from `docs/dashboard-tools-plan.md` A1 are enforced by this panel's
  * shape rather than by a note in it:
@@ -27,7 +39,12 @@ import { formatArea, formatDistance } from "@/lib/portal/geodesy";
 export type VolumeState =
   | { state: "idle" }
   | { state: "loading" }
-  | { state: "done"; data: VolumeResult; reference: VolumeReference; surface: Surface }
+  | {
+      state: "done";
+      data: VolumeResult | StockpileResult;
+      reference: VolumeReference;
+      surface: Surface;
+    }
   | { state: "error"; message: string };
 
 export function VolumePanel({
@@ -35,6 +52,7 @@ export function VolumePanel({
   polygonArea,
   surface,
   result,
+  pile = false,
   onCompute,
   onClear,
 }: {
@@ -43,6 +61,8 @@ export function VolumePanel({
   polygonArea: number;
   surface: Surface;
   result: VolumeState;
+  /** Tool 15 rather than tool 4: the polygon is a stockpile, not an earthwork. */
+  pile?: boolean;
   onCompute: (reference: VolumeReference) => void;
   onClear: () => void;
 }) {
@@ -71,7 +91,7 @@ export function VolumePanel({
     <div className="space-y-3">
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink/50">
-          Cut and fill
+          {pile ? "Stockpile volume" : "Cut and fill"}
         </h3>
         <button
           type="button"
@@ -84,8 +104,9 @@ export function VolumePanel({
 
       {!ready ? (
         <p className="text-[11px] leading-snug text-ink/55">
-          Draw a polygon over the area you want quantified: click to place each corner,
-          double click to close it.
+          {pile
+            ? "Draw a polygon around the toe of the pile: click to place each corner, double click to close it. Follow the bottom of the heap, not the top."
+            : "Draw a polygon over the area you want quantified: click to place each corner, double click to close it."}
         </p>
       ) : (
         <>
@@ -101,8 +122,12 @@ export function VolumePanel({
             <Choice
               checked={kind === "boundary"}
               onChange={() => setKind("boundary")}
-              label="The polygon's own rim"
-              hint="Best fit plane through the ground around the edge. The usual meaning of levelling a site to its surroundings."
+              label={pile ? "The ground around the toe" : "The polygon's own rim"}
+              hint={
+                pile
+                  ? "Best fit plane through the ground the pile is standing on. The usual way a stockpile is quoted."
+                  : "Best fit plane through the ground around the edge. The usual meaning of levelling a site to its surroundings."
+              }
             />
 
             <Choice
@@ -178,7 +203,11 @@ export function VolumePanel({
             onClick={() => reference && onCompute(reference)}
             className="w-full rounded-full bg-accent-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-accent-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {result.state === "loading" ? "Computing…" : "Compute volumes"}
+            {result.state === "loading"
+              ? "Computing…"
+              : pile
+                ? "Compute pile volume"
+                : "Compute volumes"}
           </button>
 
           {kind === "plane" && !planeValid && planeText.trim() !== "" ? (
@@ -187,7 +216,7 @@ export function VolumePanel({
             </p>
           ) : null}
 
-          <Result result={result} />
+          <Result result={result} pile={pile} />
         </>
       )}
     </div>
@@ -227,7 +256,7 @@ function Choice({
   );
 }
 
-function Result({ result }: { result: VolumeState }) {
+function Result({ result, pile }: { result: VolumeState; pile: boolean }) {
   if (result.state === "idle") return null;
   if (result.state === "loading") {
     return <p className="text-[11px] text-ink/45">Reading the model…</p>;
@@ -241,11 +270,67 @@ function Result({ result }: { result: VolumeState }) {
   }
 
   const { data, reference, surface } = result;
+  /*
+   * The server answers a stockpile with a wider result than a cut and fill, and
+   * this is the honest way to tell them apart on the client: ask whether the
+   * extra figures arrived, rather than trusting the panel's own `pile` flag,
+   * which describes what was *asked for* and not what came back.
+   */
+  const heap: StockpileResult | null = "baseArea" in data ? data : null;
   const band = data.uncertainty;
   // How decisive the answer is. A net of 200 m³ carrying ±400 m³ is not a
   // quantity, it is a coin toss with a decimal point, and the client is far
   // better served by being told so than by the number on its own.
   const decisive = band === null || Math.abs(data.net) > band;
+
+  if (heap) {
+    return (
+      <div className="space-y-2 border-t border-ink/[0.08] pt-2">
+        <dl className="space-y-1.5 text-sm">
+          <Row label="Volume" value={`${round(heap.volume)} m³`} strong />
+          {band !== null ? <Row label="Uncertainty" value={`± ${round(band)} m³`} /> : null}
+        </dl>
+        <dl className="space-y-1 text-[12px]">
+          <Row label="Base area" value={formatArea(heap.baseArea)} small />
+          <Row label="Footprint drawn" value={formatArea(heap.footprintArea)} small />
+          <Row label="Greatest height" value={formatDistance(heap.maxHeight)} small />
+          {heap.meanHeight !== null ? (
+            <Row label="Mean height" value={`${heap.meanHeight.toFixed(2)} m`} small />
+          ) : null}
+        </dl>
+
+        {/*
+          A pile is all cut. Anything below the fitted base is the polygon drawn
+          past the toe into a dip, and it is reported rather than netted off,
+          because netting it off would quietly shrink the pile by however much
+          the operator overdrew.
+        */}
+        {heap.volumeBelowBase > heap.volume * 0.02 ? (
+          <p className="rounded-md bg-signal/10 px-2 py-1.5 text-[11px] leading-snug text-signal-600">
+            {round(heap.volumeBelowBase)} m³ of the polygon lies below the fitted base,
+            which usually means it was drawn past the toe of the pile. That volume is not
+            in the figure above. Tighten the outline to the bottom of the heap.
+          </p>
+        ) : null}
+
+        {data.measuredArea < data.polygonArea * 0.999 ? (
+          <p className="rounded-md bg-signal/10 px-2 py-1.5 text-[11px] leading-snug text-signal-600">
+            {data.measuredArea === 0
+              ? "None of this polygon has survey data underneath it, so there is no volume to report."
+              : `This covers the ${formatArea(data.measuredArea)} that could be measured, not the full ${formatArea(data.polygonArea)} drawn.`}
+          </p>
+        ) : null}
+
+        <p className="text-[11px] leading-snug text-ink/55">
+          The volume of material standing above {describeReference(reference)}, on the{" "}
+          {surface === "dsm" ? "surface model" : "terrain model"}, in {data.computedIn}
+          {data.rmseZ !== null
+            ? `. The ± band is the survey's own ${(data.rmseZ * 100).toFixed(0)} cm vertical accuracy across ${formatArea(data.measuredArea)}.`
+            : "."}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2 border-t border-ink/[0.08] pt-2">

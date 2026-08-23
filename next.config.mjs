@@ -165,6 +165,42 @@ const nextConfig = {
           { key: "Cache-Control", value: "private, max-age=86400, immutable" },
         ],
       },
+      /*
+       * Point cloud nodes, for the same reason and with the same trap.
+       *
+       * A node is written once by an offline pipeline and does not change until
+       * the survey is reflown, and a view of a cloud is dozens of them. Under
+       * the general `no-store` rule above, panning across a site refetched every
+       * node it had already drawn.
+       *
+       * The route sets a shorter life on the manifest itself, which this would
+       * override — so the manifest is served from `/cloud` with no further path
+       * segments and the pattern below requires at least one, leaving the
+       * manifest to the general rule and to the handler.
+       */
+      /*
+       * The manifest itself, which the pattern below deliberately excludes.
+       *
+       * Five minutes rather than a day: this is the file that tells a client a
+       * *new* cloud has been published, and a stale one would hide a reflight
+       * behind a browser cache nobody can reach to clear. But it is 320 KB, and
+       * under the general `no-store` rule above it was refetched on every single
+       * page load.
+       */
+      {
+        source: "/api/portal/sites/:slug/cloud",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "private, max-age=300" },
+        ],
+      },
+      {
+        source: "/api/portal/sites/:slug/cloud/:node+",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "private, max-age=86400, immutable" },
+        ],
+      },
       // Client files get a far tighter policy than the app around them, and it
       // has to be declared here rather than in the route handler: a header set
       // in next.config overrides one the handler sets, so the route's own

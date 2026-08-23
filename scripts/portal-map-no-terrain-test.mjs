@@ -82,8 +82,12 @@ check("layer opacity is still offered", /OPACITY/i.test(text));
 
 console.log("\nThe measure tools are off, and say why");
 const toolState = await page.evaluate(() =>
-  ["Spot level", "Distance", "Area", "Volume"].map((label) => {
-    const b = [...document.querySelectorAll("button")].find((e) => e.textContent.trim() === label);
+  // By accessible name: the rail prints Malhar's tool number beside each name,
+  // so the button text is "1Spot Level", and the number is aria-hidden.
+  ["Spot Level", "Cross Section", "Area", "Cut & Fill"].map((label) => {
+    const b = [...document.querySelectorAll("button")].find(
+      (e) => (e.getAttribute("aria-label") ?? e.textContent.trim()) === label,
+    );
     return { label, present: Boolean(b), disabled: b ? b.disabled : null, title: b?.title ?? "" };
   }),
 );
@@ -122,19 +126,29 @@ check(
 console.log("\nClicking a disabled tool does nothing at all");
 {
   const before = await page.evaluate(() => document.body.innerText.length);
-  for (const label of ["Spot level", "Volume"]) {
+  for (const label of ["Spot Level", "Cut & Fill"]) {
     const handle = (await page.$$("button")).find;
     void handle;
     for (const h of await page.$$("button")) {
-      if ((await h.evaluate((e) => e.textContent.trim())) === label) {
+      if (
+        (await h.evaluate((e) => e.getAttribute("aria-label") ?? e.textContent.trim())) === label
+      ) {
         await h.click().catch(() => {});
         break;
       }
     }
   }
   await new Promise((r) => setTimeout(r, 1200));
-  const after = await page.evaluate(() => document.body.innerText);
-  check("no measurement panel appears", !/CUT AND FILL|SPOT LEVELS/i.test(after));
+  /*
+   * The panel's own landmark, not a phrase somewhere on the page.
+   *
+   * Matching text caught the tool rail instead: "2 Grid Spot Levels" satisfies
+   * a search for "SPOT LEVELS", so a rail entry naming a tool was read as proof
+   * that the tool had opened. The region exists only when a panel is rendered,
+   * which is exactly the claim being made.
+   */
+  const after = await page.$('[role="region"][aria-label="Measurement"]');
+  check("no measurement panel appears", after === null);
   check("no tool became active", !/aria-pressed="true"/.test(await page.content()) || true);
   void before;
 }
