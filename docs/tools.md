@@ -581,18 +581,48 @@ tools — are offered at the end of their groups.
 
 Stated plainly rather than left to be discovered.
 
-### 7.1 Production is deployed but unconfirmed end to end
+### 7.1 ~~Production is deployed but unconfirmed end to end~~ — confirmed 23 Aug 2026
 
-All three routes answer 401 rather than 404 in production, which proves the code
-shipped and that authorisation works. `PORTAL_TERRAIN_URL` and
-`PORTAL_HYDROLOGY_URL` are set on Vercel.
+Om signed in to the live portal and took a spot level, and opened the point
+cloud. Both work. The chain is confirmed end to end in production: session,
+tenant check, windowed byte-range read from R2 through the Worker, and the
+quadtree nodes alongside it.
 
-What has **not** been verified is a real measurement in production, because
-production uses a different `PORTAL_AUTH_SECRET` than local, which is correct practice,
-but it means no session can be minted against it from here. **Someone should sign
-in to the live portal, open Kotba's map and click a spot level.** A number
-confirms the whole chain; "measurements are not available" means the environment
-variables need a redeploy to take effect.
+`PORTAL_TERRAIN_URL`, `PORTAL_HYDROLOGY_URL` and `PORTAL_CLOUD_URL` are all set
+on Vercel.
+
+**One transient failure was seen and not explained.** On 23 Aug a portal page
+rendered the error boundary with digest 3665730944, and reloading fixed it. What
+is known:
+
+- The deployment was current — the `cache-control: private, max-age=300` header
+  on the cloud route only exists in this build.
+- Vercel's logs for that window show **no 500 and no timeout**. That is not a
+  contradiction: an App Router error boundary is rendered on the client from the
+  streamed payload, so the request is logged as a 200. Do not go looking for a
+  500 next time.
+- 156 page loads in a real browser — every portal page, for every account in the
+  database, owner and client — against a production build with production's
+  environment, produced **zero** error boundaries.
+
+So the cause is unproven and the leading theory (a cold connection killed by the
+deadline below) was **not** supported by the logs. If it recurs, the thing worth
+capturing is the URL and the log entry carrying the digest, not the status code.
+
+### 7.1a The database deadline is shorter than its own connect timeout
+
+Found while investigating the above, and real whether or not it caused it.
+`QUERY_TIMEOUT_MS` is 7,000 ms (`src/lib/portal/db/client.ts`) while the pool's
+`connect_timeout` is 10 seconds. The deadline therefore fires first, so a
+connection that would have completed between 7 and 10 seconds is killed — and
+`queryDb`'s single retry kills it again at 7. Any cold connect in that band fails
+both attempts and throws.
+
+Measured from this machine: first query **1,914 ms**, every one after **275 ms**.
+That is comfortably inside the budget today, which is why this is a latent
+ordering bug rather than a live fault. Supabase's free tier also pauses projects
+after inactivity, and a waking instance takes far longer than ten seconds; a
+scheduled ping every few days is the root-cause fix, not a longer timeout.
 
 ### 7.2 `slope` still reads whole rasters
 
@@ -676,8 +706,7 @@ same way `PORTAL_TERRAIN_URL` and `PORTAL_HYDROLOGY_URL` were:
 PORTAL_CLOUD_URL=https://sga-tile-gateway.sudaan203.workers.dev/sites
 ```
 
-Until that is set, production reads `PORTAL_CLOUD_DIR`, finds nothing, and the
-panel does not appear — which is the correct failure, but it is a failure.
+Set on Vercel on 23 Aug, and confirmed: the cloud opens in the live portal.
 
 ### 7.10 The cloud is drawn, not measured
 
@@ -709,28 +738,25 @@ anyone asks to see the cloud at full density; not worth doing on spec.
 
 In order, and none of it blocked:
 
-1. **Confirm production** with one click, per 7.1.
-2. **Set `PORTAL_CLOUD_URL` on Vercel.** The upload is done; this is the last
-   step before the cloud works in production. See 7.9.
-3. **Draw an alignment.** One piece of UI — a polyline the client draws and
+1. **Draw an alignment.** One piece of UI — a polyline the client draws and
    names — makes tools 19, 20, 21 and 16 live at once. Four tools already
    written and tested are waiting on it, which makes this the best return on the
    list by a wide margin.
-4. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
+2. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
    the contradiction. Share links need signing, expiry, revocation, site scoping
    and an owner kill switch, and belong in `portal-security-test.mjs` before they
    ship.
-5. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
+3. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
    already exist in `export-formats.mjs` and are unreachable from the UI. GeoTIFF
    export matters more than it looks: it lets a client open the exact grid we
    computed against in Global Mapper and check our numbers, and none of Propeller,
    PIX4Dcloud or DroneDeploy offers it.
-6. **Tool 40, the dashboard summary.** Every figure on Malhar's list except
+4. **Tool 40, the dashboard summary.** Every figure on Malhar's list except
    stockpile count and cut/fill volume is already computable from the manifest
    and the recorded raster statistics. It is a panel, not an engine, and it is
    the first thing a client sees.
-7. **Slope from overviews**, closing 7.2.
-8. **The weighted overlay engine** for B4, with weights in configuration, ready
+5. **Slope from overviews**, closing 7.2.
+6. **The weighted overlay engine** for B4, with weights in configuration, ready
    for the day his model arrives.
 
 The thing worth preserving from this round is the testing habit rather than any
