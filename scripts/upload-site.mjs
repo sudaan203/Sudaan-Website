@@ -149,6 +149,10 @@ const CONTENT_TYPES = {
   jpg: "image/jpeg", jpeg: "image/jpeg", json: "application/json",
   geojson: "application/geo+json", pmtiles: "application/octet-stream",
   laz: "application/octet-stream", copc: "application/octet-stream",
+  // Our own point cloud node format, written by prepare-point-cloud.mjs. It
+  // would fall through to octet-stream anyway; naming it says the extension is
+  // one of ours rather than something unrecognised that slipped in.
+  pnt: "application/octet-stream",
   txt: "text/plain", csv: "text/csv", xml: "application/xml", dxf: "application/dxf",
 };
 

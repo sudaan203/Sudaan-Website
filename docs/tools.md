@@ -508,9 +508,9 @@ Two more, both specific to drawing:
 - **Cloudflare R2 + Worker** live, serving both surveys' terrain *and* hydrology
   by byte range, authorised by the same short-lived grant a browser gets
 - Verified against a server with **no local data files of any kind**
-- The point cloud follows the same two-mode arrangement (`PORTAL_CLOUD_URL` /
-  `PORTAL_CLOUD_DIR`) but **has not been uploaded to R2 yet**: 126 MB across 989
-  node files, built locally and served from disk. See gap 7.9.
+- The point cloud is in R2 too, under `sites/<slug>/cloud/`: 990 objects,
+  127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
+  could have answered.
 
 ### Tests: 821 checks
 
@@ -662,14 +662,22 @@ Unchanged from 8 Aug, and none of it blocks current work:
 
 ---
 
-### 7.9 The point cloud is not in object storage yet
+### 7.9 ~~The point cloud is not in object storage yet~~ — done 23 Aug 2026
 
-`scripts/prepare-point-cloud.mjs` writes to `portal-data/cloud/<slug>/`, which is
-gitignored — 126 MB across 989 node files for Aektanagar alone. `cloud-source.ts`
-already reads from `PORTAL_CLOUD_URL` the way terrain and hydrology do, and the
-Worker's grant check already covers the prefix, so this is an upload and two
-environment variables, not code. Until it is done **the cloud works locally and
-not in production**, and the panel simply does not appear there.
+Uploaded: 990 objects, 127.0 MB, under `sites/aektanagar-survey/cloud/`. Verified
+by moving `portal-data/cloud/` aside entirely and re-running both suites — 43
+route checks and 16 browser checks pass with **no local cloud data on disk**, so
+the bytes really are coming from R2 through the Worker.
+
+**`PORTAL_CLOUD_URL` still needs mirroring into Vercel** for production, the
+same way `PORTAL_TERRAIN_URL` and `PORTAL_HYDROLOGY_URL` were:
+
+```
+PORTAL_CLOUD_URL=https://sga-tile-gateway.sudaan203.workers.dev/sites
+```
+
+Until that is set, production reads `PORTAL_CLOUD_DIR`, finds nothing, and the
+panel does not appear — which is the correct failure, but it is a failure.
 
 ### 7.10 The cloud is drawn, not measured
 
@@ -702,8 +710,8 @@ anyone asks to see the cloud at full density; not worth doing on spec.
 In order, and none of it blocked:
 
 1. **Confirm production** with one click, per 7.1.
-2. **Upload the point cloud to R2** and set `PORTAL_CLOUD_URL`, per 7.9. One
-   command and two environment variables; the code is already in place.
+2. **Set `PORTAL_CLOUD_URL` on Vercel.** The upload is done; this is the last
+   step before the cloud works in production. See 7.9.
 3. **Draw an alignment.** One piece of UI — a polyline the client draws and
    names — makes tools 19, 20, 21 and 16 live at once. Four tools already
    written and tested are waiting on it, which makes this the best return on the
