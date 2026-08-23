@@ -249,8 +249,8 @@ export const TOOLS: readonly Tool[] = [
     group: "mining",
     name: "Bench Analysis",
     spec: "Measure bench width, bench height and slope angle across mining benches.",
-    status: "engine-only",
-    gap: "`benchAnalysis` finds benches along a drawn line and is tested. No route exposes it.",
+    status: "live",
+    gap: "Reads a drawn line as alternating flats and faces. A measurement of the ground, not of the mine plan: pointed at a natural slope it reports terraces as benches, and says so.",
   },
   {
     n: 17,
@@ -265,8 +265,8 @@ export const TOOLS: readonly Tool[] = [
     group: "mining",
     name: "Haul Road Analysis",
     spec: "Calculate road width, gradient and crossfall, and identify unsafe road sections.",
-    status: "partial",
-    gap: "Corridor analysis measures width, longitudinal slope and crossfall along an alignment. \"Unsafe\" needs a stated limit, as with tool 17.",
+    status: "live",
+    gap: "Delivered by tool 20 on the same drawn line: width, gradient and crossfall, with stations flagged above the grade and crossfall limits you set. Those limits are yours, not a standard.",
   },
 
   // ---- Roads, 19-21 ------------------------------------------------------
@@ -275,24 +275,23 @@ export const TOOLS: readonly Tool[] = [
     group: "roads",
     name: "Chainage",
     spec: "Generate chainage markers along a road alignment with elevation and profile data at each station.",
-    status: "engine-only",
-    gap: "The route serves it, with proper 0+000 formatting. Nothing on the map draws an alignment to send it.",
+    status: "live",
   },
   {
     n: 20,
     group: "roads",
     name: "Corridor Analysis",
     spec: "Measure road width, shoulders, median and longitudinal slope along the selected alignment.",
-    status: "engine-only",
-    gap: "Served by the analysis route. Same missing piece as 19: no alignment drawing tool on the map.",
+    status: "partial",
+    gap: "Width, longitudinal grade and crossfall are live, with stations flagged against limits you set. Shoulders and median are not separated from the carriageway: that needs edge detection, not a terrain model.",
   },
   {
     n: 21,
     group: "roads",
     name: "Automatic Cross Sections",
     spec: "Generate cross-sections at fixed intervals (5 m, 10 m, 20 m) along a selected alignment.",
-    status: "engine-only",
-    gap: "Served by the analysis route. Needs the alignment tool, and the PDF sheet Important Notes.txt asks for (\"cross sections every 10 m, export PDF as AutoCAD\").",
+    status: "partial",
+    gap: "Sections are cut at 5, 10, 20 or 25 m and drawn on the map as the ticks they were taken along. The PDF sheet Important Notes.txt asks for (\"cross sections every 10 m, export PDF as AutoCAD\") is tool 10's job and is not built.",
   },
 
   // ---- Hydrology, 24-28 --------------------------------------------------

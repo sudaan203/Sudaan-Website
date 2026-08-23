@@ -170,6 +170,132 @@ export type StockpileResult = VolumeResult & {
   footprintArea: number;
 };
 
+
+// ---------------------------------------------------------------------------
+// Tools 16, 19, 20 and 21: everything measured along an alignment
+// ---------------------------------------------------------------------------
+
+/**
+ * The four tools that take a drawn line rather than a polygon.
+ *
+ * They share a geometry and nothing else, which is why they share a mode on the
+ * map and have separate results here. Chainage walks the line; cross sections
+ * and corridor cut across it; bench reads it as a profile of a face.
+ */
+export type AlignmentOp = "chainage" | "cross-sections" | "corridor" | "bench";
+
+export type ChainageStation = {
+  chainage: number;
+  /** "1+234.500", the form a drawing uses. */
+  label: string;
+  easting: number;
+  northing: number;
+  /** Added by the route so the map can draw the station without reprojecting. */
+  lonlat?: Pair;
+  elevation: number | null;
+  /** Grade to the previous station, not the grade end to end. Null at the start. */
+  gradePercent?: number | null;
+};
+
+export type ChainageResult = {
+  stations: ChainageStation[];
+  interval: number;
+  length: number;
+  /** The steepest grade between two consecutive stations. */
+  maxGradePercent: number | null;
+  meanGradePercent: number | null;
+  rmseZ: number | null;
+  stationsWithoutData: number;
+};
+
+export type CrossSection = {
+  chainage: number;
+  label: string;
+  centreEasting: number;
+  centreNorthing: number;
+  centreLonLat?: Pair;
+  /** The two ends of the cut, so the map can draw the tick it was taken along. */
+  endsLonLat?: [Pair, Pair] | null;
+  centreElevation: number | null;
+  samples: { offset: number; easting: number; northing: number; elevation: number | null }[];
+  min: number | null;
+  max: number | null;
+  crossfallPercent: number | null;
+};
+
+export type CrossSectionsResult = {
+  sections: CrossSection[];
+  interval: number;
+  halfWidth: number;
+  sampleSpacing: number;
+  length: number;
+};
+
+export type CorridorStation = {
+  chainage: number;
+  label: string;
+  easting?: number;
+  northing?: number;
+  lonlat?: Pair;
+  centreElevation: number | null;
+  gradePercent: number | null;
+  crossfallPercent: number | null;
+  usableWidth: number | null;
+  unsafe: boolean;
+};
+
+export type CorridorResult = {
+  stations: CorridorStation[];
+  limits: { maxGradePercent: number; maxCrossfallPercent: number; usableSlopePercent: number };
+  meanUsableWidth: number | null;
+  minUsableWidth: number | null;
+  unsafeStations: CorridorStation[];
+  /** How width was derived, which is not a survey of the kerb lines. */
+  widthMethod: string;
+};
+
+export type BenchRun = {
+  fromChainage: number;
+  toChainage: number;
+  width: number;
+  height: number;
+  slopePercent: number | null;
+  slopeDegrees: number | null;
+};
+
+export type BenchResult = {
+  benches: BenchRun[];
+  faces: (BenchRun & { angleDegrees: number })[];
+  meanBenchWidth: number | null;
+  meanBenchHeight: number | null;
+  maxFaceAngleDegrees: number | null;
+  /** How many flats were classified but were too short to call a bench. */
+  narrowFlats: number;
+  /**
+   * Where the line went, in metres. The four add up to `length`, and they are
+   * computed independently so that is a fact rather than an identity.
+   */
+  lengthBreakdown: {
+    bench: number;
+    face: number;
+    narrowFlat: number;
+    /** The ends of the line with no survey underneath them. */
+    unsurveyed: number;
+    length: number;
+  };
+};
+
+/** Every parameter the four alignment ops take, each optional and each defaulted
+ *  on the server so a missing one is never silently zero. */
+export type AlignmentOptions = {
+  interval?: number;
+  halfWidth?: number;
+  maxGradePercent?: number;
+  maxCrossfallPercent?: number;
+  benchSlopePercent?: number;
+  minBenchWidth?: number;
+};
+
 /**
  * How a volume is measured against. Never defaulted, here or on the server:
  * cut and fill against a flat plane, against the polygon's own rim, and against
@@ -291,6 +417,24 @@ export class AnalysisClient {
       { op: "stockpile", polygon, reference: referenceToWire(reference), ...options },
       signal,
     );
+  }
+
+  /**
+   * Tools 16, 19, 20 and 21: one method, because they differ only in which
+   * question is asked of the same drawn line.
+   *
+   * The result type is the caller's to narrow. Four near-identical methods
+   * returning four types would read better at each call site and would put the
+   * op string in two places, which is exactly where the last mismatch between
+   * client and server came from.
+   */
+  alignment<T>(
+    op: AlignmentOp,
+    line: Pair[],
+    options: AlignmentOptions & { surface?: Surface; crs?: Crs } = {},
+    signal?: AbortSignal,
+  ) {
+    return this.run<T>({ op, line, ...options }, signal);
   }
 }
 

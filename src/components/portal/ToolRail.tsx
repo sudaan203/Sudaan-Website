@@ -33,14 +33,23 @@ import {
 export type RailAction =
   | {
       kind: "measure";
-      mode: "spot" | "distance" | "area" | "volume";
+      mode: "spot" | "distance" | "area" | "volume" | "alignment";
       /**
-       * Which question the volume mode is asking. Tools 4 and 15 both draw a
-       * polygon and both return a volume, but a stockpile additionally reports
-       * base area and height, and the server has a separate op for it. Without
-       * this the two tools would be one button wearing two names.
+       * Which question the mode is asking, where a mode serves several tools.
+       *
+       * Tools 4 and 15 both draw a polygon and both return a volume, but a
+       * stockpile additionally reports base area and height and has its own op
+       * on the server. Tools 19, 20, 21 and 16 all draw the same centreline and
+       * ask four different things of it. Without this, each group would be one
+       * button wearing several names.
        */
-      op?: "volume" | "stockpile";
+      op?:
+        | "volume"
+        | "stockpile"
+        | "chainage"
+        | "corridor"
+        | "cross-sections"
+        | "bench";
     }
   | { kind: "hydrology"; mode: "inspect" | "watershed" | "flood" }
   | { kind: "sinks" }
@@ -60,6 +69,10 @@ const ACTIONS: Partial<Record<number, RailAction>> = {
   4: { kind: "measure", mode: "volume", op: "volume" },
   14: { kind: "layer", layer: "slope_degrees" },
   15: { kind: "measure", mode: "volume", op: "stockpile" },
+  16: { kind: "measure", mode: "alignment", op: "bench" },
+  19: { kind: "measure", mode: "alignment", op: "chainage" },
+  20: { kind: "measure", mode: "alignment", op: "corridor" },
+  21: { kind: "measure", mode: "alignment", op: "cross-sections" },
   25: { kind: "layer", layer: "flow_accumulation" },
   26: { kind: "hydrology", mode: "watershed" },
   27: { kind: "sinks" },

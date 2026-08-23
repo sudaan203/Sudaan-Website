@@ -448,6 +448,11 @@ export function corridorAnalysis(
     return {
       chainage: section.chainage,
       label: section.label,
+      // Carried through from the section rather than dropped. Every other
+      // result here can be placed on a map, and a corridor station that cannot
+      // is the one a client most wants to point at: it is the flagged one.
+      easting: section.centreEasting,
+      northing: section.centreNorthing,
       centreElevation: section.centreElevation,
       gradePercent: grade,
       crossfallPercent: section.crossfallPercent,
@@ -514,6 +519,8 @@ export function benchAnalysis(demGrid, line, { benchSlopePercent = 10, minBenchW
 
   const benches = [];
   const faces = [];
+  /** Flats classified as such but shorter than `minBenchWidth`. */
+  const narrowFlats = [];
   let runStart = 0;
   let runIsFlat = null;
 
@@ -531,7 +538,15 @@ export function benchAnalysis(demGrid, line, { benchSlopePercent = 10, minBenchW
       slopeDegrees: width === 0 ? null : (Math.atan(rise / width) * 180) / Math.PI,
     };
     if (runIsFlat) {
+      /*
+       * A flat too narrow to be a bench is still ground, and dropping it
+       * silently left the report unable to account for the line: on a noisy
+       * natural slope, benches and faces together came to 159 m of a 209 m
+       * alignment and nothing said where the rest went. Counted instead, so the
+       * three add up and a client can see how much of the line was neither.
+       */
       if (width >= minBenchWidth) benches.push(entry);
+      else narrowFlats.push(entry);
     } else {
       faces.push({ ...entry, angleDegrees: Math.abs(entry.slopeDegrees ?? 0) });
     }
@@ -546,6 +561,7 @@ export function benchAnalysis(demGrid, line, { benchSlopePercent = 10, minBenchW
   }
   flush(points.length - 1);
 
+  const total = (runs) => runs.reduce((sum, r) => sum + r.width, 0);
   return {
     benches,
     faces,
@@ -553,6 +569,33 @@ export function benchAnalysis(demGrid, line, { benchSlopePercent = 10, minBenchW
     meanBenchWidth: benches.length ? benches.reduce((s, b) => s + b.width, 0) / benches.length : null,
     meanBenchHeight: faces.length ? faces.reduce((s, f) => s + f.height, 0) / faces.length : null,
     maxFaceAngleDegrees: faces.length ? Math.max(...faces.map((f) => f.angleDegrees)) : null,
+    /**
+     * Where the line went, in metres, so the three account for all of it.
+     *
+     * `narrowFlat` is ground flatter than the threshold but too short to call a
+     * bench. On a mine face it is close to zero; on a natural slope read by this
+     * tool it can be a quarter of the line, and that is worth seeing rather than
+     * being quietly absent from the totals.
+     */
+    lengthBreakdown: {
+      bench: total(benches),
+      face: total(faces),
+      narrowFlat: total(narrowFlats),
+      /*
+       * The ends of the line with no survey underneath them.
+       *
+       * Computed from where the data starts and stops rather than as whatever
+       * is left over, so the four figures are produced independently and their
+       * sum is a real check rather than an identity. Interior gaps are not
+       * counted here: a run spanning one already includes it.
+       */
+      unsurveyed:
+        points[0].chainage -
+        p.points[0].chainage +
+        (p.points[p.points.length - 1].chainage - points[points.length - 1].chainage),
+      length: p.points.length ? p.points[p.points.length - 1].chainage : 0,
+    },
+    narrowFlats: narrowFlats.length,
   };
 }
 

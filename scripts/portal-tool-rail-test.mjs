@@ -167,16 +167,36 @@ console.log("\nHydrology: the group that is actually finished");
     /arrows/i.test(by("Flow Direction")?.reason ?? ""), by("Flow Direction")?.reason ?? "");
 }
 
-console.log("\nRoads: nothing is on the map, and the rail says so rather than pretending");
+console.log("\nRoads: all three are now reachable");
 {
   await openGroup("Roads");
   const tools = await railTools();
   check("all three road tools are listed", tools.filter((x) => x.number).length === 3);
-  check("every one is disabled", tools.filter((x) => x.number).every((x) => x.disabled));
+  /*
+   * This block used to assert the opposite — that every road tool was disabled
+   * and the group said so. All three were engine-only for weeks, waiting on one
+   * missing piece of UI: something to draw an alignment with. That now exists,
+   * so the assertion is inverted rather than deleted, because "the group is
+   * complete" is exactly as worth guarding as "the group is honest about being
+   * empty".
+   */
+  check("and every one is enabled", tools.filter((x) => x.number).every((x) => !x.disabled),
+    tools.filter((x) => x.disabled).map((x) => x.name).join(", ") || "none disabled");
   const t = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
-  check("and the group states the calculations exist but have no input",
-    /specified but not yet on the map/i.test(t) && /draw the input/i.test(t),
-    t.match(/[^.]*not yet on the map[^.]*\./)?.[0] ?? "not stated");
+  check("so the group no longer says its tools are waiting on the map",
+    !/specified but not yet on the map/i.test(t));
+}
+
+console.log("\nContractor: still honest about what is missing");
+{
+  await openGroup("Contractor");
+  const tools = await railTools();
+  const pending = tools.filter((x) => x.number && x.disabled);
+  check("the tools that are not on the map are still offered and disabled",
+    pending.length > 0, `${pending.length} of ${tools.filter((x) => x.number).length}`);
+  check("each with a reason a client can read",
+    pending.every((x) => (x.reason ?? "").length > 20),
+    pending.map((x) => `${x.name}: ${x.reason}`)[0] ?? "");
 }
 
 console.log("\nOnly one tool is armed at a time");

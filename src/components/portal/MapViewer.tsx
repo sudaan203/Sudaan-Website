@@ -21,6 +21,10 @@ import {
   type Pair,
   type PolygonStatsResult,
   type ProfileResult,
+  type AlignmentOp,
+  type ChainageResult,
+  type CorridorResult,
+  type CrossSectionsResult,
   type Surface,
   type VolumeReference,
 } from "@/lib/portal/analysis-client";
@@ -48,6 +52,11 @@ import {
   type HydrologyState,
 } from "./HydrologyPanel";
 import { RenderedLayersPanel, type RenderedLayer } from "./RenderedLayers";
+import {
+  AlignmentPanel,
+  type AlignmentControls,
+  type AlignmentState,
+} from "./AlignmentPanel";
 import { ToolRail, type RailAction } from "./ToolRail";
 import {
   ContourPanel,
@@ -141,7 +150,7 @@ function groupOf(layer: MapLayer): Group {
  * measuring: spot accumulates a list of levels and draws no geometry, volume
  * needs a closed ring *and* a reference surface before it can answer at all.
  */
-type MeasureMode = "off" | "spot" | "distance" | "area" | "volume";
+type MeasureMode = "off" | "spot" | "distance" | "area" | "volume" | "alignment";
 
 /**
  * Which question the volume mode is asking.
@@ -240,6 +249,20 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [volume, setVolume] = useState<VolumeState>({ state: "idle" });
   const [volumeOp, setVolumeOp] = useState<VolumeOp>("volume");
   /**
+   * Tools 19, 20, 21 and 16, which share a drawn centreline and differ only in
+   * what is asked of it. Defaults match the server's, so an untouched panel and
+   * an untouched request agree.
+   */
+  const [alignment, setAlignment] = useState<AlignmentState>({ state: "idle" });
+  const [alignmentControls, setAlignmentControls] = useState<AlignmentControls>({
+    op: "chainage",
+    interval: 10,
+    halfWidth: 15,
+    maxGradePercent: 10,
+    maxCrossfallPercent: 6,
+    benchSlopePercent: 10,
+  });
+  /**
    * Which model the tools read. A surveyor measuring a stockpile wants the DSM;
    * one setting out formation levels wants bare earth. Getting this wrong is not
    * a rounding error, it is the difference between the top of a tree and the
@@ -298,6 +321,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         closed
           ? client.current.polygonStats(points, { surface: model }, signal)
           : client.current.profile(points, { surface: model, spacing }, signal),
+    ),
+  );
+  const alignmentLane = useRef(
+    latest(
+      (
+        signal: AbortSignal,
+        op: AlignmentOp,
+        line: Pair[],
+        model: Surface,
+        options: Record<string, number>,
+      ) => client.current.alignment<unknown>(op, line, { surface: model, ...options }, signal),
     ),
   );
   const volumeLane = useRef(
@@ -399,11 +433,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         closed,
       });
 
-      // Volume draws the same ring but answers a different question, and its
-      // panel reads none of this: the client picks a reference surface and asks
-      // explicitly. Sampling the polygon on every corner would be work nobody
-      // asked for and an answer nobody sees.
-      if (active === "volume") return;
+      // Volume and the alignment tools draw the same geometry but answer
+      // different questions, and their panels read none of this: the client
+      // picks a reference or an interval and asks explicitly. Sampling on every
+      // corner would be work nobody asked for and an answer nobody sees — and on
+      // a long alignment it would be a profile request per click.
+      if (active === "volume" || active === "alignment") return;
 
       // A ring only means something to the server once it is closed and has
       // three corners; before that it is still a path.
@@ -456,15 +491,21 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     // would repopulate it with numbers for geometry that is no longer drawn.
     shapeLane.current.cancel();
     volumeLane.current.cancel();
+    alignmentLane.current.cancel();
     setElevation({ state: "idle" });
     setVolume({ state: "idle" });
+    setAlignment({ state: "idle" });
     const instance = map.current;
-    const source = instance?.getSource("measure");
-    if (source && "setData" in source) {
-      (source as { setData: (d: unknown) => void }).setData({
-        type: "FeatureCollection",
-        features: [],
-      });
+    for (const marker of stationMarkers.current) marker.remove();
+    stationMarkers.current = [];
+    for (const id of ["measure", "alignment-result"]) {
+      const source = instance?.getSource(id);
+      if (source && "setData" in source) {
+        (source as { setData: (d: unknown) => void }).setData({
+          type: "FeatureCollection",
+          features: [],
+        });
+      }
     }
   }, []);
 
@@ -497,6 +538,152 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     },
     [noteEnvelope],
   );
+
+  const alignmentControlsRef = useRef(alignmentControls);
+  alignmentControlsRef.current = alignmentControls;
+  /** Labels on the chainage stations, as markers. Same reason as the contours. */
+  const stationMarkers = useRef<InstanceType<typeof Marker>[]>([]);
+
+  /**
+   * Put an alignment answer on the map.
+   *
+   * Every station the server returns carries a `lonlat` computed in the survey's
+   * own projection, so nothing is reprojected here. That is deliberate: the
+   * browser holds no UTM implementation, and the one place that does is the same
+   * place that computed the station.
+   */
+  const drawAlignmentResult = useCallback((op: AlignmentOp, data: unknown) => {
+    const instance = map.current;
+    for (const marker of stationMarkers.current) marker.remove();
+    stationMarkers.current = [];
+    if (!instance || !instance.getSource("alignment-result")) return;
+
+    const features: GeoJSON.Feature[] = [];
+    const labels: { at: Pair; text: string }[] = [];
+
+    if (op === "chainage") {
+      for (const station of (data as ChainageResult).stations) {
+        if (!station.lonlat) continue;
+        features.push({
+          type: "Feature",
+          properties: { unsafe: false },
+          geometry: { type: "Point", coordinates: station.lonlat },
+        });
+        labels.push({ at: station.lonlat, text: station.label });
+      }
+    } else if (op === "corridor") {
+      for (const station of (data as CorridorResult).stations) {
+        if (!station.lonlat) continue;
+        features.push({
+          type: "Feature",
+          properties: { unsafe: station.unsafe },
+          geometry: { type: "Point", coordinates: station.lonlat },
+        });
+        // Only the flagged ones are labelled. Labelling every station on a
+        // corridor buries the four that matter under forty that do not.
+        if (station.unsafe) labels.push({ at: station.lonlat, text: station.label });
+      }
+    } else if (op === "cross-sections") {
+      for (const section of (data as CrossSectionsResult).sections) {
+        if (section.endsLonLat) {
+          features.push({
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates: section.endsLonLat },
+          });
+        }
+        if (section.centreLonLat) {
+          features.push({
+            type: "Feature",
+            properties: { unsafe: false },
+            geometry: { type: "Point", coordinates: section.centreLonLat },
+          });
+        }
+      }
+    }
+    // Bench analysis reads the line as a profile and has no geometry of its own
+    // to draw: its answer is a table of flats and faces along the line already
+    // on the map. Clearing the source says so rather than leaving a stale one.
+
+    const source = instance.getSource("alignment-result");
+    if (source && "setData" in source) {
+      (source as { setData: (d: unknown) => void }).setData({
+        type: "FeatureCollection",
+        features,
+      });
+    }
+
+    /*
+     * Labels are capped and thinned rather than dropped wholesale. A 2 km road
+     * at 10 m stations is 200 labels, which is unreadable; every nth label is
+     * still a usable scale down the alignment.
+     */
+    const MAX = 40;
+    const step = Math.max(1, Math.ceil(labels.length / MAX));
+    labels.forEach((label, i) => {
+      if (i % step !== 0 && i !== labels.length - 1) return;
+      const element = document.createElement("span");
+      element.textContent = label.text;
+      element.className =
+        "portal-station-label pointer-events-none select-none rounded bg-panel/85 px-1 " +
+        "font-mono text-[9px] font-semibold leading-tight text-ink-900 shadow-sm";
+      stationMarkers.current.push(
+        new Marker({ element, anchor: "left", offset: [6, 0] })
+          .setLngLat(label.at)
+          .addTo(instance),
+      );
+    });
+  }, []);
+
+  /**
+   * Tools 19, 20, 21 and 16. Explicit request, like volume: these are slow
+   * enough on a long alignment that recomputing on every parameter nudge would
+   * make the panel feel broken, and the client changing an interval is usually
+   * about to change a half width too.
+   */
+  const computeAlignment = useCallback(async () => {
+    const points = drawn.current;
+    if (points.length < 2) return;
+
+    const c = alignmentControlsRef.current;
+    /*
+     * Only the parameters the chosen op actually reads.
+     *
+     * Sending a half width with a bench request would be harmless today and
+     * wrong the day the server starts validating its inputs, and it would put a
+     * number in the request that had no effect on the answer — which is exactly
+     * the sort of thing that later gets blamed for a discrepancy.
+     */
+    const options: Record<string, number> =
+      c.op === "bench"
+        ? { benchSlopePercent: c.benchSlopePercent }
+        : c.op === "chainage"
+          ? { interval: c.interval }
+          : c.op === "cross-sections"
+            ? { interval: c.interval, halfWidth: c.halfWidth }
+            : {
+                interval: c.interval,
+                halfWidth: c.halfWidth,
+                maxGradePercent: c.maxGradePercent,
+                maxCrossfallPercent: c.maxCrossfallPercent,
+              };
+
+    setAlignment({ state: "loading" });
+    try {
+      const response = await alignmentLane.current.call(
+        c.op,
+        points as Pair[],
+        surfaceRef.current,
+        options,
+      );
+      if (response === null) return;
+      noteEnvelope(response);
+      setAlignment({ state: "done", op: c.op, data: response.result });
+      drawAlignmentResult(c.op, response.result);
+    } catch (error) {
+      setAlignment({ state: "error", message: messageFor(error) });
+    }
+  }, [noteEnvelope, drawAlignmentResult]);
 
   /**
    * The map's click handler is registered once and must reach a function
@@ -889,6 +1076,41 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         type: "line",
         source: "hydro-result",
         paint: { "line-color": "#075985", "line-width": 1.5, "line-opacity": 0.9 },
+      });
+
+      /*
+       * Whatever the alignment tools last answered: chainage stations, corridor
+       * stations, or the ticks a set of cross sections was cut along.
+       *
+       * Below the measurement geometry so the drawn centreline stays visible on
+       * top of its own stations, and in a cool grey-blue that reads as drafting
+       * rather than competing with the warm accent the measure tools use or the
+       * water blue hydrology uses.
+       */
+      instance.addSource("alignment-result", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "alignment-ticks",
+        type: "line",
+        source: "alignment-result",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": "#475569", "line-width": 1.2, "line-opacity": 0.85 },
+      });
+      instance.addLayer({
+        id: "alignment-stations",
+        type: "circle",
+        source: "alignment-result",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          // Flagged stations in the signal colour: on a haul road audit the
+          // whole point of the layer is which ones are over the limit.
+          "circle-color": ["case", ["get", "unsafe"], "#dc2626", "#334155"],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, 2, 20, 4.5],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+        },
       });
 
       // Measurement geometry, always on top of the deliverables.
@@ -1814,7 +2036,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       mode !== "off"
         ? mode === "volume"
           ? { kind: "measure", mode: "volume", op: volumeOp }
-          : { kind: "measure", mode }
+          : mode === "alignment"
+            ? { kind: "measure", mode: "alignment", op: alignmentControls.op }
+            : { kind: "measure", mode }
         : hydroMode !== "off"
           ? { kind: "hydrology", mode: hydroMode }
           : sinks
@@ -1822,7 +2046,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             : activeRender
               ? { kind: "layer", layer: activeRender }
               : null,
-    [mode, volumeOp, hydroMode, sinks, activeRender],
+    [mode, volumeOp, alignmentControls.op, hydroMode, sinks, activeRender],
   );
 
   /**
@@ -1863,7 +2087,20 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       switch (action.kind) {
         case "measure":
           setHydroMode("off");
-          setVolumeOp(action.op ?? "volume");
+          /*
+           * The op belongs to whichever mode it names. Volume's two tools and
+           * the alignment's four share one field on the action because the rail
+           * asks one question — "which tool did they press" — and the answer is
+           * routed to the panel that owns it.
+           */
+          if (action.mode === "alignment") {
+            setAlignmentControls((c) => ({
+              ...c,
+              op: (action.op as AlignmentOp | undefined) ?? c.op,
+            }));
+          } else if (action.mode === "volume") {
+            setVolumeOp(action.op === "stockpile" ? "stockpile" : "volume");
+          }
           setMode(action.mode);
           break;
         case "hydrology":
@@ -2092,6 +2329,10 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               spotError={spotError}
               volume={volume}
               volumeOp={volumeOp}
+              alignment={alignment}
+              alignmentControls={alignmentControls}
+              setAlignmentControls={setAlignmentControls}
+              onComputeAlignment={() => void computeAlignment()}
               tolerance={tolerance}
               onClear={clearMeasurement}
               onComputeVolume={computeVolume}
@@ -2206,6 +2447,10 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           spotError={spotError}
           volume={volume}
           volumeOp={volumeOp}
+          alignment={alignment}
+          alignmentControls={alignmentControls}
+          setAlignmentControls={setAlignmentControls}
+          onComputeAlignment={() => void computeAlignment()}
           tolerance={tolerance}
           onClear={clearMeasurement}
           onComputeVolume={computeVolume}
@@ -2249,6 +2494,10 @@ function ToolPanel({
   spotError,
   volume,
   volumeOp,
+  alignment,
+  alignmentControls,
+  setAlignmentControls,
+  onComputeAlignment,
   tolerance,
   onClear,
   onComputeVolume,
@@ -2264,6 +2513,10 @@ function ToolPanel({
   spotError: string | null;
   volume: VolumeState;
   volumeOp: VolumeOp;
+  alignment: AlignmentState;
+  alignmentControls: AlignmentControls;
+  setAlignmentControls: (fn: (c: AlignmentControls) => AlignmentControls) => void;
+  onComputeAlignment: () => void;
   tolerance: number;
   onClear: () => void;
   onComputeVolume: (reference: VolumeReference) => void;
@@ -2279,6 +2532,17 @@ function ToolPanel({
         error={spotError}
         onRemove={onRemoveSpot}
         onClear={onClearSpots}
+      />
+    ) : mode === "alignment" ? (
+      <AlignmentPanel
+        ready={(measurement?.points.length ?? 0) > 1}
+        length={measurement?.length ?? 0}
+        vertices={measurement?.points.length ?? 0}
+        controls={alignmentControls}
+        setControls={setAlignmentControls}
+        result={alignment}
+        onCompute={onComputeAlignment}
+        onClear={onClear}
       />
     ) : mode === "volume" ? (
       <VolumePanel
