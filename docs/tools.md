@@ -695,7 +695,8 @@ Two more, both specific to drawing:
 | #49 | 23 Aug 2026 | Production confirmed end to end |
 | #50 | 23 Aug 2026 | The alignment tool: tools 16, 18, 19, 20, 21 |
 | #51 | 23 Aug 2026 | Grid levels, surface comparison, tolerance, and exports |
-| #52 | 23 Aug 2026 | Tool 40, and a design pass over the map workspace |
+| #53 | 23 Aug 2026 | Tool 40, and a design pass over the map workspace |
+| #54 | 23 Aug 2026 | The database timeout ladder, proved live and fixed |
 
 ### Infrastructure
 
@@ -706,7 +707,7 @@ Two more, both specific to drawing:
   127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
   could have answered.
 
-### Tests: 997 checks
+### Tests: 1,008 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -735,6 +736,7 @@ Two more, both specific to drawing:
 | `portal-map-no-terrain-test` | 18 | the production case: tiles without rasters |
 | `portal-assets-test` | 7 | asset serving |
 | `portal-map-test` | 19 | manifest handling |
+| `db-timeout-test` | 11 | the timeout ladder, as arithmetic on the constants |
 | `portal-ux-test` | n/a | navigation feedback (no count reported) |
 | `portal-smoke-test` | n/a | every route, every site (no count reported) |
 
@@ -804,24 +806,55 @@ is known:
   database, owner and client — against a production build with production's
   environment, produced **zero** error boundaries.
 
-So the cause is unproven and the leading theory (a cold connection killed by the
-deadline below) was **not** supported by the logs. If it recurs, the thing worth
-capturing is the URL and the log entry carrying the digest, not the status code.
+**Later the same day the cause was proved**, and it was the theory below: a
+connect timed out against the pooler, the deadline killed it at 7 s, and the
+retry got the same budget. See 7.1a, now fixed. The reason the first
+investigation found nothing is worth keeping: an App Router error boundary is
+logged as a **200**, so looking for a 500 finds nothing however hard you look.
 
-### 7.1a The database deadline is shorter than its own connect timeout
+### 7.1a ~~The database deadline is shorter than its own connect timeout~~ — fixed 23 Aug 2026
 
-Found while investigating the above, and real whether or not it caused it.
-`QUERY_TIMEOUT_MS` is 7,000 ms (`src/lib/portal/db/client.ts`) while the pool's
-`connect_timeout` is 10 seconds. The deadline therefore fires first, so a
-connection that would have completed between 7 and 10 seconds is killed — and
-`queryDb`'s single retry kills it again at 7. Any cold connect in that band fails
-both attempts and throws.
+Found while investigating 7.1's transient failure, recorded as latent, and then
+**proved live the same day** by the development log:
 
-Measured from this machine: first query **1,914 ms**, every one after **275 ms**.
-That is comfortably inside the budget today, which is why this is a latent
-ordering bug rather than a live fault. Supabase's free tier also pauses projects
-after inactivity, and a waking instance takes far longer than ten seconds; a
-scheduled ping every few days is the root-cause fix, not a longer timeout.
+```
+[portal] session check: session check timed out after 7000ms — reconnecting and retrying once
+Failed query: select ... from "sites" <- write CONNECT_TIMEOUT
+  aws-0-ap-southeast-2.pooler.supabase.com:6543 [CONNECT_TIMEOUT]
+```
+
+That is the line predicted when 7.1 was first diagnosed and then set aside for
+want of evidence. It is the evidence.
+
+**What was wrong.** Three timeouts guard a portal query and each has to fire
+before the one outside it, so the most specific error is the one that surfaces.
+They were inverted: the driver was allowed **10 s** to connect while the request
+deadline killed the attempt at **7 s**. A connection needing 7 to 10 seconds —
+a cold pooler, a paused free-tier project waking — could therefore never
+complete, and `queryDb`'s single retry handed it the same impossible budget. Both
+attempts died and the page rendered its error boundary.
+
+**The fix** is the ordering, not a longer wait:
+
+```
+connect_timeout (5s)  <  statement_timeout (6s)  <  request deadline (7s)
+```
+
+`connect_timeout` is now derived from the deadline rather than written down
+separately, so the ladder cannot drift. A connect failure is now reported *as* a
+connect failure, which `isConnectionFault` recognises, so the retry gets a fresh
+pool and a real budget instead of inheriting a dead socket and a spent clock.
+
+**Guarded by `scripts/db-timeout-test.mjs`**, which reads the constants out of
+the source and evaluates the arithmetic. This is invisible to every other suite —
+it needs a slow pooler to appear and a fast one hides it completely — so
+asserting the relationship between the numbers is the only way it stays true.
+Reverting the constant to its old value fails three of its eleven checks.
+
+**Not a cure for a paused project.** Supabase's free tier still pauses after
+inactivity and a waking instance takes far longer than any of these numbers. The
+root-cause fix is a scheduled ping every few days; this makes an ordinary slow
+connection succeed instead of failing twice.
 
 ### 7.2 `slope` still reads whole rasters
 

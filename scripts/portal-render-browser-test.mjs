@@ -72,8 +72,26 @@ check("the rendered layers panel appears", appeared);
 
 const text = () => page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
 
-/** Select a rendered layer by its visible label. */
+/**
+ * Select a rendered layer by its visible label.
+ *
+ * Waits for that *label* rather than for the panel heading. The list is filled
+ * in two stages — the hydrology layers come from a manifest, the terrain layers
+ * wait on the elevation probe — so "RENDERED LAYERS" appears while "Terrain,
+ * shaded" does not yet exist, and clicking then finds nothing. It failed about
+ * one run in three, which is the worst kind of test.
+ */
 async function selectLayer(label) {
+  await page
+    .waitForFunction(
+      (needle) =>
+        [...document.querySelectorAll("label")].some((el) =>
+          el.textContent.trim().startsWith(needle),
+        ),
+      { timeout: 45000 },
+      label,
+    )
+    .catch(() => {});
   const handle = await page.evaluateHandle((needle) => {
     const l = [...document.querySelectorAll("label")].find((el) =>
       el.textContent.trim().startsWith(needle),
