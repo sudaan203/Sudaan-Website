@@ -138,8 +138,16 @@ console.log("\nUniversal: the tools that work, and the ones that do not, both sh
     check(`${name} is usable`, by(name) && !by(name).disabled, by(name)?.reason ?? "missing");
   }
 
+  /*
+   * Grid spot levels moved from this list to the one above, and the assertion
+   * moved with it rather than being deleted. A tool going live is exactly as
+   * worth guarding as a tool being honestly disabled.
+   */
+  check("Grid Spot Levels is usable", by("Grid Spot Levels") && !by("Grid Spot Levels").disabled,
+    by("Grid Spot Levels")?.reason ?? "missing");
+
   // The honest half. A tool nobody can reach must say why, on the button.
-  for (const name of ["Grid Spot Levels", "Timeline Comparison", "Export Centre"]) {
+  for (const name of ["Timeline Comparison", "Export Centre"]) {
     const tool = by(name);
     check(`${name} is offered but disabled`, Boolean(tool) && tool.disabled);
     check(`  with a reason a client can read`, Boolean(tool?.reason?.length > 20),

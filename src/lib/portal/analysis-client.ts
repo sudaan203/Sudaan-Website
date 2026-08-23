@@ -171,6 +171,60 @@ export type StockpileResult = VolumeResult & {
 };
 
 
+
+/**
+ * Tool 2. A grid of levels inside a polygon, at a stated spacing.
+ *
+ * Points come back in the survey's own projected metres, which is what a total
+ * station and a CAD drawing take. Turning them into longitude and latitude for
+ * export would be actively unhelpful.
+ */
+export type GridLevelsResult = {
+  points: { easting: number; northing: number; elevation: number }[];
+  spacing: number;
+  /** Grid nodes inside the polygon with no survey underneath them. */
+  pointsOutsideSurvey: number;
+  stats: PolygonStatsResult;
+};
+
+/**
+ * Tools 5 and 13. How far one surface sits from another, over a polygon.
+ *
+ * The tolerance fields are null unless a tolerance was asked for: deviation and
+ * classification are one measurement and one reading of it, not two answers.
+ */
+export type CompareResult = {
+  reference: string;
+  comparedArea: number;
+  polygonArea: number;
+  nodataArea: number;
+  referenceMissingArea: number;
+  complete: boolean;
+
+  minChange: number | null;
+  maxChange: number | null;
+  meanChange: number | null;
+  /** The one that does not cancel: 2 m up and 2 m down is a mean of zero. */
+  meanAbsoluteChange: number | null;
+  volumeGained: number;
+  volumeLost: number;
+  netVolume: number;
+
+  tolerance: number | null;
+  withinArea: number | null;
+  aboveArea: number | null;
+  belowArea: number | null;
+  withinShare: number | null;
+  worstAbove: number | null;
+  worstBelow: number | null;
+  /** False when the tolerance is finer than the survey can resolve. */
+  resolvable: boolean | null;
+  note: string | null;
+  rmseZ: number | null;
+  uncertainty: number | null;
+  computedIn: string;
+};
+
 // ---------------------------------------------------------------------------
 // Tools 16, 19, 20 and 21: everything measured along an alignment
 // ---------------------------------------------------------------------------
@@ -415,6 +469,32 @@ export class AnalysisClient {
   ) {
     return this.run<StockpileResult>(
       { op: "stockpile", polygon, reference: referenceToWire(reference), ...options },
+      signal,
+    );
+  }
+
+  /** Tool 2: a grid of levels inside a polygon, at a stated spacing. */
+  gridLevels(
+    polygon: Pair[],
+    spacing: number,
+    options: { surface?: Surface; crs?: Crs } = {},
+    signal?: AbortSignal,
+  ) {
+    return this.run<GridLevelsResult>({ op: "grid-levels", polygon, spacing, ...options }, signal);
+  }
+
+  /**
+   * Tools 5 and 13: deviation from a reference, and how much of it is within a
+   * tolerance. Omitting `tolerance` asks only for the deviation.
+   */
+  compare(
+    polygon: Pair[],
+    reference: VolumeReference,
+    options: { tolerance?: number; surface?: Surface; crs?: Crs } = {},
+    signal?: AbortSignal,
+  ) {
+    return this.run<CompareResult>(
+      { op: "compare", polygon, reference: referenceToWire(reference), ...options },
       signal,
     );
   }

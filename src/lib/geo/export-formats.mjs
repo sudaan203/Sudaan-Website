@@ -32,7 +32,11 @@ function csvCell(value) {
  * comments still sees a clean table, and a human opening the file still learns
  * what projection the numbers are in.
  */
-export function pointsToCsv(points, { epsg, decimals = 3, label = "Spot levels" } = {}) {
+/**
+ * @param {{easting:number, northing:number, elevation:number}[]} points
+ * @param {{ epsg: number, decimals?: number, label?: string }} options
+ */
+export function pointsToCsv(points, { epsg, decimals = 3, label = "Spot levels" } = /** @type {any} */ ({})) {
   if (!epsg) throw new Error("pointsToCsv: epsg is required, an unprojected CSV is unusable");
   const lines = [
     `# ${label}`,
@@ -86,6 +90,10 @@ export function profileToCsv(profileResult, { epsg, decimals = 3 } = {}) {
  * file, which is exactly why `writePrj` exists and why the CLI writes one
  * alongside every TXT.
  */
+/**
+ * @param {{easting:number, northing:number, elevation:number}[]} points
+ * @param {{ decimals?: number, delimiter?: string }} [options]
+ */
 export function pointsToTxt(points, { decimals = 3, delimiter = " " } = {}) {
   return (
     points
@@ -111,6 +119,10 @@ export function pointsToTxt(points, { decimals = 3, delimiter = " " } = {}) {
  *
  * DXF has no CRS of its own, which is the trap: the numbers are just numbers.
  * A `.prj` sidecar travels with it.
+ */
+/**
+ * @param {{easting:number, northing:number, elevation:number}[]} points
+ * @param {{ layer?: string, labels?: boolean, textHeight?: number }} [options]
  */
 export function pointsToDxf(points, { layer = "SPOT_LEVELS", labels = true, textHeight = 0.5 } = {}) {
   const out = [];
@@ -173,7 +185,11 @@ export function lineToDxf(coords, { layer = "ALIGNMENT", closed = false } = {}) 
  * the transpose of where it belongs, and nothing in the pipeline complains. It
  * is the same class of error as computing area in degrees, so it gets a test.
  */
-export function pointsToLandXml(points, { epsg, decimals = 4, name = "Spot levels" } = {}) {
+/**
+ * @param {{easting:number, northing:number, elevation:number}[]} points
+ * @param {{ epsg: number, decimals?: number, name?: string }} options
+ */
+export function pointsToLandXml(points, { epsg, decimals = 4, name = "Spot levels" } = /** @type {any} */ ({})) {
   if (!epsg) throw new Error("pointsToLandXml: epsg is required");
   const esc = (s) =>
     String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

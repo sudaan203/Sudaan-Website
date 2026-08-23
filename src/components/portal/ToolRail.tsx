@@ -33,7 +33,14 @@ import {
 export type RailAction =
   | {
       kind: "measure";
-      mode: "spot" | "distance" | "area" | "volume" | "alignment";
+      mode:
+        | "spot"
+        | "distance"
+        | "area"
+        | "volume"
+        | "alignment"
+        | "grid"
+        | "compare";
       /**
        * Which question the mode is asking, where a mode serves several tools.
        *
@@ -46,6 +53,8 @@ export type RailAction =
       op?:
         | "volume"
         | "stockpile"
+        | "difference"
+        | "tolerance"
         | "chainage"
         | "corridor"
         | "cross-sections"
@@ -65,8 +74,11 @@ export type RailAction =
  */
 const ACTIONS: Partial<Record<number, RailAction>> = {
   1: { kind: "measure", mode: "spot" },
+  2: { kind: "measure", mode: "grid" },
   3: { kind: "measure", mode: "distance" },
   4: { kind: "measure", mode: "volume", op: "volume" },
+  5: { kind: "measure", mode: "compare", op: "difference" },
+  13: { kind: "measure", mode: "compare", op: "tolerance" },
   14: { kind: "layer", layer: "slope_degrees" },
   15: { kind: "measure", mode: "volume", op: "stockpile" },
   16: { kind: "measure", mode: "alignment", op: "bench" },

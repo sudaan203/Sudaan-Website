@@ -352,6 +352,56 @@ Three things this work changed underneath:
   every page for the sake of four tools.
 - **Bench analysis accounts for the whole line.** See §5.
 
+### 3.9 The last three that needed only a panel (#51)
+
+Tools 2, 5 and 13 were engine only for the same reason the road tools were:
+finished calculations with nothing to reach them. All three take a polygon,
+which the map could already draw, so what was missing was a panel each and one
+route op.
+
+**Tool 2, grid spot levels.** A polygon, a spacing of 0.5, 1, 2 or 5 m, and the
+levels come back on a regular grid. The panel estimates the point count before
+asking, because the server refuses past 250,000 and a client should not discover
+that by being refused.
+
+**Tools 5 and 13, surface comparison and tolerance**, are one panel, because
+they are one act: how far does this surface sit from that one, over this area. A
+tolerance is a reading of the same numbers rather than a second measurement, so
+asking for one adds the within/above/below classification and changes nothing
+that was measured — asserted, not assumed.
+
+**Exports finally happen** (part of 10 and 37). Grid levels save as CSV, TXT,
+DXF and LandXML, written by the same tested writers the server uses. They are
+written *in the browser* because `export-formats.mjs` is pure and the points
+have already crossed the network to be counted: asking the server to compute
+them again to format them would double the work and create a second answer that
+could differ from the first. Every file states its projection and the caller
+cannot opt out — a DXF gets a `.prj` beside it, because the format has nowhere
+to record one, and a client who takes only the DXF has a file that cannot be
+placed on the earth.
+
+**A `difference` layer joins the tiler**, which is tool 5's colour-coded
+deviation map. It is computed per tile rather than stored, and both models are
+sampled into *that tile*, so the tile itself is the common grid. That matters
+more here than it sounds: Kotba's DSM is 0.157 m and its DTM is 0.241 m with
+different origins, so there is no shared cell to subtract and
+`surfaceDifference` correctly refuses such a pair.
+
+Three decisions worth keeping:
+
+- **`compareSurfaces` exists beside the two whole-grid functions**, not instead
+  of them. Those require grids that already agree and describe the whole raster;
+  this samples the reference by world coordinate and restricts the answer to the
+  ring. A grid-wide statistic over a windowed read describes the bounding box,
+  which for anything not rectangular is a different area.
+- **A tolerance finer than the survey is refused an answer, not given one.** A
+  ±20 mm check on a survey good to ±40 mm produces a map of survey noise that
+  looks exactly like a map of defects, and that is the reading a contractor
+  would act on.
+- **Mean and mean-absolute are both shown.** A surface half a metre up over one
+  half of a polygon and half a metre down over the other has a mean change of
+  zero, and only the second number says the surfaces disagree.
+
 ---
 
 ## 4. Judgement calls
@@ -490,6 +540,23 @@ net cannot exceed it) and for a face it does not (a run of steep segments that
 zigzags has a small net slope). The asymmetry is real, and the test now asserts
 what is true rather than what looked symmetrical.
 
+### From tools 2, 5 and 13
+
+| # | Defect | How it was caught |
+|---|---|---|
+| 17 | The tiler asked `rampFor` without saying the quantity was signed, so the difference layer answered **500** on its first request. The guard refuses a diverging ramp for unsigned data *and* a sequential one for signed data, in both directions | Fetching one tile |
+| 18 | The same omission in `Colourbar` threw inside React, and the error boundary took the **whole map panel** down with it — every tool after that point in the suite failed for an unrelated reason | Switching the layer on in a browser |
+| 19 | A bad `ramp` was a 500. A client asking for the wrong kind of ramp is a bad request, and the message explains precisely what a rainbow loses; it is now a 400 carrying it | The same tile fetch |
+
+Two non-defects worth recording, because both looked like defects at first. The
+ramp chooser filtered `difference` out of its list, which was right for every
+layer that existed when it was written and wrong the moment a signed one
+appeared — it now hides the chooser entirely for a signed layer rather than
+offering four buttons of which three produce an error. And the surface panel
+correctly **disabled** its compute button when the test picked the DTM as a
+reference for a measurement already on the DTM: comparing a surface with itself
+is identically zero, and the panel refusing it is the feature.
+
 ### Test-harness traps worth remembering
 
 These cost real time and will recur:
@@ -531,6 +598,11 @@ Two more, both specific to drawing:
 - `readPixels` on MapLibre's context **returns nothing**: the map has no
   preserved drawing buffer, and asking for a context with that flag returns the
   existing one. Screenshots are composited by the browser and do not care.
+- **Capturing a download needs the Blob, not its text.** Reading `blob.text()`
+  inside a patched `createObjectURL` and attaching the file name in the patched
+  `click` is a race — `text()` resolves after the click, so names land on the
+  wrong entries and a file goes missing. Hold the Blob against its URL and pair
+  them at click time; that also survives the `revokeObjectURL` that follows.
 - `getSource(id)._data` **is not the public contract and does not hold what a
   `setData` put there.** It reported zero alignment stations while twenty-two
   labels were visibly on the map. `queryRenderedFeatures({ layers: [...] })` is
@@ -560,6 +632,7 @@ Two more, both specific to drawing:
 | #48 | 23 Aug 2026 | LiDAR point cloud: pipeline, route and in-map viewer |
 | #49 | 23 Aug 2026 | Production confirmed end to end |
 | #50 | 23 Aug 2026 | The alignment tool: tools 16, 18, 19, 20, 21 |
+| #51 | 23 Aug 2026 | Grid levels, surface comparison, tolerance, and exports |
 
 ### Infrastructure
 
@@ -570,11 +643,11 @@ Two more, both specific to drawing:
   127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
   could have answered.
 
-### Tests: 912 checks
+### Tests: 1,001 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
-| `terrain-test` | 59 | measurement arithmetic against analytic surfaces |
+| `terrain-test` | 74 | measurement arithmetic against analytic surfaces |
 | `engineering-test` | 58 | contractor, mining and road tools |
 | `hydro-test` | 55 | routing against known answers |
 | `portal-tile-grant-test` | 48 | the Worker's authorisation, written as attacks |
@@ -587,13 +660,15 @@ Two more, both specific to drawing:
 | `render-api-test` | 26 | tiles over HTTP, decoded |
 | `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |
 | `alignment-api-test` | 47 | the four alignment tools, as relationships |
+| `surface-api-test` | 35 | grid levels, deviation, tolerance, and the signed ramp |
 | `portal-map-browser-test` | 36 | measure tools in a real browser |
 | `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
-| `portal-tool-rail-test` | 41 | the tool groups, and that one tool is armed at a time |
+| `portal-tool-rail-test` | 40 | the tool groups, and that one tool is armed at a time |
 | `portal-contours-browser-test` | 26 | contour labels, bands, index lines, colour |
 | `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
 | `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
+| `portal-surface-browser-test` | 40 | polygon tools, and the contents of the files they write |
 | `portal-map-no-terrain-test` | 16 | the production case: tiles without rasters |
 | `portal-assets-test` | 7 | asset serving |
 | `portal-map-test` | 19 | manifest handling |
@@ -617,21 +692,21 @@ The full table, generated from the same list the dashboard reads, is
 
 | State | Count | Tools |
 |---|---|---|
-| **Live** — usable on the map today | 8 | 1, 16, 18, 19, 25, 26, 27, 28 |
-| **Partly built** | 9 | 3, 4, 10, 14, 15, 20, 21, 24, 37 |
-| **Engine only** — written and tested, nothing calls it | 5 | 2, 5, 11, 13, 17 |
+| **Live** — usable on the map today | 10 | 1, 2, 5, 16, 18, 19, 25, 26, 27, 28 |
+| **Partly built** | 10 | 3, 4, 10, 13, 14, 15, 20, 21, 24, 37 |
+| **Engine only** — written and tested, nothing calls it | 2 | 11, 17 |
 | **Not built** | 5 | 7, 8, 9, 12, 40 |
 | **Blocked on data** | 1 | 6 |
 | **Never specified by Malhar** | 12 | 22, 23, 29–36, 38, 39 |
 
-Seventeen of the twenty-eight specified tools now do something on the map, up
-from thirteen. The alignment tool moved four at once — 16, 18, 19 to live and
-20, 21 to partial — which is what the previous edition of this table predicted it
-would.
+**Twenty of the twenty-eight specified tools now do something on the map**, up
+from thirteen at the start of the day and seventeen after the alignment tool.
 
-Of the five that remain engine-only, three (2 grid levels, 5 surface comparison,
-13 tolerance) need only wiring; 11 needs a second flight; 17 needs a
-geotechnical limit nobody has given us.
+The engine-only category is down to two, and neither is waiting on us. Tool 11
+needs a second flight of a site. Tool 17 needs a geotechnical limit: it finds
+steep ground, which is not the same as assessing stability, and stability
+depends on rock mass, jointing, water and blast damage — none of which are in a
+terrain model. Defaulting that limit would be inventing a safety threshold.
 
 Outside the numbering: **the LiDAR point cloud** is live on the map, and
 **Area** and **Inspect** — both specified in prose rather than as numbered
@@ -801,11 +876,7 @@ anyone asks to see the cloud at full density; not worth doing on spec.
 In order, and none of it blocked:
 
 1. ~~**Draw an alignment.**~~ Done, PR #50. It moved four tools as predicted.
-2. **Wire the three remaining engine-only tools**, which now need nothing but a
-   panel each: 2 grid spot levels (polygon plus a spacing, and the server
-   already writes CSV, DXF, TXT and LandXML), 5 surface comparison (DSM minus
-   DTM works on both sites today) and 13 tolerance analysis. Same shape of work
-   as the alignment tool and the same kind of return.
+2. ~~**Wire the three remaining engine-only tools.**~~ Done, PR #51.
 3. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
    the contradiction. Share links need signing, expiry, revocation, site scoping
    and an owner kill switch, and belong in `portal-security-test.mjs` before they

@@ -18,6 +18,7 @@ import {
   polygonStats,
   gridLevels,
   cutFill,
+  compareSurfaces,
   REFERENCE,
 } from "@/lib/geo/terrain-analysis.mjs";
 import {
@@ -169,6 +170,53 @@ export async function POST(
       return grid;
     };
 
+    /**
+     * The reference a measurement is taken against, read once for every op
+     * that needs one.
+       *
+     * Extracted when tools 5 and 13 arrived and needed exactly this contract.
+     * Two copies of it would be two places for "boundary" to stop meaning the
+     * same thing, and the whole point of stating a reference is that it means
+     * one thing.
+     */
+    const readReference = async (
+      grid: NonNullable<Awaited<ReturnType<typeof windowed>>>,
+      ring: Geometry,
+    ) => {
+      const spec = String(body.reference ?? "");
+      if (spec === "boundary") return REFERENCE.boundaryPlane(grid, ring);
+      if (spec.startsWith("plane:")) {
+        const at = Number(spec.slice(6));
+        if (!Number.isFinite(at)) {
+        throw new BadRequest(`"${spec}" does not name an elevation in metres.`);
+        }
+        return REFERENCE.plane(at);
+      }
+      if (spec === "dsm" || spec === "dtm") {
+        // The other surface, windowed to the same ground. Two rasters of the
+        // same site need not share an origin or a cell size, and they do not
+        // have to: `REFERENCE.surface` samples by world coordinate. Kotba's
+        // are 0.157 m and 0.241 m, so this is the ordinary case here.
+        const other = await openTerrain(siteSlug, spec);
+        const [minX, minY, maxX, maxY] = boundsOf(ring);
+        const otherGrid = await readTerrainWindow(other, [minX, minY, maxX, maxY]);
+        if (!otherGrid) {
+        throw new BadRequest(
+          `That area does not overlap this site's ${spec.toUpperCase()}, so there is ` +
+            "nothing to measure against.",
+        );
+        }
+        return REFERENCE.surface(otherGrid);
+      }
+      // Deliberately not defaulted. Measured against a flat plane, against the
+      // polygon's own rim and against a second surface are three different
+      // questions with three different answers, and the client has to choose.
+      throw new BadRequest(
+        'reference is required: "boundary", "plane:<elevation>", "dtm" or "dsm". ' +
+        "A measurement against an unstated reference is not a measurement.",
+      );
+    };
+
     let result: Record<string, unknown>;
 
     switch (op) {
@@ -216,37 +264,39 @@ export async function POST(
       case "stockpile": {
         const ring = project(readGeometry(body, "polygon", 3));
         const grid = await windowed(ring);
-        const spec = String(body.reference ?? "");
-        let reference;
-        if (spec === "boundary") reference = REFERENCE.boundaryPlane(grid, ring);
-        else if (spec.startsWith("plane:")) reference = REFERENCE.plane(Number(spec.slice(6)));
-        else if (spec === "dsm" || spec === "dtm") {
-          // The other surface, windowed to the same ground. Two rasters of the
-          // same site need not share an origin or a cell size, and they do not
-          // have to: `REFERENCE.surface` samples by world coordinate.
-          const other = await openTerrain(siteSlug, spec);
-          const [minX, minY, maxX, maxY] = boundsOf(ring);
-          const otherGrid = await readTerrainWindow(other, [minX, minY, maxX, maxY]);
-          if (!otherGrid) {
-            throw new BadRequest(
-              `That area does not overlap this site's ${spec.toUpperCase()}, so there is ` +
-                "nothing to measure against.",
-            );
-          }
-          reference = REFERENCE.surface(otherGrid);
-        } else {
-          // Deliberately not defaulted. Cut and fill against a flat plane, the
-          // polygon's own rim and a second surface are three different questions
-          // with three different answers, and the client has to choose.
-          throw new BadRequest(
-            'reference is required: "boundary", "plane:<elevation>", "dtm" or "dsm". ' +
-              "A volume against an unstated reference is not a measurement.",
-          );
-        }
+        const reference = await readReference(grid, ring);
         result =
           op === "stockpile"
             ? stockpileVolume(grid, ring, reference, { rmseZ })
             : cutFill(grid, ring, reference, { rmseZ });
+        break;
+      }
+
+      /**
+       * Tools 5 and 13: surface comparison, and tolerance analysis.
+       *
+       * One op, because they are one act — how far does this surface sit from
+       * that one, over this area — and a tolerance is a classification of the
+       * same numbers rather than a second measurement. Sending `tolerance` asks
+       * for the classification; omitting it asks only for the deviation.
+       */
+      case "compare": {
+        const ring = project(readGeometry(body, "polygon", 3));
+        const grid = await windowed(ring);
+        const reference = await readReference(grid, ring);
+        /*
+         * Absent is not zero. `Number(undefined)` is NaN and would be caught,
+         * but `Number("")` is 0 and finite, and a zero tolerance classifies
+         * every cell as out of tolerance while looking like a deliberate answer.
+         * That trap has cost this codebase three features already.
+         */
+        const raw = body.tolerance;
+        const tolerance =
+          raw === undefined || raw === null || String(raw).trim() === "" ? null : Number(raw);
+        if (tolerance !== null && !(tolerance > 0)) {
+          throw new BadRequest("tolerance must be a positive number of metres");
+        }
+        result = compareSurfaces(grid, ring, reference, { tolerance, rmseZ });
         break;
       }
 
@@ -362,7 +412,7 @@ export async function POST(
       default:
         throw new BadRequest(
           `Unknown op "${op}". One of: spot, profile, grid-levels, polygon-stats, volume, ` +
-            `stockpile, slope, chainage, cross-sections, corridor, bench.`,
+            `stockpile, compare, slope, chainage, cross-sections, corridor, bench.`,
         );
     }
 

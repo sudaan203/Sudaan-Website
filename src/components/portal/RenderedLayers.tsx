@@ -42,6 +42,14 @@ export type RenderedLayer = {
   /** Relief shading composited into the colour, for surfaces only. */
   relief: boolean;
   logarithmic: boolean;
+  /**
+   * True when the values carry a sign and zero means something.
+   *
+   * Such a layer must be drawn with a diverging ramp centred on zero, and the
+   * server refuses any other with a 400. So the ramp chooser is hidden rather
+   * than offering four buttons of which three produce an error.
+   */
+  signed?: boolean;
 };
 
 export function RenderedLayersPanel({
@@ -143,6 +151,12 @@ export function RenderedLayersPanel({
             ) : null}
           </div>
 
+          {current.signed ? (
+            <p className="text-[11px] leading-snug text-ink/55">
+              Drawn on a diverging ramp centred on zero, which is the only honest
+              colouring for a signed quantity: the midpoint has to mean no change.
+            </p>
+          ) : (
           <div className="flex flex-wrap items-center gap-1">
             <span className="text-[10px] uppercase tracking-wide text-ink/45">Ramp</span>
             {RAMP_NAMES.filter((n: string) => n !== "difference").map((name: string) => (
@@ -161,6 +175,7 @@ export function RenderedLayersPanel({
               </button>
             ))}
           </div>
+          )}
 
           <p className="text-[11px] leading-snug text-ink/55">
             Drawn from the source raster at the resolution you are viewing, not from a
@@ -181,12 +196,19 @@ export function RenderedLayersPanel({
  * the range it was stretched across.
  */
 function Colourbar({ layer, ramp }: { layer: RenderedLayer; ramp: string }) {
+  /*
+   * `signed` has to travel with the ramp, and forgetting it is not a cosmetic
+   * slip: `rampFor` refuses a diverging ramp for an unsigned quantity, so this
+   * threw for the difference layer and the error boundary took the whole map
+   * panel down with it. Found the first time the layer was switched on.
+   */
   const data = legend({
     ramp,
     min: layer.min,
     max: layer.max,
     unit: layer.unit,
     label: layer.title,
+    signed: Boolean(layer.signed),
   }) as {
     swatches: { t: number; colour: string; value: number }[];
     ticks: number[];
