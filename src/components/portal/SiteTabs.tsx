@@ -15,20 +15,23 @@ export default function SiteTabs({ tabs }: { tabs: Tab[] }) {
 
   return (
     /**
-     * On a phone this is a horizontally scrolling row, and there was nothing to
-     * say so: the last tab sat flush against the edge looking like the end of the
-     * list rather than the start of an overflow. The mask fades the right edge, so
-     * a cut off tab reads as "there is more this way".
+     * A horizontal segmented bar, sitting beside the site name.
      *
-     * Implemented as a mask rather than a gradient overlay because the row scrolls
-     * under it; an opaque overlay would need to match the page background, and this
-     * page has two of them.
+     * It was a 224px left column, which cost every page a fifth of its width and
+     * pushed the map — the product — sideways as well as down. Horizontal costs
+     * one row of height and nothing else.
+     *
+     * On a phone it scrolls, and the mask says so: without it the last tab sat
+     * flush to the edge looking like the end of the list rather than the start of
+     * an overflow. A mask rather than a gradient overlay because the row scrolls
+     * under it, and an opaque overlay would have to match a background this page
+     * has two of.
      */
     <nav
       aria-label="Site sections"
-      className="-mx-6 shrink-0 overflow-x-auto px-6 pb-2 [mask-image:linear-gradient(to_right,transparent_0,black_1.5rem,black_calc(100%-2.5rem),transparent_100%)] lg:mx-0 lg:w-56 lg:overflow-visible lg:px-0 lg:pb-0 lg:[mask-image:none]"
+      className="-mx-6 max-w-full shrink-0 overflow-x-auto px-6 pb-1 [mask-image:linear-gradient(to_right,transparent_0,black_1.5rem,black_calc(100%-2.5rem),transparent_100%)] sm:mx-0 sm:overflow-visible sm:px-0 sm:[mask-image:none]"
     >
-      <ul className="flex gap-2 lg:flex-col lg:gap-1">
+      <ul className="flex items-center gap-1 rounded-full bg-ink/[0.05] p-1">
         {tabs.map((tab) => {
           const active =
             pathname === tab.href ||
@@ -39,21 +42,19 @@ export default function SiteTabs({ tabs }: { tabs: Tab[] }) {
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
                 className={[
-                  "flex items-center justify-between gap-3 whitespace-nowrap rounded-xl px-4 py-2.5 text-sm font-medium transition-colors",
+                  "flex items-center gap-2 whitespace-nowrap rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-all duration-200",
                   active
-                    ? "bg-accent-600 text-white shadow-glow"
-                    : "border border-ink/10 bg-panel text-ink/80 hover:border-accent/40 hover:text-accent-700 lg:border-transparent lg:bg-transparent",
+                    ? "bg-panel text-ink-900 shadow-sm ring-1 ring-ink/[0.06]"
+                    : "text-ink/60 hover:text-ink-900",
                 ].join(" ")}
               >
-                <span className="flex items-center gap-2">
-                  <LinkSpinner className="h-3.5 w-3.5" />
-                  {tab.label}
-                </span>
+                <LinkSpinner className="h-3.5 w-3.5" />
+                {tab.label}
                 {tab.count !== null ? (
                   <span
                     className={[
-                      "rounded-full px-1.5 text-[11px] font-semibold",
-                      active ? "bg-white/20 text-white" : "bg-paper text-ink/50",
+                      "text-[11px] font-medium tabular-nums",
+                      active ? "text-ink/40" : "text-ink/35",
                     ].join(" ")}
                   >
                     {tab.count}

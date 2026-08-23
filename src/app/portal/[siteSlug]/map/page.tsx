@@ -41,19 +41,18 @@ export default async function SiteMapPage({
     );
   }
 
+  /*
+   * No heading and no paragraph above the map any more.
+   *
+   * They cost 90px of a screen whose entire purpose is the canvas below them, and
+   * they described controls that are visible three inches away. What was worth
+   * keeping — that these are real layers drawn over each other, and that a
+   * contour gives up its height — now lives inside the map as a hint that
+   * dismisses itself once a tool is used.
+   */
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-ink-900">Survey map</h2>
-        <p className="mt-1 text-sm text-ink/70">
-          Every georeferenced layer we produced for this site, drawn over each
-          other. Toggle a layer, fade it with its slider, and hover a contour to
-          read its height.
-        </p>
-      </div>
-
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       <MapViewer siteSlug={site.slug} siteName={site.name} layers={manifest.layers} />
-
       <ViewOnlyNote />
     </div>
   );

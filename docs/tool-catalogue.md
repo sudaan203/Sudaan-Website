@@ -15,10 +15,10 @@ disabled with a line saying what they are waiting on.
 
 | | Tools |
 |---|---|
-| **Live** | 10 — 1, 2, 5, 16, 18, 19, 25, 26, 27, 28 |
+| **Live** | 11 — 1, 2, 5, 16, 18, 19, 25, 26, 27, 28, 40 |
 | **Partly built** | 10 — 3, 4, 10, 13, 14, 15, 20, 21, 24, 37 |
 | **Engine only** | 2 — 11, 17 |
-| **Not built** | 5 — 7, 8, 9, 12, 40 |
+| **Not built** | 4 — 7, 8, 9, 12 |
 | **Blocked** | 1 — 6 |
 | **Never specified** | 12 — 22, 23, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39 |
 
@@ -46,7 +46,7 @@ we hold, whatever we do, and says why.
 | 9 | **Share View** | Not built | Needs a decision first: a URL that reproduces a client's site view is a URL that shows their data to whoever holds it. Either it stays inside the session, or it is a signed, expiring link. |
 | 10 | **Export Centre** | Partly built | Grid levels export as CSV, TXT, DXF (with a .prj sidecar) and LandXML from the map. Spot levels export as CSV. There is no single download centre, and no PDF, ortho, raster or point cloud export. |
 | 37 | **CAD Export** | Partly built | DXF, LandXML, CSV and TXT are written from the map, each stating its projection. SHP and LAS/LAZ are not written at all; GeoJSON exists only for hydrology vectors. Overlaps tool 10. |
-| 40 | **Dashboard Summary** | Not built | Every number on that list except stockpile count and cut/fill volume is already computable from the manifest and the raster statistics. It is a panel, not an engine. |
+| 40 | **Dashboard Summary** | Live | On the site overview, with every figure naming where it came from. Stockpile count and cut/fill volume have no site-wide answer — both depend on an area you draw — so they name the tool that measures them rather than showing a number. |
 
 > **1. Spot Level** — Displays X, Y and Z when the user clicks anywhere on the DTM/DSM, with options to copy coordinates or export the selected points as CSV.
 >

@@ -856,7 +856,24 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         // label clutter the reference dashboard has at low zoom.
         style: { version: 8, sources: {}, layers: [] },
         bounds,
-        fitBoundsOptions: { padding: 24 },
+        /*
+         * Padded for the inspector, which floats over the right of the map.
+         *
+         * With even padding the survey was fitted to the full canvas and then
+         * had a 19rem panel laid over its right-hand third, so it sat visibly
+         * off-centre with dead grey to its left. Fitting to the space actually
+         * visible is the difference between a map that looks placed and one that
+         * looks like it missed.
+         *
+         * Only on wide viewports, because the panel drops below the map under
+         * the `lg` breakpoint and the space is the client's again.
+         */
+        fitBoundsOptions: {
+          padding:
+            window.innerWidth >= 1024
+              ? { top: 28, bottom: 28, left: 28, right: 328 }
+              : 24,
+        },
         attributionControl: false,
         // Respect the same preference the rest of the site does.
         ...(window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -1976,9 +1993,27 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       .filter((c): c is { level: number; at: [number, number] } => c !== null)
       .sort((a, b) => priority(a.level) - priority(b.level) || a.level - b.level);
 
+    /*
+     * Labels are also spaced apart on screen, not only one per level.
+     *
+     * One per level already stops the same number appearing forty times, but on
+     * steep ground forty *different* levels crowd into a hand's width and the
+     * map reads as a pile of numbers. Rejecting any label within 44 screen
+     * pixels of one already placed thins the dense side without touching the
+     * open ground, which is where a reader actually wants them.
+     */
+    const taken: { x: number; y: number }[] = [];
+    const CLEARANCE = 44;
+
     for (const candidate of candidates) {
       if (placed >= MAX) break;
       if (seen.has(candidate.level)) continue;
+
+      const at = instance.project(candidate.at);
+      if (taken.some((p) => Math.abs(p.x - at.x) < CLEARANCE && Math.abs(p.y - at.y) < CLEARANCE)) {
+        continue;
+      }
+      taken.push({ x: at.x, y: at.y });
       seen.add(candidate.level);
 
       const element = document.createElement("span");
@@ -2141,6 +2176,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    */
   const [group, setGroup] = useState<ToolGroupKey>("universal");
 
+  /**
+   * Which of the three inspector segments is showing.
+   *
+   * It follows the tool you pressed rather than waiting to be told: pressing a
+   * measure tool and then hunting for the panel that reports its answer is a
+   * click nobody should have to make, and the panel appearing where you are
+   * already looking is most of what makes an interface feel like it is paying
+   * attention.
+   */
+  const [inspector, setInspector] = useState<"tool" | "layers" | "water">("layers");
+
   /** The keys of the layers this survey can actually render, for the rail. */
   const renderableKeys = useMemo(() => renderable.map((l) => l.key), [renderable]);
 
@@ -2208,6 +2254,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
       switch (action.kind) {
         case "measure":
+          setInspector("tool");
           setHydroMode("off");
           /*
            * The op belongs to whichever mode it names. Volume's two tools and
@@ -2228,15 +2275,18 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           setMode(action.mode);
           break;
         case "hydrology":
+          setInspector("water");
           setMode("off");
           setHydroMode(action.mode);
           break;
         case "sinks":
+          setInspector("water");
           setMode("off");
           setHydroMode("off");
           void findSinks();
           break;
         case "layer":
+          setInspector("layers");
           // A drawn layer is not a mode: it does not take the click, so it does
           // not turn a measurement off. It is here so the rail can offer tools
           // 14 and 25, which are layers rather than actions.
@@ -2321,62 +2371,53 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         discipline, and a client who opens a mining survey should not have to
         read past the road tools to find stockpile volume.
       */}
+      {/*
+        The tool rail: Malhar's five documents as five groups, one visible at a
+        time, with the surface switch and relief toggle folded into the same band
+        rather than given a row of their own.
+      */}
       <ToolRail
         group={group}
         setGroup={setGroup}
         active={railAction}
         onAction={runAction}
         measurable={measurable}
+        probing={probe.state === "checking"}
         unavailable={probe.state === "unavailable" ? probe.message : undefined}
         hasHydrology={Boolean(hydro)}
         renderable={renderableKeys}
-      />
-
-      <div className="flex flex-wrap items-center gap-2 border-b border-ink/[0.08] px-4 py-2">
-        {/*
-          Say why the tools are off, in the toolbar, rather than only in a title
-          attribute nobody hovers. "Not published yet" is a different fact from
-          "too large to measure", and the API distinguishes them.
-        */}
-        {probe.state === "unavailable" ? (
-          <span className="text-[11px] text-ink/55">{probe.message}</span>
-        ) : probe.state === "checking" ? (
-          <span className="text-[11px] text-ink/45">Checking the elevation model…</span>
-        ) : mode === "spot" ? (
-          <span className="text-[11px] text-ink/55">Click anywhere to take a level.</span>
-        ) : mode !== "off" ? (
-          <span className="text-[11px] text-ink/55">
-            Click to add points, double click to finish.
-          </span>
-        ) : hydroMode !== "off" ? (
-          <span className="text-[11px] text-ink/55">
-            {hydroMode === "flood"
+        hint={
+          probe.state === "unavailable" ? (
+            <span className="text-signal-600">{probe.message}</span>
+          ) : probe.state === "checking" ? (
+            "Checking the elevation model…"
+          ) : mode === "spot" ? (
+            "Click anywhere to take a level."
+          ) : mode !== "off" ? (
+            "Click to add points, double click to finish."
+          ) : hydroMode !== "off" ? (
+            hydroMode === "flood"
               ? "Set a water level, then click where the water would stand."
               : hydroMode === "watershed"
-                ? "Click a point on a channel to trace everything draining through it."
-                : "Click anywhere to read the hydrology under that point."}
-          </span>
-        ) : (
-          <span className="text-[11px] text-ink/45">
-            Pick a tool above, or turn on a layer on the right.
-          </span>
-        )}
-
+                ? "Click a channel to trace everything draining through it."
+                : "Click anywhere to read the hydrology under that point."
+          ) : null
+        }
+      >
         {hasTerrain ? (
-          <div className="ml-auto flex flex-wrap items-center gap-3">
+          <>
             {/*
-              Which model the numbers come from. Not buried in the layer tree:
-              the layer tree controls what is *drawn*, and this controls what is
-              *measured*, which are different questions that happen to name the
-              same two files.
+              Which model the numbers come from. Not in the layer tree: that
+              controls what is *drawn*, and this controls what is *measured*,
+              which are different questions that happen to name the same two
+              files.
             */}
             {hasBothSurfaces ? (
               <div
-                className="flex items-center gap-1"
+                className="flex items-center gap-0.5 rounded-full bg-ink/[0.045] p-0.5"
                 role="group"
                 aria-label="Surface the tools measure"
               >
-                <span className="text-[11px] text-ink/50">Measure on</span>
                 {(
                   [
                     ["dtm", "Terrain"],
@@ -2388,10 +2429,10 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                     type="button"
                     aria-pressed={surface === value}
                     onClick={() => setSurface(value)}
-                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition ${
+                    className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-all duration-200 ${
                       surface === value
-                        ? "bg-ink-900 text-white"
-                        : "border border-ink/15 text-ink/70 hover:border-accent-600"
+                        ? "bg-panel text-ink-900 shadow-sm"
+                        : "text-ink/55 hover:text-ink-900"
                     }`}
                   >
                     {label}
@@ -2399,18 +2440,18 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 ))}
               </div>
             ) : null}
-            <label className="flex min-h-6 cursor-pointer items-center gap-2 py-0.5 text-xs text-ink/70">
+            <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink/60">
               <input
                 type="checkbox"
                 checked={hillshade}
                 onChange={(e) => setHillshade(e.target.checked)}
-                className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
+                className="h-3.5 w-3.5 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
               />
-              Relief shading
+              Relief
             </label>
-          </div>
+          </>
         ) : null}
-      </div>
+      </ToolRail>
 
       <div className="relative">
         <div
@@ -2418,19 +2459,16 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           role="application"
           aria-label={`Survey map of ${siteName}`}
           /**
-           * Sized to what is left of the viewport, not to a flat 68vh.
-           * At 68vh on a 900px laptop the map ran past the fold, so the bottom of
-           * the layer tree and the basemap toggle were only reachable by scrolling
-           * the page, which is the one thing you do not want to do while panning a
-           * map. clamp keeps it usable on a short window and stops it becoming
-           * absurd on a tall one.
+           * Sized to what is left of the viewport rather than to a fixed height.
            *
-           * 26rem is measured, not guessed: the page chrome above the canvas is
-           * 389px (header, back link, title, section heading, toolbar), so
-           * 100vh-20rem left the card 70px past the fold at every viewport height
-           * tested. 26rem leaves it about 25px of clearance.
+           * The chrome above it is now a single band — back link, site name and
+           * the section nav on one line — instead of the three stacked blocks
+           * that used to push the canvas 590px down a 1000px screen. 15rem is
+           * measured against that band plus the tool rail and the view-only note
+           * below; the clamp keeps it usable on a short window and stops it
+           * becoming absurd on a tall one.
            */
-          className="h-[clamp(360px,calc(100vh-26rem),760px)] w-full bg-mist"
+          className="h-[clamp(420px,calc(100vh-15rem),1100px)] w-full bg-mist"
         />
 
         {!ready ? (
@@ -2439,57 +2477,145 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           </div>
         ) : null}
 
-        {/* Layer tree. A panel on desktop, and it collapses under the map on
-            small screens rather than covering it. */}
-        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-72 p-3 lg:block">
-          <div className="pointer-events-auto max-h-full overflow-y-auto rounded-xl border border-ink/10 bg-panel/95 p-4 shadow-card backdrop-blur">
-            <ToolPanel
-              mode={mode}
-              measurement={measurement}
-              elevation={elevation}
-              surface={surface}
-              spots={spots}
-              spotBusy={spotBusy}
-              spotError={spotError}
-              volume={volume}
-              volumeOp={volumeOp}
-              alignment={alignment}
-              alignmentControls={alignmentControls}
-              setAlignmentControls={setAlignmentControls}
-              onComputeAlignment={() => void computeAlignment()}
-              gridLevels={gridLevels}
-              gridSpacing={gridSpacing}
-              setGridSpacing={setGridSpacing}
-              onComputeGridLevels={() => void computeGridLevels()}
-              compare={compare}
-              compareOp={compareOp}
-              onComputeCompare={(r, t) => void computeCompare(r, t)}
-              tolerance={tolerance}
-              onClear={clearMeasurement}
-              onComputeVolume={computeVolume}
-              onRemoveSpot={(id) => setSpots((s) => s.filter((r) => r.id !== id))}
-              onClearSpots={() => {
-                setSpots([]);
-                setSpotError(null);
-              }}
-            />
-            {renderable.length > 0 ? (
-              <div className="mb-4 border-b border-ink/[0.08] pb-4">
-                <RenderedLayersPanel
-                  layers={renderable}
-                  active={activeRender}
-                  setActive={setActiveRender}
-                  opacity={renderOpacity}
-                  setOpacity={setRenderOpacity}
-                  exaggeration={renderExaggeration}
-                  setExaggeration={setRenderExaggeration}
-                  ramp={renderRamp}
-                  setRamp={setRenderRamp}
-                />
-              </div>
-            ) : null}
-            {hydro ? (
-              <div className="mb-4 border-b border-ink/[0.08] pb-4">
+        {/*
+          The inspector: one panel, segmented, instead of six stacked.
+          
+          It used to render the tool panel, the point cloud, the contours, the
+          rendered layers, the hydrology and the layer tree one under another in
+          a 288px column, which overflowed the map on every survey that had all
+          of them and put the layer tree — the thing a client reaches for first —
+          below three screens of scrolling.
+          
+          Three segments, because there are three kinds of question: what is this
+          tool telling me, what is drawn, and what is the water doing. Each fits
+          without scrolling on a normal screen, and the segment follows the tool
+          you pressed so it is almost never a click you have to make.
+        */}
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[19rem] p-3 lg:block">
+          <div className="pointer-events-auto flex max-h-full flex-col overflow-hidden rounded-2xl border border-ink/[0.08] bg-panel/92 shadow-card backdrop-blur-md">
+            <div className="flex shrink-0 items-center gap-0.5 border-b border-ink/[0.07] p-1.5">
+              {(
+                [
+                  ["tool", "Tool"],
+                  ["layers", "Layers"],
+                  ...(hydro ? ([["water", "Water"]] as const) : []),
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={inspector === key}
+                  onClick={() => setInspector(key)}
+                  className={`flex-1 rounded-lg px-2 py-1.5 text-[12px] font-medium transition-all duration-200 ${
+                    inspector === key
+                      ? "bg-ink/[0.06] text-ink-900"
+                      : "text-ink/50 hover:text-ink-900"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {inspector === "tool" ? (
+                <>
+                  <ToolPanel
+                    mode={mode}
+                    measurement={measurement}
+                    elevation={elevation}
+                    surface={surface}
+                    spots={spots}
+                    spotBusy={spotBusy}
+                    spotError={spotError}
+                    volume={volume}
+                    volumeOp={volumeOp}
+                    alignment={alignment}
+                    alignmentControls={alignmentControls}
+                    setAlignmentControls={setAlignmentControls}
+                    onComputeAlignment={() => void computeAlignment()}
+                    gridLevels={gridLevels}
+                    gridSpacing={gridSpacing}
+                    setGridSpacing={setGridSpacing}
+                    onComputeGridLevels={() => void computeGridLevels()}
+                    compare={compare}
+                    compareOp={compareOp}
+                    onComputeCompare={(r, t) => void computeCompare(r, t)}
+                    tolerance={tolerance}
+                    onClear={clearMeasurement}
+                    onComputeVolume={computeVolume}
+                    onRemoveSpot={(id) => setSpots((s) => s.filter((r) => r.id !== id))}
+                    onClearSpots={() => {
+                      setSpots([]);
+                      setSpotError(null);
+                    }}
+                  />
+                  {mode === "off" ? (
+                    <p className="text-[12px] leading-relaxed text-ink/50">
+                      Pick a tool above and the map will tell you what it
+                      measures. Every number comes from the survey&apos;s own
+                      raster, in its own projection — never from the picture on
+                      screen.
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+
+              {inspector === "layers" ? (
+                <>
+                  {renderable.length > 0 ? (
+                    <div className="mb-4 border-b border-ink/[0.07] pb-4">
+                      <RenderedLayersPanel
+                        layers={renderable}
+                        active={activeRender}
+                        setActive={setActiveRender}
+                        opacity={renderOpacity}
+                        setOpacity={setRenderOpacity}
+                        exaggeration={renderExaggeration}
+                        setExaggeration={setRenderExaggeration}
+                        ramp={renderRamp}
+                        setRamp={setRenderRamp}
+                      />
+                    </div>
+                  ) : null}
+                  {cloud ? (
+                    <div className="mb-4 border-b border-ink/[0.07] pb-4">
+                      <PointCloudPanel
+                        manifest={cloud}
+                        controls={cloudControls}
+                        setControls={setCloudControls}
+                        stats={cloudStats}
+                      />
+                    </div>
+                  ) : null}
+                  {contours ? (
+                    <div className="mb-4 border-b border-ink/[0.07] pb-4">
+                      <ContourPanel
+                        contours={contours}
+                        controls={contourControls}
+                        setControls={setContourControls}
+                        visible={visible[contours.key] ?? false}
+                        setVisible={(on) => setVisible((v) => ({ ...v, [contours.key]: on }))}
+                        labelCount={labelCount}
+                      />
+                    </div>
+                  ) : null}
+                  <LayerTree
+                    groups={GROUPS}
+                    layers={layers}
+                    visible={visible}
+                    opacity={opacity}
+                    setVisible={setVisible}
+                    setOpacity={setOpacity}
+                    basemap={basemap}
+                    setBasemap={setBasemap}
+                    hillshade={hillshade}
+                    setHillshade={setHillshade}
+                  />
+                </>
+              ) : null}
+
+              {inspector === "water" && hydro ? (
                 <HydrologyPanel
                   state={hydro}
                   mode={hydroMode}
@@ -2510,44 +2636,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   error={hydroError}
                   onClear={clearHydrology}
                 />
-              </div>
-            ) : null}
-            {cloud ? (
-              <div className="mb-4 border-b border-ink/[0.08] pb-4">
-                <PointCloudPanel
-                  manifest={cloud}
-                  controls={cloudControls}
-                  setControls={setCloudControls}
-                  stats={cloudStats}
-                />
-              </div>
-            ) : null}
-            {contours ? (
-              <div className="mb-4 border-b border-ink/[0.08] pb-4">
-                <ContourPanel
-                  contours={contours}
-                  controls={contourControls}
-                  setControls={setContourControls}
-                  visible={visible[contours.key] ?? false}
-                  setVisible={(on) =>
-                    setVisible((v) => ({ ...v, [contours.key]: on }))
-                  }
-                  labelCount={labelCount}
-                />
-              </div>
-            ) : null}
-            <LayerTree
-              groups={GROUPS}
-              layers={layers}
-              visible={visible}
-              opacity={opacity}
-              setVisible={setVisible}
-              setOpacity={setOpacity}
-              basemap={basemap}
-              setBasemap={setBasemap}
-              hillshade={hillshade}
-              setHillshade={setHillshade}
-            />
+              ) : null}
+            </div>
           </div>
         </div>
 

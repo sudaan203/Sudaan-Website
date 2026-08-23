@@ -85,13 +85,19 @@ async function openGroup(name) {
   return ok;
 }
 
-/** Every tool button in the rail: accessible name, whether it is enabled, why not. */
+/**
+ * The tools on offer for the chosen group.
+ *
+ * Read from the named toolbar rather than from "every button near the tabs".
+ * The rail's markup changed in the design pass and a structural selector broke
+ * with it; the role and the label are the contract.
+ */
 const railTools = () =>
   page.evaluate(() => {
-    const rail = document.querySelector('[role="tablist"]')?.parentElement;
+    const rail = document.querySelector('[role="toolbar"][aria-label="Tools"]');
     if (!rail) return [];
     return [...rail.querySelectorAll("button")]
-      .filter((b) => b.getAttribute("role") !== "tab")
+      .filter((b) => !/not yet$/.test(b.textContent.trim()))
       .map((b) => ({
         name: b.getAttribute("aria-label") ?? b.textContent.trim(),
         number: b.textContent.trim().match(/^\d+/)?.[0] ?? null,
@@ -101,18 +107,50 @@ const railTools = () =>
       }));
   });
 
+/**
+ * The tools that are specified but not reachable, with their reasons.
+ *
+ * They used to be rendered inline, greyed out. Eight disabled buttons above a
+ * map is not transparency, so they now collapse behind one count that opens a
+ * list — the same information, a hundredth of the space. This opens it.
+ */
+const pendingTools = async () => {
+  const opened = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('[role="toolbar"] button')].find((e) =>
+      /not yet$/.test(e.textContent.trim()),
+    );
+    if (!b) return false;
+    b.click();
+    return true;
+  });
+  if (!opened) return [];
+  await settle(300);
+  const list = await page.evaluate(() =>
+    [...document.querySelectorAll('[role="group"][aria-label="Not yet available"] li')].map(
+      (li) => ({
+        name: li.querySelector("p")?.textContent.replace(/^\d+\s*/, "").trim() ?? "",
+        reason: li.querySelectorAll("p")[1]?.textContent.trim() ?? "",
+      }),
+    ),
+  );
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.evaluate(() => document.body.click());
+  await settle(200);
+  return list;
+};
+
 console.log("\nEvery group in the specification is reachable");
 {
   const t = await tabs();
-  for (const [name, range] of [
-    ["Universal", "1–10, 37, 40"],
-    ["Hydrology", "24–28"],
-    ["Contractor", "11–14"],
-    ["Mining", "15–18"],
-    ["Roads", "19–21"],
-  ]) {
+  /*
+   * The tab no longer prints its number range. It was accurate and it was noise:
+   * five tabs each carrying "1-10, 37, 40" is a lot of small grey text above a
+   * map, and every tool still shows its own number on its own button. The
+   * ranges live in docs/tool-catalogue.md, which is where someone reconciling
+   * against Malhar's documents is reading anyway.
+   */
+  for (const name of ["Universal", "Hydrology", "Contractor", "Mining", "Roads"]) {
     check(`${name} is offered`, t.some((x) => x.startsWith(name)), t.join(" | "));
-    check(`  and carries its numbers ${range}`, t.some((x) => x.includes(range)));
   }
 }
 
@@ -122,42 +160,41 @@ console.log("\nUniversal: the tools that work, and the ones that do not, both sh
   const tools = await railTools();
   const by = (n) => tools.find((x) => x.name === n);
 
+  const pending = await pendingTools();
+
   /*
    * Twelve, not ten: 37 (CAD export) and 40 (dashboard summary) come from the
    * master prompt rather than from a numbered document, and both are universal
-   * in nature. The group's own label has to admit that, which is the check
-   * above.
+   * in nature. They are split across two places now — what works is on the
+   * toolbar, what does not is behind the count — so the group is complete only
+   * when the two are added together. That the sum is right is the check.
    */
-  check("all twelve universal tools are listed", tools.filter((x) => x.number).length === 12,
-    `${tools.filter((x) => x.number).length} numbered`);
-  check("in ascending order, gaps included",
-    tools.filter((x) => x.number).map((x) => Number(x.number)).join(",") ===
-      "1,2,3,4,5,6,7,8,9,10,37,40");
+  check("every universal tool is accounted for, on the bar or behind the count",
+    tools.filter((x) => x.number).length + pending.length === 12,
+    `${tools.filter((x) => x.number).length} usable + ${pending.length} pending`);
 
-  for (const name of ["Spot Level", "Cross Section", "Cut & Fill", "Area"]) {
-    check(`${name} is usable`, by(name) && !by(name).disabled, by(name)?.reason ?? "missing");
+  for (const name of ["Spot Level", "Grid Spot Levels", "Cross Section", "Cut & Fill", "Area"]) {
+    check(`${name} is on the bar`, Boolean(by(name)) && !by(name).disabled,
+      by(name)?.reason ?? "missing");
   }
 
   /*
-   * Grid spot levels moved from this list to the one above, and the assertion
-   * moved with it rather than being deleted. A tool going live is exactly as
-   * worth guarding as a tool being honestly disabled.
+   * The honest half. Nothing is hidden by collapsing the unreachable tools: each
+   * is still named, and still says what it is waiting on. That is the whole
+   * defence of the change, so it is what is asserted.
    */
-  check("Grid Spot Levels is usable", by("Grid Spot Levels") && !by("Grid Spot Levels").disabled,
-    by("Grid Spot Levels")?.reason ?? "missing");
-
-  // The honest half. A tool nobody can reach must say why, on the button.
   for (const name of ["Timeline Comparison", "Export Centre"]) {
-    const tool = by(name);
-    check(`${name} is offered but disabled`, Boolean(tool) && tool.disabled);
-    check(`  with a reason a client can read`, Boolean(tool?.reason?.length > 20),
+    const tool = pending.find((p) => p.name === name);
+    check(`${name} is listed as not yet available`, Boolean(tool),
+      pending.map((p) => p.name).join(", "));
+    check(`  with a reason a client can read`, (tool?.reason?.length ?? 0) > 20,
       tool?.reason ?? "");
   }
 
-  const blockedReason = by("Timeline Comparison")?.reason ?? "";
+  const blocked = pending.find((p) => p.name === "Timeline Comparison")?.reason ?? "";
   check("a blocked tool names what it is waiting on, not our file layout",
-    /flown twice|repeat flight/i.test(blockedReason) && !/portal-data|\.tif|src\//.test(blockedReason),
-    blockedReason);
+    /flown twice|repeat flight/i.test(blocked) && !/portal-data|\.tif|src\//.test(blocked),
+    blocked);
 }
 
 console.log("\nHydrology: the group that is actually finished");
@@ -165,14 +202,17 @@ console.log("\nHydrology: the group that is actually finished");
   await openGroup("Hydrology");
   const tools = await railTools();
   const by = (n) => tools.find((x) => x.name === n);
-  check("tools 24 to 28 are listed",
-    tools.filter((x) => x.number).map((x) => Number(x.number)).join(",") === "24,25,26,27,28");
+  const hydroPending = await pendingTools();
+  check("all five hydrology tools are accounted for",
+    tools.filter((x) => x.number).length + hydroPending.length === 5,
+    `${tools.filter((x) => x.number).length} usable + ${hydroPending.length} pending`);
   for (const name of ["Flow Accumulation", "Watershed Delineation", "Sink Detection", "Flood Simulation"]) {
     check(`${name} is usable`, by(name) && !by(name).disabled, by(name)?.reason ?? "missing");
   }
   check("Inspect is offered alongside them", tools.some((x) => x.name === "Inspect" && !x.disabled));
+  const flowDirection = hydroPending.find((p) => p.name === "Flow Direction");
   check("Flow Direction says it is drawn as a grid rather than as arrows",
-    /arrows/i.test(by("Flow Direction")?.reason ?? ""), by("Flow Direction")?.reason ?? "");
+    /arrows/i.test(flowDirection?.reason ?? ""), flowDirection?.reason ?? "");
 }
 
 console.log("\nRoads: all three are now reachable");
@@ -198,10 +238,9 @@ console.log("\nRoads: all three are now reachable");
 console.log("\nContractor: still honest about what is missing");
 {
   await openGroup("Contractor");
-  const tools = await railTools();
-  const pending = tools.filter((x) => x.number && x.disabled);
-  check("the tools that are not on the map are still offered and disabled",
-    pending.length > 0, `${pending.length} of ${tools.filter((x) => x.number).length}`);
+  const pending = await pendingTools();
+  check("the tools that are not on the map are still named",
+    pending.length > 0, `${pending.length} pending`);
   check("each with a reason a client can read",
     pending.every((x) => (x.reason ?? "").length > 20),
     pending.map((x) => `${x.name}: ${x.reason}`)[0] ?? "");
