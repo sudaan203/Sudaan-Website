@@ -77,30 +77,48 @@ console.log("\nThe map itself is unaffected: it reads tiles, not rasters");
 check("the map canvas still exists", (await page.$("canvas.maplibregl-canvas")) !== null);
 const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
 check("the layer tree still renders", /BASE MAP/i.test(text));
-check("relief shading is still offered", /Relief shading/i.test(text));
+check("relief shading is still offered", /\bRelief\b/i.test(text));
 check("layer opacity is still offered", /OPACITY/i.test(text));
 
 console.log("\nThe measure tools are off, and say why");
-const toolState = await page.evaluate(() =>
-  // By accessible name: the rail prints Malhar's tool number beside each name,
-  // so the button text is "1Spot Level", and the number is aria-hidden.
-  ["Spot Level", "Cross Section", "Area", "Cut & Fill"].map((label) => {
-    const b = [...document.querySelectorAll("button")].find(
-      (e) => (e.getAttribute("aria-label") ?? e.textContent.trim()) === label,
-    );
-    return { label, present: Boolean(b), disabled: b ? b.disabled : null, title: b?.title ?? "" };
-  }),
-);
-for (const t of toolState) {
-  check(`${t.label} is present but disabled`, t.present && t.disabled === true, `disabled=${t.disabled}`);
+/*
+ * They are no longer rendered as a row of greyed-out buttons. Eight disabled
+ * controls above a map is not transparency, so a tool that cannot be reached
+ * collapses into a single count that opens a list naming each one and what it is
+ * waiting on. The information is identical; the space is not.
+ *
+ * What this suite guards is unchanged: the client is told, the reason is
+ * readable, no server path leaks, and nothing pretends to work.
+ */
+const pendingList = await page.evaluate(async () => {
+  const trigger = [...document.querySelectorAll('[role="toolbar"] button')].find((b) =>
+    /not yet$/.test(b.textContent.trim()),
+  );
+  if (!trigger) return null;
+  trigger.click();
+  await new Promise((r) => setTimeout(r, 250));
+  return [...document.querySelectorAll('[role="group"][aria-label="Not yet available"] li')].map(
+    (li) => ({
+      name: li.querySelector("p")?.textContent.replace(/^\d+\s*/, "").trim() ?? "",
+      reason: li.querySelectorAll("p")[1]?.textContent.trim() ?? "",
+    }),
+  );
+});
+
+check("the tools that cannot run are collected behind one count",
+  Array.isArray(pendingList) && pendingList.length > 0,
+  pendingList ? `${pendingList.length} listed` : "no count offered");
+
+for (const label of ["Spot Level", "Cross Section", "Cut & Fill"]) {
+  const entry = pendingList?.find((p) => p.name === label);
+  check(`${label} is named as unavailable`, Boolean(entry),
+    pendingList?.map((p) => p.name).join(", ") ?? "");
+  check(`  with the reason a client can act on`,
+    /Measurements are not available/i.test(entry?.reason ?? ""), entry?.reason ?? "");
 }
+
 check(
-  "each disabled tool carries the reason as a tooltip",
-  toolState.every((t) => t.title && t.title.length > 0),
-  toolState[0]?.title ?? "",
-);
-check(
-  "and the reason is stated in the toolbar, not only on hover",
+  "and the reason is stated in the toolbar too, not only in the list",
   /Measurements are not available for this survey/i.test(text),
   text.match(/Measurements are not available[^.]*\./)?.[0] ?? "not found",
 );
@@ -112,7 +130,7 @@ check("it does not claim to still be checking", !/Checking the elevation model/i
  * the wrong one for a client, who cannot act on it and should not be shown the
  * server's directory layout. It must not survive as far as the page.
  */
-const leaked = [text, ...toolState.map((t) => t.title)].join(" ");
+const leaked = [text, ...(pendingList ?? []).map((p) => p.reason)].join(" ");
 check(
   "no server path leaks into the page",
   !/portal-data|\.tif\b|process\.cwd|PORTAL_TERRAIN_DIR/i.test(leaked),
@@ -126,7 +144,7 @@ check(
 console.log("\nClicking a disabled tool does nothing at all");
 {
   const before = await page.evaluate(() => document.body.innerText.length);
-  for (const label of ["Spot Level", "Cut & Fill"]) {
+  for (const label of ["Grid Spot Levels", "Cut & Fill"]) {
     const handle = (await page.$$("button")).find;
     void handle;
     for (const h of await page.$$("button")) {

@@ -313,6 +313,17 @@ console.log("\nTool 13: tolerance");
 
 console.log("\nThe difference layer is offered, and cannot be miscoloured");
 {
+  /*
+   * The inspector is segmented now — Tool, Layers, Water — instead of stacking
+   * all six panels in a column that overflowed the map. The rendered layers live
+   * under Layers, and the previous block left the panel on Tool.
+   */
+  await page.evaluate(() => {
+    [...document.querySelectorAll("button")]
+      .find((b) => b.textContent.trim() === "Layers")
+      ?.click();
+  });
+  await settle(600);
   const t = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " "));
   check("it appears among the rendered layers", /Surface minus terrain/i.test(t));
 

@@ -123,8 +123,28 @@ const layerVisible = (id) =>
   });
 void layerVisible;
 
+/**
+ * Open the inspector's Water segment.
+ *
+ * The right-hand panel used to stack every section at once — tools, layers,
+ * point cloud, contours, hydrology, layer tree — in a 288px column that
+ * overflowed the map. It is now segmented, and everything about drainage lives
+ * under Water: its layers *and* its results, because a client thinking about
+ * water wants both in one place rather than the toggles filed separately from
+ * the answers.
+ */
+async function openWater() {
+  await page.evaluate(() => {
+    [...document.querySelectorAll("button")]
+      .find((b) => b.textContent.trim() === "Water")
+      ?.click();
+  });
+  await new Promise((r) => setTimeout(r, 400));
+}
+
 console.log("\nLayers");
 {
+  await openWater();
   check("the channel network can be switched on", await clickCheckbox("Channel network"));
   await page.waitForFunction(() => /STREAM ORDER/i.test(document.body.innerText), { timeout: 30000 })
     .catch(() => {});

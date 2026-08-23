@@ -55,31 +55,58 @@ export default async function SiteLayout({
       : []),
   ];
 
+  /*
+   * The site header is one band, not three stacked blocks.
+   *
+   * It used to be a back link, then a title block with 2rem of margin, then a
+   * 224px left column of section links. On the map page — which is the product —
+   * that pushed the canvas 590px down a 1000px screen, so the thing a client came
+   * to look at started below the fold with a sliver visible.
+   *
+   * Now: the back link and title share a line with the section nav on the right,
+   * and the nav is horizontal. That returns roughly 200px of height and the whole
+   * left column to the content, which the map spends and every other page enjoys
+   * as full width.
+   */
   return (
-    <div className="container-px flex-1 py-8 sm:py-10">
-      <Link
-        href="/portal"
-        // -ml-2 keeps the text optically aligned with the heading below while the
-        // padding gives the link a target that clears 24px. It was 63x16, which is
-        // a small thing to hit on a phone and the only way back to the site list.
-        className="mb-4 -ml-2 inline-flex min-h-6 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold text-ink/60 transition-colors hover:bg-ink/[0.04] hover:text-accent-600"
-      >
-        <span aria-hidden>&larr;</span> All sites
-      </Link>
-
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight text-ink-900 sm:text-3xl">
-          {site.name}
-        </h1>
+    <div className="container-px flex flex-1 flex-col py-5 sm:py-6">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+        <div className="min-w-0">
+          <Link
+            href="/portal"
+            // -ml-2 keeps the text optically aligned with the heading below while
+            // the padding gives the link a target that clears 24px. It was 63x16,
+            // a small thing to hit on a phone and the only way back to the list.
+            className="-ml-2 mb-1 inline-flex min-h-6 items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold text-ink/55 transition-colors hover:bg-ink/[0.04] hover:text-accent-600"
+          >
+            <span aria-hidden>&larr;</span> All sites
+          </Link>
+          <h1 className="truncate text-2xl font-bold tracking-tight text-ink-900 sm:text-[1.75rem]">
+            {site.name}
+          </h1>
+        {/*
+          Deduplicated, because these three fields overlap in the data: Kotba's
+          `location` is already "Kotba, Gandhinagar, Gujarat", so joining all
+          three printed "Kotba, Gandhinagar, Gujarat, Gandhinagar, Gujarat".
+          Matching on the parts rather than the whole strings, since the overlap
+          is per place name.
+        */}
         <p className="mt-2 text-sm text-ink/70">
-          {[site.location, site.district, site.state].filter(Boolean).join(", ")}
+          {[
+            ...new Set(
+              [site.location, site.district, site.state]
+                .filter(Boolean)
+                .flatMap((part) => String(part).split(",").map((s) => s.trim()))
+                .filter(Boolean),
+            ),
+          ].join(", ")}
         </p>
+        </div>
+
+        <SiteTabs tabs={tabs} />
       </div>
 
-      <div className="flex flex-col gap-8 lg:flex-row">
-        <SiteTabs tabs={tabs} />
-        <div className="min-w-0 flex-1">{children}</div>
-      </div>
+      <div className="flex min-w-0 flex-1 flex-col">{children}</div>
     </div>
   );
 }

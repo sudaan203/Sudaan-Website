@@ -394,8 +394,8 @@ export const STANDALONE: readonly Tool[] = [
     group: "universal",
     name: "Dashboard Summary",
     spec: "A project summary panel showing survey area, highest and lowest elevation, average slope, contour interval, point density, stockpile count, cut/fill volume and survey date.",
-    status: "not-built",
-    gap: "Every number on that list except stockpile count and cut/fill volume is already computable from the manifest and the raster statistics. It is a panel, not an engine.",
+    status: "live",
+    gap: "On the site overview, with every figure naming where it came from. Stockpile count and cut/fill volume have no site-wide answer — both depend on an area you draw — so they name the tool that measures them rather than showing a number.",
   },
 ] as const;
 

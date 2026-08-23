@@ -5,6 +5,8 @@ import { listAssetCounts, getSite, listSurveys } from "@/lib/portal/store";
 import { logPortalEvent } from "@/lib/portal/log";
 import { assetCategories } from "@/lib/portal/types";
 import ViewOnlyNote from "@/components/portal/ViewOnlyNote";
+import SiteSummaryPanel from "@/components/portal/SiteSummaryPanel";
+import { buildSiteSummary } from "@/lib/portal/site-summary";
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-IN", {
@@ -32,13 +34,28 @@ export default async function SiteOverview({
 
   const surveys = await listSurveys(site.id);
   const counts = await listAssetCounts(session, site.id);
+  /*
+   * Tool 40. Assembled from the manifests the pipelines already wrote, so this
+   * costs three file reads rather than any computation. It fails soft: a site
+   * with no map data still renders everything else on this page.
+   */
+  const summary = await buildSiteSummary(site.slug, site.id).catch(() => null);
   const available = assetCategories.filter((c) => (counts[c.key] ?? 0) > 0);
 
+  /*
+   * "Area surveyed" is deliberately not here any more.
+   *
+   * `site.areaLabel` is a hand-entered figure — 12.8 ha for Kotba — and the
+   * project summary above now measures the same thing from the analysis grid and
+   * gets 10.14 ha. Both are defensible (one is likely the area flown, the other
+   * is ground actually carrying data) but two different numbers under one label
+   * on one page is not, and a client comparing them has no way to tell which to
+   * quote. The measured figure states where it came from; this one could not.
+   */
   const facts = [
     { label: "Location", value: site.location },
     { label: "District", value: site.district },
     { label: "State", value: site.state },
-    { label: "Area surveyed", value: site.areaLabel },
     { label: "Sector", value: site.industry },
     {
       label: "Status",
@@ -48,8 +65,10 @@ export default async function SiteOverview({
 
   return (
     <div className="space-y-8">
+      {summary ? <SiteSummaryPanel summary={summary} /> : null}
+
       <section className="surface p-6 sm:p-8">
-        <h2 className="text-lg font-semibold text-ink-900">Site summary</h2>
+        <h2 className="text-lg font-semibold text-ink-900">Site details</h2>
         <p className="mt-3 text-sm leading-relaxed text-ink/75">{site.summary}</p>
 
         <dl className="mt-6 grid gap-x-8 gap-y-4 sm:grid-cols-2">

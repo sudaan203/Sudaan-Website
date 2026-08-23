@@ -402,6 +402,68 @@ Three decisions worth keeping:
   half of a polygon and half a metre down over the other has a mean change of
   zero, and only the second number says the surfaces disagree.
 
+### 3.10 Tool 40, and a design pass (#52)
+
+**Tool 40, the project summary**, turned out to be a panel over figures three
+pipelines had already computed and nobody had ever read together: the area from
+the hydrology grid, the elevations from the map manifest, mean slope from the
+slope raster, point density from the cloud manifest, the contour interval from
+the contour file itself.
+
+Two rules give it its shape. **An absent figure is absent, never zero** — "0 ha"
+and "we have not computed this" are different statements and rendering them
+identically is worse than omitting the row. And **every figure names where it
+came from**, on the row it belongs to, so a client asking where 19.2° comes from
+gets an answer without anyone opening the code.
+
+Stockpile count and cut/fill volume are the honest cases. Both depend on an area
+a client draws, so there is no site-wide answer; they name the tool that measures
+them instead of showing a number.
+
+It also surfaced a contradiction worth fixing rather than hiding: the overview
+card carried a hand-entered "12.8 ha" while the measured figure is 10.14 ha.
+Both are defensible — one is likely the area flown, the other is ground actually
+carrying data — but two different numbers under one label on one page is not, and
+a client comparing them has no way to tell which to quote. The unsourced one is
+gone.
+
+### The design pass
+
+The map page put the product 590 pixels down a 1000-pixel screen. Above it: a
+back link, a title block, a 224px column of section links, a section heading, a
+paragraph describing controls visible three inches away, a tool rail showing
+fourteen buttons of which six worked, a paragraph naming the eight that did not,
+and a status bar. The map — the entire reason the page exists — started below the
+fold with a sliver showing.
+
+Four changes, in order of how much they gave back:
+
+1. **The site header is one band.** Back link, name and section nav on a line,
+   the nav horizontal rather than a left column. Roughly 200px of height and the
+   whole left column returned to the content, which every page enjoys as width
+   and the map spends as canvas.
+2. **The tool rail shows what works.** Tools that cannot be reached collapse
+   behind a single count that opens a list naming each and what it is waiting
+   on. Identical information, a hundredth of the space. Eight disabled buttons
+   is not transparency; it is noise wearing transparency's clothes.
+3. **The inspector is segmented, not stacked.** Tool, Layers, Water — three
+   segments because there are three kinds of question — instead of six panels in
+   a 288px column that overflowed on any survey with all of them. The segment
+   follows the tool you pressed, so it is almost never a click you have to make.
+4. **The map is fitted to the space it actually has.** `fitBounds` padded for the
+   floating inspector, so the survey stops sitting off-centre with dead grey to
+   its left. Contour labels are additionally spaced 44 screen pixels apart, which
+   thins the crowded side without touching open ground.
+
+Net: the canvas starts at 300px instead of 590, and roughly doubles in area.
+
+One regression was introduced and caught by the suites. Collapsing unreachable
+tools is right *once the answer is in* and wrong before it: on first paint every
+measure tool vanished into the count and reappeared a second later, which reads
+as the page changing its mind. A tool waiting on the terrain probe now stays on
+the bar, disabled. "We do not know yet" and "it cannot be done" are different
+states and deserve different interfaces.
+
 ---
 
 ## 4. Judgement calls
@@ -633,6 +695,7 @@ Two more, both specific to drawing:
 | #49 | 23 Aug 2026 | Production confirmed end to end |
 | #50 | 23 Aug 2026 | The alignment tool: tools 16, 18, 19, 20, 21 |
 | #51 | 23 Aug 2026 | Grid levels, surface comparison, tolerance, and exports |
+| #52 | 23 Aug 2026 | Tool 40, and a design pass over the map workspace |
 
 ### Infrastructure
 
@@ -643,7 +706,7 @@ Two more, both specific to drawing:
   127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
   could have answered.
 
-### Tests: 1,001 checks
+### Tests: 997 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -664,12 +727,12 @@ Two more, both specific to drawing:
 | `portal-map-browser-test` | 36 | measure tools in a real browser |
 | `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
-| `portal-tool-rail-test` | 40 | the tool groups, and that one tool is armed at a time |
+| `portal-tool-rail-test` | 34 | the tool groups, and that one tool is armed at a time |
 | `portal-contours-browser-test` | 26 | contour labels, bands, index lines, colour |
 | `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
 | `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
 | `portal-surface-browser-test` | 40 | polygon tools, and the contents of the files they write |
-| `portal-map-no-terrain-test` | 16 | the production case: tiles without rasters |
+| `portal-map-no-terrain-test` | 18 | the production case: tiles without rasters |
 | `portal-assets-test` | 7 | asset serving |
 | `portal-map-test` | 19 | manifest handling |
 | `portal-ux-test` | n/a | navigation feedback (no count reported) |
@@ -692,21 +755,20 @@ The full table, generated from the same list the dashboard reads, is
 
 | State | Count | Tools |
 |---|---|---|
-| **Live** — usable on the map today | 10 | 1, 2, 5, 16, 18, 19, 25, 26, 27, 28 |
+| **Live** — usable on the map today | 11 | 1, 2, 5, 16, 18, 19, 25, 26, 27, 28, 40 |
 | **Partly built** | 10 | 3, 4, 10, 13, 14, 15, 20, 21, 24, 37 |
 | **Engine only** — written and tested, nothing calls it | 2 | 11, 17 |
-| **Not built** | 5 | 7, 8, 9, 12, 40 |
+| **Not built** | 4 | 7, 8, 9, 12 |
 | **Blocked on data** | 1 | 6 |
 | **Never specified by Malhar** | 12 | 22, 23, 29–36, 38, 39 |
 
-**Twenty of the twenty-eight specified tools now do something on the map**, up
-from thirteen at the start of the day and seventeen after the alignment tool.
+**Twenty-one of the twenty-eight specified tools now do something**, up from
+thirteen at the start of the day.
 
-The engine-only category is down to two, and neither is waiting on us. Tool 11
-needs a second flight of a site. Tool 17 needs a geotechnical limit: it finds
-steep ground, which is not the same as assessing stability, and stability
-depends on rock mass, jointing, water and blast damage — none of which are in a
-terrain model. Defaulting that limit would be inventing a safety threshold.
+Nothing that remains is waiting on us alone. Tool 11 needs a second flight; tool
+6 needs the same. Tool 12 needs a design-surface upload format nobody has named.
+Tool 17 needs a geotechnical limit a terrain model cannot supply. Tool 7 needs
+Malhar to resolve his own contradiction. Tools 8 and 9 are small and unblocked.
 
 Outside the numbering: **the LiDAR point cloud** is live on the map, and
 **Area** and **Inspect** — both specified in prose rather than as numbered
@@ -873,26 +935,32 @@ anyone asks to see the cloud at full density; not worth doing on spec.
 
 ## 8. What to do next
 
-In order, and none of it blocked:
-
 1. ~~**Draw an alignment.**~~ Done, PR #50. It moved four tools as predicted.
-2. ~~**Wire the three remaining engine-only tools.**~~ Done, PR #51.
-3. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
-   the contradiction. Share links need signing, expiry, revocation, site scoping
-   and an owner kill switch, and belong in `portal-security-test.mjs` before they
+2. ~~**Wire the three engine-only tools that needed a panel.**~~ Done, PR #51.
+3. ~~**Tool 40, the dashboard summary.**~~ Done, PR #52, along with a design pass
+   over the map workspace.
+
+What is left, in order:
+
+1. **Finish the export centre (tools 10 and 37).** Grid levels already export as
+   CSV, TXT, DXF and LandXML from the map. Missing: a single download centre,
+   PDF, SHP, LAS/LAZ, and raster export. **GeoTIFF matters more than it looks** —
+   it lets a client open the exact grid we computed against in their own software
+   and check our numbers, and none of Propeller, PIX4Dcloud or DroneDeploy offers
+   it.
+2. **Tools 8 and 9**, bookmarks and share view: the only two left that are small
+   and unblocked. Share links need signing, expiry, revocation, site scoping and
+   an owner kill switch, and belong in `portal-security-test.mjs` before they
    ship.
-4. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
-   already exist in `export-formats.mjs` and are unreachable from the UI. GeoTIFF
-   export matters more than it looks: it lets a client open the exact grid we
-   computed against in Global Mapper and check our numbers, and none of Propeller,
-   PIX4Dcloud or DroneDeploy offers it.
-5. **Tool 40, the dashboard summary.** Every figure on Malhar's list except
-   stockpile count and cut/fill volume is already computable from the manifest
-   and the recorded raster statistics. It is a panel, not an engine, and it is
-   the first thing a client sees.
-6. **Slope from overviews**, closing 7.2.
-7. **The weighted overlay engine** for B4, with weights in configuration, ready
-   for the day his model arrives.
+3. **Slope from overviews**, closing 7.2 — the one operation that still reads
+   whole rasters and so does not work from object storage.
+4. **The weighted overlay engine** for B4, with weights in configuration, ready
+   for the day Malhar's suitability model arrives.
+
+Everything else is blocked on somebody else, and §7.8 says on whom: tools 6 and
+11 need a repeat flight, 12 needs a design-surface format, 17 needs a
+geotechnical limit, 7 needs Malhar to resolve his own contradiction, and twelve
+of the forty numbers were never described at all.
 
 The thing worth preserving from this round is the testing habit rather than any
 particular tool: **assert relationships between independently computed values**,
