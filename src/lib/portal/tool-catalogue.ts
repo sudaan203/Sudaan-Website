@@ -134,8 +134,7 @@ export const TOOLS: readonly Tool[] = [
     group: "universal",
     name: "Grid Spot Levels",
     spec: "Select a polygon and grid spacing (0.5 m, 1 m, 2 m, 5 m), generate spot levels from the DTM, export as CSV, DXF, TXT or LandXML, like Global Mapper.",
-    status: "engine-only",
-    gap: "The server computes the grid and can already write all four formats. Nothing on the map asks it to.",
+    status: "live",
   },
   {
     n: 3,
@@ -158,8 +157,8 @@ export const TOOLS: readonly Tool[] = [
     group: "universal",
     name: "Surface Comparison",
     spec: "Highlight elevation differences between two DSM/DTM datasets with a colour-coded deviation map and statistical summary.",
-    status: "engine-only",
-    gap: "`surfaceDifference` and the signed difference ramp both exist and are tested. DSM-minus-DTM would work on both sites today; date-to-date needs tool 6's second flight.",
+    status: "live",
+    gap: "Deviation statistics over a drawn polygon, and a colour-coded map layer on a diverging ramp centred on zero. Comparing two *dates* rather than the two models needs tool 6's second flight.",
   },
   {
     n: 6,
@@ -198,7 +197,7 @@ export const TOOLS: readonly Tool[] = [
     name: "Export Centre",
     spec: "Export ortho, DSM, DTM, contours, profiles, point clouds, PDFs, CSV, DXF, LAS/LAZ and LandXML.",
     status: "partial",
-    gap: "CSV, TXT, DXF, LandXML and .prj are all written server-side and tested. No route serves them and no panel offers them. PDF is not written at all.",
+    gap: "Grid levels export as CSV, TXT, DXF (with a .prj sidecar) and LandXML from the map. Spot levels export as CSV. There is no single download centre, and no PDF, ortho, raster or point cloud export.",
   },
 
   // ---- Contractor, 11-14 -------------------------------------------------
@@ -223,8 +222,8 @@ export const TOOLS: readonly Tool[] = [
     group: "contractor",
     name: "Tolerance Analysis",
     spec: "Colour-code areas within and outside a user-defined elevation tolerance (e.g. ±20 mm).",
-    status: "engine-only",
-    gap: "`toleranceAnalysis` is written and tested against the survey's own RMSE. Unwired, and it needs tool 12 to have a design surface to be in tolerance *of*.",
+    status: "partial",
+    gap: "Checks a drawn area against the other model or a stated design level, and refuses to assess a tolerance finer than the survey's own accuracy. Checking against an *uploaded* design surface is tool 12.",
   },
   {
     n: 14,
@@ -388,7 +387,7 @@ export const STANDALONE: readonly Tool[] = [
     name: "CAD Export",
     spec: "Export supporting DXF, LandXML, SHP, GeoJSON, CSV and LAS/LAZ for CAD and GIS workflows.",
     status: "partial",
-    gap: "DXF, LandXML, CSV, TXT and .prj are written and tested server-side. SHP, GeoJSON and LAS/LAZ are not. Nothing is wired to a route. Overlaps tool 10.",
+    gap: "DXF, LandXML, CSV and TXT are written from the map, each stating its projection. SHP and LAS/LAZ are not written at all; GeoJSON exists only for hydrology vectors. Overlaps tool 10.",
   },
   {
     n: 40,

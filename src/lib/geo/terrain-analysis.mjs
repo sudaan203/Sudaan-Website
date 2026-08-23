@@ -482,6 +482,137 @@ export function cutFill(grid, ring, reference, { rmseZ = null } = {}) {
 }
 
 /**
+ * Deviation of one surface from a reference, inside a polygon. Tools 5 and 13.
+ *
+ * ## Why this exists beside `surfaceDifference` and `toleranceAnalysis`
+ *
+ * Those two are whole-grid operations on grids that already agree, which is the
+ * right shape for a batch pipeline and the wrong one for a client who has drawn
+ * a polygon. Two things force this:
+ *
+ * 1. **The two surfaces need not share a grid.** Kotba's DSM is 0.157 m and its
+ *    DTM is 0.241 m, with different origins, so `surfaceDifference` correctly
+ *    refuses them. The reference here is sampled by world coordinate, exactly as
+ *    `cutFill` samples one, so no resampling is invented and no cell is compared
+ *    against a cell it does not overlap.
+ * 2. **The answer must be restricted to the ring.** A grid-wide statistic over a
+ *    windowed read describes the bounding box, not the area the client drew, and
+ *    those differ by a lot for anything that is not a rectangle.
+ *
+ * Tools 5 and 13 are one function because they are one act: measure how far this
+ * surface sits from that one, over this area. Tool 13 additionally asks how much
+ * of it falls inside a stated tolerance, which is a classification of the same
+ * numbers rather than a separate measurement.
+ *
+ * @param {any} grid the surface being measured
+ * @param {number[][]} ring the polygon, in the grid's own projected metres
+ * @param {{ kind: string, at: Function }} reference what to measure against
+ * @param {{ tolerance?: number|null, rmseZ?: number|null }} [options]
+ */
+export function compareSurfaces(grid, ring, reference, { tolerance = null, rmseZ = null } = {}) {
+  if (!reference || typeof reference.at !== "function") {
+    throw new Error(
+      "compareSurfaces: a reference surface is required. A deviation from an " +
+        "unstated reference is not a measurement.",
+    );
+  }
+  if (tolerance !== null && !(tolerance > 0)) {
+    throw new Error("compareSurfaces: tolerance must be positive metres");
+  }
+
+  const { col0, col1, row0, row1 } = ringWindow(grid, ring);
+  let weight = 0;
+  let nodataWeight = 0;
+  let referenceMissing = 0;
+  let rise = 0;
+  let drop = 0;
+  let sum = 0;
+  let sumAbs = 0;
+  let min = Infinity;
+  let max = -Infinity;
+  let within = 0;
+  let above = 0;
+  let below = 0;
+  let worstAbove = 0;
+  let worstBelow = 0;
+
+  for (let row = row0; row <= row1; row += 1) {
+    for (let col = col0; col <= col1; col += 1) {
+      // Partial coverage at the rim, the same as cut and fill: a polygon edge
+      // cutting a cell in half must not count that cell as wholly inside.
+      const f = cellCoverage(grid, col, row, ring);
+      if (f === 0) continue;
+      const z = grid.get(col, row);
+      if (grid.isNoData(z)) { nodataWeight += f; continue; }
+
+      const x = grid.xOf(col);
+      const y = grid.yOf(row);
+      const ref = reference.at(x, y);
+      if (ref === null || !Number.isFinite(ref)) { referenceMissing += f; continue; }
+
+      const d = z - ref;
+      const area = f * grid.cellArea;
+      weight += f;
+      sum += d * f;
+      sumAbs += Math.abs(d) * f;
+      if (d > 0) rise += d * area; else drop += -d * area;
+      if (d < min) min = d;
+      if (d > max) max = d;
+
+      if (tolerance !== null) {
+        if (d > tolerance) { above += area; if (d > worstAbove) worstAbove = d; }
+        else if (d < -tolerance) { below += area; if (-d > worstBelow) worstBelow = -d; }
+        else within += area;
+      }
+    }
+  }
+
+  const comparedArea = weight * grid.cellArea;
+  const classified = within + above + below;
+  return {
+    reference: reference.kind,
+    comparedArea,
+    polygonArea: polygonArea(ring),
+    /** Both reported, because a partly covered polygon still returns a number. */
+    nodataArea: nodataWeight * grid.cellArea,
+    referenceMissingArea: referenceMissing * grid.cellArea,
+    complete: nodataWeight === 0 && referenceMissing === 0,
+
+    minChange: weight > 0 ? min : null,
+    maxChange: weight > 0 ? max : null,
+    meanChange: weight > 0 ? sum / weight : null,
+    /** The one that does not cancel: a surface 2 m up and 2 m down means zero. */
+    meanAbsoluteChange: weight > 0 ? sumAbs / weight : null,
+    volumeGained: rise,
+    volumeLost: drop,
+    netVolume: rise - drop,
+
+    tolerance,
+    withinArea: tolerance === null ? null : within,
+    aboveArea: tolerance === null ? null : above,
+    belowArea: tolerance === null ? null : below,
+    withinShare: tolerance === null || classified === 0 ? null : within / classified,
+    worstAbove: tolerance === null ? null : worstAbove,
+    worstBelow: tolerance === null ? null : worstBelow,
+    /*
+     * A tolerance finer than the survey's own accuracy cannot be checked, and
+     * saying so is the whole point. A ±20 mm check on a survey good to ±40 mm
+     * produces a map of survey noise that looks exactly like a map of defects.
+     */
+    resolvable: tolerance === null || rmseZ === null ? null : rmseZ < tolerance,
+    note:
+      tolerance !== null && rmseZ !== null && rmseZ >= tolerance
+        ? `The survey's vertical accuracy (${(rmseZ * 1000).toFixed(0)} mm) is not finer ` +
+          `than the tolerance (${(tolerance * 1000).toFixed(0)} mm), so this cannot ` +
+          `distinguish a real deviation from survey noise.`
+        : null,
+    rmseZ,
+    uncertainty: rmseZ === null ? null : rmseZ * comparedArea,
+    computedIn: grid.epsg ? `EPSG:${grid.epsg}` : "projected metres",
+  };
+}
+
+/**
  * Difference between two elevation grids. Tool 5.
  *
  * Requires the same grid, rather than resampling one onto the other, because a

@@ -15,9 +15,9 @@ disabled with a line saying what they are waiting on.
 
 | | Tools |
 |---|---|
-| **Live** | 8 — 1, 16, 18, 19, 25, 26, 27, 28 |
-| **Partly built** | 9 — 3, 4, 10, 14, 15, 20, 21, 24, 37 |
-| **Engine only** | 5 — 2, 5, 11, 13, 17 |
+| **Live** | 10 — 1, 2, 5, 16, 18, 19, 25, 26, 27, 28 |
+| **Partly built** | 10 — 3, 4, 10, 13, 14, 15, 20, 21, 24, 37 |
+| **Engine only** | 2 — 11, 17 |
 | **Not built** | 5 — 7, 8, 9, 12, 40 |
 | **Blocked** | 1 — 6 |
 | **Never specified** | 12 — 22, 23, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39 |
@@ -36,16 +36,16 @@ we hold, whatever we do, and says why.
 | # | Tool | Status | |
 |---|---|---|---|
 | 1 | **Spot Level** | Live |  |
-| 2 | **Grid Spot Levels** | Engine only | The server computes the grid and can already write all four formats. Nothing on the map asks it to. |
+| 2 | **Grid Spot Levels** | Live |  |
 | 3 | **Cross Section** | Partly built | The profile is live and correct. PDF export is not built; CSV is written in the browser rather than by the server. |
 | 4 | **Cut & Fill** | Partly built | Volumes against a level, a best-fit plane and the survey's own minimum are live. Comparing against an uploaded design surface is tool 12, and the report export is tool 10. |
-| 5 | **Surface Comparison** | Engine only | `surfaceDifference` and the signed difference ramp both exist and are tested. DSM-minus-DTM would work on both sites today; date-to-date needs tool 6's second flight. |
+| 5 | **Surface Comparison** | Live | Deviation statistics over a drawn polygon, and a colour-coded map layer on a diverging ramp centred on zero. Comparing two *dates* rather than the two models needs tool 6's second flight. |
 | 6 | **Timeline Comparison** | Blocked | No site in the portal has been flown twice. This is a data question, not a code question: one repeat flight makes it buildable, and nothing before then does. |
 | 7 | **Annotation** | Not built | Malhar contradicts himself: the docx specifies it, and Important Notes.txt lists it under "Not needed for future". Needs one answer before it is worth building, because it is the only tool here that needs a write path and a permissions model. |
 | 8 | **Bookmark Locations** | Not built |  |
 | 9 | **Share View** | Not built | Needs a decision first: a URL that reproduces a client's site view is a URL that shows their data to whoever holds it. Either it stays inside the session, or it is a signed, expiring link. |
-| 10 | **Export Centre** | Partly built | CSV, TXT, DXF, LandXML and .prj are all written server-side and tested. No route serves them and no panel offers them. PDF is not written at all. |
-| 37 | **CAD Export** | Partly built | DXF, LandXML, CSV, TXT and .prj are written and tested server-side. SHP, GeoJSON and LAS/LAZ are not. Nothing is wired to a route. Overlaps tool 10. |
+| 10 | **Export Centre** | Partly built | Grid levels export as CSV, TXT, DXF (with a .prj sidecar) and LandXML from the map. Spot levels export as CSV. There is no single download centre, and no PDF, ortho, raster or point cloud export. |
+| 37 | **CAD Export** | Partly built | DXF, LandXML, CSV and TXT are written from the map, each stating its projection. SHP and LAS/LAZ are not written at all; GeoJSON exists only for hydrology vectors. Overlaps tool 10. |
 | 40 | **Dashboard Summary** | Not built | Every number on that list except stockpile count and cut/fill volume is already computable from the manifest and the raster statistics. It is a panel, not an engine. |
 
 > **1. Spot Level** — Displays X, Y and Z when the user clicks anywhere on the DTM/DSM, with options to copy coordinates or export the selected points as CSV.
@@ -102,7 +102,7 @@ we hold, whatever we do, and says why.
 |---|---|---|---|
 | 11 | **Earthwork Progress** | Engine only | `earthworkProgress` takes a list of surfaces and is tested. It has one survey to run on, so it is blocked on the same repeat flight as tool 6. |
 | 12 | **Design Surface Check** | Not built | Cut & fill already accepts a reference surface, so the comparison half exists. Reading a LandXML or TIN upload and turning it into a grid does not. |
-| 13 | **Tolerance Analysis** | Engine only | `toleranceAnalysis` is written and tested against the survey's own RMSE. Unwired, and it needs tool 12 to have a design surface to be in tolerance *of*. |
+| 13 | **Tolerance Analysis** | Partly built | Checks a drawn area against the other model or a stated design level, and refuses to assess a tolerance finer than the survey's own accuracy. Checking against an *uploaded* design surface is tool 12. |
 | 14 | **Slope Heatmap** | Partly built | The slope layer draws on the map and the analysis engine classifies into bands. The three documents give three different band schemes (see the catalogue note), so no one scheme is presented as the answer. |
 
 > **11. Earthwork Progress** — Compare multiple surveys over time, showing excavation, filling and completion percentages.

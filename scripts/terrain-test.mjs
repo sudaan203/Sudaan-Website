@@ -23,6 +23,7 @@ import {
   polygonStats,
   cutFill,
   surfaceDifference,
+  compareSurfaces,
   REFERENCE,
 } from "../src/lib/geo/terrain-analysis.mjs";
 import {
@@ -228,6 +229,86 @@ console.log("\nSurface comparison");
     surfaceDifference(plane, makeGrid(PLANE, { width: 50, height: 50 }));
   } catch { refused = true; }
   check("comparing mismatched grids is refused rather than silently resampled", refused);
+}
+
+// ---------------------------------------------------------------------------
+console.log("\nDeviation inside a polygon, tools 5 and 13");
+{
+  const SIDE = 40;
+  const ring = [[20, 20], [20 + SIDE, 20], [20 + SIDE, 20 + SIDE], [20, 20 + SIDE], [20, 20]];
+  const lower = makeGrid((x, y) => PLANE(x, y) - 0.5);
+
+  const r = compareSurfaces(plane, ring, REFERENCE.surface(lower), { rmseZ: 0.04 });
+  check("it measures the polygon that was drawn, not its bounding window",
+    near(r.comparedArea, SIDE * SIDE, 1), `${r.comparedArea.toFixed(1)} m2 of ${SIDE * SIDE}`);
+  check("a uniform 0.5 m rise reads as 0.5 m everywhere",
+    near(r.minChange, 0.5, 1e-4) && near(r.maxChange, 0.5, 1e-4) &&
+      near(r.meanChange, 0.5, 1e-4));
+  check("and as 0.5 m x the area in volume",
+    near(r.volumeGained, 0.5 * SIDE * SIDE, 1), `${r.volumeGained.toFixed(1)} m3`);
+  check("with nothing lost", near(r.volumeLost, 0, 1e-6));
+
+  /*
+   * The statistic that does not cancel. A surface half a metre up over one half
+   * of the polygon and half a metre down over the other has a mean change of
+   * zero and a mean absolute change of half a metre, and only the second says
+   * the surfaces disagree.
+   */
+  const seesaw = makeGrid((x, y) => PLANE(x, y) + (x < 40 ? 0.5 : -0.5));
+  const s = compareSurfaces(seesaw, ring, REFERENCE.surface(plane), {});
+  check("mean change cancels across a seesaw", near(s.meanChange, 0, 0.02),
+    `${s.meanChange.toFixed(4)} m`);
+  check("mean absolute change does not", near(s.meanAbsoluteChange, 0.5, 0.02),
+    `${s.meanAbsoluteChange.toFixed(4)} m`);
+
+  // Tolerance is a classification of the same numbers, so the three areas must
+  // partition the area that was compared.
+  const t = compareSurfaces(seesaw, ring, REFERENCE.surface(plane), {
+    tolerance: 0.2, rmseZ: 0.04,
+  });
+  check("within, above and below account for everything compared",
+    near(t.withinArea + t.aboveArea + t.belowArea, t.comparedArea, 1),
+    `${(t.withinArea + t.aboveArea + t.belowArea).toFixed(1)} of ${t.comparedArea.toFixed(1)}`);
+  check("a 0.5 m seesaw is entirely outside a 0.2 m tolerance",
+    near(t.withinArea, 0, 1) && t.aboveArea > 0 && t.belowArea > 0,
+    `within ${t.withinArea.toFixed(1)} m2`);
+  check("and a 1 m tolerance swallows it whole",
+    near(
+      compareSurfaces(seesaw, ring, REFERENCE.surface(plane), { tolerance: 1 }).withinShare,
+      1,
+      1e-6,
+    ));
+  check("the worst deviation each way is reported",
+    near(t.worstAbove, 0.5, 1e-3) && near(t.worstBelow, 0.5, 1e-3));
+
+  /*
+   * The check that stops this becoming a map of survey noise: a tolerance no
+   * finer than the survey's own accuracy cannot be assessed, and the result has
+   * to say so rather than colouring it in confidently.
+   */
+  const unresolvable = compareSurfaces(plane, ring, REFERENCE.surface(lower), {
+    tolerance: 0.02, rmseZ: 0.04,
+  });
+  check("a tolerance finer than the survey's accuracy is flagged as unresolvable",
+    unresolvable.resolvable === false && /cannot/.test(unresolvable.note ?? ""));
+  check("and one coarser than it is not", t.resolvable === true && t.note === null);
+
+  let refusedTolerance = false;
+  try {
+    compareSurfaces(plane, ring, REFERENCE.surface(lower), { tolerance: -1 });
+  } catch { refusedTolerance = true; }
+  check("a negative tolerance is refused", refusedTolerance);
+
+  let refusedReference = false;
+  try {
+    compareSurfaces(plane, ring, null, {});
+  } catch { refusedReference = true; }
+  check("and an unstated reference is refused, as everywhere else", refusedReference);
+
+  // A plane is a reference too, which is what makes tolerance useful before
+  // anyone can upload a design surface.
+  const flat = compareSurfaces(plane, ring, REFERENCE.plane(10), { tolerance: 0.5 });
+  check("a level plane works as a reference", flat.comparedArea > 0 && flat.reference === "plane");
 }
 
 // ---------------------------------------------------------------------------

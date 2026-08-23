@@ -23,6 +23,8 @@ import {
   type ProfileResult,
   type AlignmentOp,
   type ChainageResult,
+  type CompareResult,
+  type GridLevelsResult,
   type CorridorResult,
   type CrossSectionsResult,
   type Surface,
@@ -57,6 +59,8 @@ import {
   type AlignmentControls,
   type AlignmentState,
 } from "./AlignmentPanel";
+import { GridLevelsPanel, type GridLevelsState } from "./GridLevelsPanel";
+import { SurfacePanel, type SurfaceState } from "./SurfacePanel";
 import { ToolRail, type RailAction } from "./ToolRail";
 import {
   ContourPanel,
@@ -150,7 +154,15 @@ function groupOf(layer: MapLayer): Group {
  * measuring: spot accumulates a list of levels and draws no geometry, volume
  * needs a closed ring *and* a reference surface before it can answer at all.
  */
-type MeasureMode = "off" | "spot" | "distance" | "area" | "volume" | "alignment";
+type MeasureMode =
+  | "off"
+  | "spot"
+  | "distance"
+  | "area"
+  | "volume"
+  | "alignment"
+  | "grid"
+  | "compare";
 
 /**
  * Which question the volume mode is asking.
@@ -163,7 +175,7 @@ type MeasureMode = "off" | "spot" | "distance" | "area" | "volume" | "alignment"
 type VolumeOp = "volume" | "stockpile";
 
 /** Modes that draw a polygon rather than a path. */
-const CLOSES_A_RING = new Set<MeasureMode>(["area", "volume"]);
+const CLOSES_A_RING = new Set<MeasureMode>(["area", "volume", "grid", "compare"]);
 
 /**
  * Most samples a single profile may ask for.
@@ -253,6 +265,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    * what is asked of it. Defaults match the server's, so an untouched panel and
    * an untouched request agree.
    */
+  /** Tool 2, and tools 5 and 13: all polygon tools, all explicit requests. */
+  const [gridLevels, setGridLevels] = useState<GridLevelsState>({ state: "idle" });
+  const [gridSpacing, setGridSpacing] = useState(1);
+  const [compare, setCompare] = useState<SurfaceState>({ state: "idle" });
+  /** Tool 5 asks for the deviation; tool 13 additionally classifies it. */
+  const [compareOp, setCompareOp] = useState<"difference" | "tolerance">("difference");
   const [alignment, setAlignment] = useState<AlignmentState>({ state: "idle" });
   const [alignmentControls, setAlignmentControls] = useState<AlignmentControls>({
     op: "chainage",
@@ -332,6 +350,28 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         model: Surface,
         options: Record<string, number>,
       ) => client.current.alignment<unknown>(op, line, { surface: model, ...options }, signal),
+    ),
+  );
+  const gridLane = useRef(
+    latest((signal: AbortSignal, ring: Pair[], spacing: number, model: Surface) =>
+      client.current.gridLevels(ring, spacing, { surface: model }, signal),
+    ),
+  );
+  const compareLane = useRef(
+    latest(
+      (
+        signal: AbortSignal,
+        ring: Pair[],
+        reference: VolumeReference,
+        model: Surface,
+        tolerance: number | null,
+      ) =>
+        client.current.compare(
+          ring,
+          reference,
+          { surface: model, ...(tolerance === null ? {} : { tolerance }) },
+          signal,
+        ),
     ),
   );
   const volumeLane = useRef(
@@ -438,7 +478,14 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       // picks a reference or an interval and asks explicitly. Sampling on every
       // corner would be work nobody asked for and an answer nobody sees — and on
       // a long alignment it would be a profile request per click.
-      if (active === "volume" || active === "alignment") return;
+      if (
+        active === "volume" ||
+        active === "alignment" ||
+        active === "grid" ||
+        active === "compare"
+      ) {
+        return;
+      }
 
       // A ring only means something to the server once it is closed and has
       // three corners; before that it is still a path.
@@ -492,9 +539,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     shapeLane.current.cancel();
     volumeLane.current.cancel();
     alignmentLane.current.cancel();
+    gridLane.current.cancel();
+    compareLane.current.cancel();
     setElevation({ state: "idle" });
     setVolume({ state: "idle" });
     setAlignment({ state: "idle" });
+    setGridLevels({ state: "idle" });
+    setCompare({ state: "idle" });
     const instance = map.current;
     for (const marker of stationMarkers.current) marker.remove();
     stationMarkers.current = [];
@@ -539,6 +590,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     [noteEnvelope],
   );
 
+  const gridSpacingRef = useRef(gridSpacing);
+  gridSpacingRef.current = gridSpacing;
   const alignmentControlsRef = useRef(alignmentControls);
   alignmentControlsRef.current = alignmentControls;
   /** Labels on the chainage stations, as markers. Same reason as the contours. */
@@ -634,6 +687,51 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       );
     });
   }, []);
+
+  /** Tool 2. A grid of levels over the drawn polygon, then a file. */
+  const computeGridLevels = useCallback(async () => {
+    const points = drawn.current;
+    if (points.length < 3) return;
+    const ring = [...points, points[0]] as Pair[];
+    setGridLevels({ state: "loading" });
+    try {
+      const response = await gridLane.current.call(ring, gridSpacingRef.current, surfaceRef.current);
+      if (response === null) return;
+      noteEnvelope(response);
+      setGridLevels({ state: "done", data: response.result, epsg: response.computedIn });
+    } catch (error) {
+      setGridLevels({ state: "error", message: messageFor(error) });
+    }
+  }, [noteEnvelope]);
+
+  /** Tools 5 and 13. One request; the tolerance decides which question it is. */
+  const computeCompare = useCallback(
+    async (reference: VolumeReference, tolerance: number | null) => {
+      const points = drawn.current;
+      if (points.length < 3) return;
+      const ring = [...points, points[0]] as Pair[];
+      setCompare({ state: "loading" });
+      try {
+        const response = await compareLane.current.call(
+          ring,
+          reference,
+          surfaceRef.current,
+          tolerance,
+        );
+        if (response === null) return;
+        noteEnvelope(response);
+        setCompare({
+          state: "done",
+          data: response.result,
+          reference,
+          surface: response.surface,
+        });
+      } catch (error) {
+        setCompare({ state: "error", message: messageFor(error) });
+      }
+    },
+    [noteEnvelope],
+  );
 
   /**
    * Tools 19, 20, 21 and 16. Explicit request, like volume: these are slow
@@ -1282,6 +1380,28 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             min: range.min, max: range.max, ramp: "rainbow", relief: true, logarithmic: false,
           });
         }
+      }
+
+      /*
+       * Tool 5's colour-coded deviation map, offered only when both models
+       * exist, because a difference needs two surfaces.
+       *
+       * The range is not the survey's elevation range: it is how far apart the
+       * two surfaces get, which is canopy height here. Asked for symmetrically
+       * about zero and the tiler enforces that anyway, because a diverging ramp
+       * whose midpoint is not zero paints "no change" somewhere there is change.
+       */
+      if (probe.dtm && probe.dsm) {
+        const reach = Math.max(4, Math.round(((range?.max ?? 40) - (range?.min ?? 0)) / 4));
+        out.push({
+          key: "difference",
+          title: "Surface minus terrain",
+          unit: "m",
+          description:
+            "How far the surface model stands above bare earth: canopy, stockpiles and structures.",
+          min: -reach, max: reach, ramp: "difference", relief: false, logarithmic: false,
+          signed: true,
+        });
       }
     }
 
@@ -2038,7 +2158,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           ? { kind: "measure", mode: "volume", op: volumeOp }
           : mode === "alignment"
             ? { kind: "measure", mode: "alignment", op: alignmentControls.op }
-            : { kind: "measure", mode }
+            : mode === "compare"
+              ? { kind: "measure", mode: "compare", op: compareOp }
+              : { kind: "measure", mode }
         : hydroMode !== "off"
           ? { kind: "hydrology", mode: hydroMode }
           : sinks
@@ -2046,7 +2168,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             : activeRender
               ? { kind: "layer", layer: activeRender }
               : null,
-    [mode, volumeOp, alignmentControls.op, hydroMode, sinks, activeRender],
+    [mode, volumeOp, alignmentControls.op, compareOp, hydroMode, sinks, activeRender],
   );
 
   /**
@@ -2093,7 +2215,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
            * asks one question — "which tool did they press" — and the answer is
            * routed to the panel that owns it.
            */
-          if (action.mode === "alignment") {
+          if (action.mode === "compare") {
+            setCompareOp(action.op === "tolerance" ? "tolerance" : "difference");
+          } else if (action.mode === "alignment") {
             setAlignmentControls((c) => ({
               ...c,
               op: (action.op as AlignmentOp | undefined) ?? c.op,
@@ -2333,6 +2457,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               alignmentControls={alignmentControls}
               setAlignmentControls={setAlignmentControls}
               onComputeAlignment={() => void computeAlignment()}
+              gridLevels={gridLevels}
+              gridSpacing={gridSpacing}
+              setGridSpacing={setGridSpacing}
+              onComputeGridLevels={() => void computeGridLevels()}
+              compare={compare}
+              compareOp={compareOp}
+              onComputeCompare={(r, t) => void computeCompare(r, t)}
               tolerance={tolerance}
               onClear={clearMeasurement}
               onComputeVolume={computeVolume}
@@ -2451,6 +2582,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           alignmentControls={alignmentControls}
           setAlignmentControls={setAlignmentControls}
           onComputeAlignment={() => void computeAlignment()}
+          gridLevels={gridLevels}
+          gridSpacing={gridSpacing}
+          setGridSpacing={setGridSpacing}
+          onComputeGridLevels={() => void computeGridLevels()}
+          compare={compare}
+          compareOp={compareOp}
+          onComputeCompare={(r, t) => void computeCompare(r, t)}
           tolerance={tolerance}
           onClear={clearMeasurement}
           onComputeVolume={computeVolume}
@@ -2498,6 +2636,13 @@ function ToolPanel({
   alignmentControls,
   setAlignmentControls,
   onComputeAlignment,
+  gridLevels,
+  gridSpacing,
+  setGridSpacing,
+  onComputeGridLevels,
+  compare,
+  compareOp,
+  onComputeCompare,
   tolerance,
   onClear,
   onComputeVolume,
@@ -2517,6 +2662,13 @@ function ToolPanel({
   alignmentControls: AlignmentControls;
   setAlignmentControls: (fn: (c: AlignmentControls) => AlignmentControls) => void;
   onComputeAlignment: () => void;
+  gridLevels: GridLevelsState;
+  gridSpacing: number;
+  setGridSpacing: (v: number) => void;
+  onComputeGridLevels: () => void;
+  compare: SurfaceState;
+  compareOp: "difference" | "tolerance";
+  onComputeCompare: (reference: VolumeReference, tolerance: number | null) => void;
   tolerance: number;
   onClear: () => void;
   onComputeVolume: (reference: VolumeReference) => void;
@@ -2532,6 +2684,26 @@ function ToolPanel({
         error={spotError}
         onRemove={onRemoveSpot}
         onClear={onClearSpots}
+      />
+    ) : mode === "grid" ? (
+      <GridLevelsPanel
+        ready={Boolean(measurement?.closed) && (measurement?.points.length ?? 0) > 2}
+        polygonArea={measurement?.area ?? 0}
+        spacing={gridSpacing}
+        setSpacing={setGridSpacing}
+        result={gridLevels}
+        onCompute={onComputeGridLevels}
+        onClear={onClear}
+      />
+    ) : mode === "compare" ? (
+      <SurfacePanel
+        ready={Boolean(measurement?.closed) && (measurement?.points.length ?? 0) > 2}
+        polygonArea={measurement?.area ?? 0}
+        surface={surface}
+        result={compare}
+        tolerance={compareOp === "tolerance"}
+        onCompute={onComputeCompare}
+        onClear={onClear}
       />
     ) : mode === "alignment" ? (
       <AlignmentPanel

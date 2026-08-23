@@ -69,6 +69,17 @@ const LAYERS = {
   flow_accumulation: { source: "hydrology", kind: "flow_accumulation", ramp: "water", relief: false, label: "Flow accumulation", unit: "cells", log: true },
   sinks: { source: "hydrology", kind: "sinks", ramp: "water", relief: false, label: "Depression depth", unit: "m" },
   stream_order: { source: "hydrology", kind: "stream_order", ramp: "water", relief: false, label: "Stream order", unit: "" },
+  /**
+   * Tool 5, the colour-coded deviation map: the surface model minus the terrain
+   * model, which on these surveys is the height of everything standing on the
+   * ground — canopy, stockpiles, structures.
+   *
+   * A diverging ramp, and `rampFor` refuses a rainbow for a signed quantity: a
+   * difference coloured with a rainbow loses the sign, which is the only thing
+   * that matters about it. Relief is off, because shading a difference would
+   * light a quantity that has no surface.
+   */
+  difference: { source: "difference", kind: "dsm", ramp: "difference", relief: false, label: "Surface minus terrain", unit: "m", signed: true },
 } as const;
 
 type LayerKey = keyof typeof LAYERS;
@@ -107,6 +118,15 @@ export async function GET(
   if (!site) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const spec = LAYERS[layer as LayerKey];
+  /*
+   * Whether this layer's values carry a sign, which decides more than a colour.
+   *
+   * `rampFor` refuses a sequential ramp for a signed quantity *and* a diverging
+   * one for an unsigned quantity, in both directions. Omitting this made the
+   * difference layer answer 500 the first time it was asked for, which is the
+   * guard working exactly as intended.
+   */
+  const signed = Boolean((LAYERS[layer as LayerKey] as { signed?: boolean } | undefined)?.signed);
   if (!spec) {
     return NextResponse.json(
       { error: `Unknown layer "${layer}". One of: ${Object.keys(LAYERS).join(", ")}.` },
@@ -132,8 +152,62 @@ export async function GET(
     // ---- find the grid ----------------------------------------------------
     let grid;
     let epsg: number | null;
+    /*
+     * Set when the layer builds its tile directly rather than handing back a
+     * grid in the survey's own geometry. The difference layer does, because the
+     * tile is the only common grid its two inputs have; sampling it into a tile
+     * a second time would be resampling a resample. Kept separate from `grid`
+     * rather than assigned over it, because a tile-space grid has no world
+     * origin and nothing downstream should be able to ask it for one.
+     */
+    let tileGrid: ReturnType<typeof sampleIntoTile> | null = null;
 
-    if (spec.source === "terrain") {
+    /**
+     * The difference layer is computed here rather than stored.
+     *
+     * Both models are sampled into *this tile*, so the tile itself is the common
+     * grid and no resampling is invented: every pixel compares the two surfaces
+     * at the same point on the ground. That matters here more than usual —
+     * Kotba's DSM is 0.157 m and its DTM is 0.241 m with different origins, so
+     * there is no shared cell to subtract, and `surfaceDifference` correctly
+     * refuses such a pair.
+     *
+     * Sampled at the tile's own resolution rather than the raster's, which is a
+     * point sample rather than an average and so will alias on a canopy edge at
+     * low zoom. That is the right trade for a display layer: the polygon
+     * statistics in the analysis route read every cell, and they are what a
+     * client quotes.
+     */
+    if (spec.source === "difference") {
+      const dsm = await openTerrain(siteSlug, "dsm");
+      const dtm = await openTerrain(siteSlug, "dtm");
+      epsg = dsm.epsg;
+      const zone = dsm.utmZone!;
+      const project = (lon: number, lat: number) =>
+        lonLatToUtm(lon, lat, zone.zone, zone.northern) as [number, number];
+      const bbox = tileBoundsProjected(zoom, tx, ty, project);
+      if (!overlaps(bbox, dsm.bounds) || !overlaps(bbox, dtm.bounds)) return png(EMPTY);
+
+      const upper = dsm.windowFor(bbox);
+      const lower = dtm.windowFor(bbox);
+      if (!upper || !lower) return png(EMPTY);
+      if (upper.cols * upper.rows > 40_000_000 || lower.cols * lower.rows > 40_000_000) {
+        return png(EMPTY);
+      }
+      const upperGrid = await dsm.readWindow(upper);
+      const lowerGrid = await dtm.readWindow(lower);
+      if (!upperGrid || !lowerGrid) return png(EMPTY);
+
+      const a = sampleIntoTile(upperGrid, zoom, tx, ty, project, TILE_SIZE);
+      const b = sampleIntoTile(lowerGrid, zoom, tx, ty, project, TILE_SIZE);
+      for (let i = 0; i < a.data.length; i += 1) {
+        // Either surface missing means the difference is unknown, not zero.
+        // Zero would draw as "no change", which is a claim, not an absence.
+        if (a.isNoData(a.data[i]) || b.isNoData(b.data[i])) a.data[i] = a.nodata;
+        else a.data[i] = a.data[i] - b.data[i];
+      }
+      tileGrid = a;
+    } else if (spec.source === "terrain") {
       const raster = await openTerrain(siteSlug, spec.kind as "dtm" | "dsm");
       epsg = raster.epsg;
       const zone = raster.utmZone!;
@@ -154,7 +228,7 @@ export async function GET(
       grid = await hydro.grid(spec.kind as HydrologyLayer);
       epsg = hydro.epsg;
     }
-    if (!grid) return png(EMPTY);
+    if (!grid && !tileGrid) return png(EMPTY);
 
     const code = epsg ?? 0;
     const zone =
@@ -167,17 +241,20 @@ export async function GET(
     const project = (lon: number, lat: number) =>
       lonLatToUtm(lon, lat, zone.zone, zone.northern) as [number, number];
 
-    if (!overlaps(tileBoundsProjected(zoom, tx, ty, project), [
-      grid.originX,
-      grid.originY - grid.height * grid.cellSize,
-      grid.originX + grid.width * grid.cellSize,
-      grid.originY,
-    ])) {
+    if (
+      grid &&
+      !overlaps(tileBoundsProjected(zoom, tx, ty, project), [
+        grid.originX,
+        grid.originY - grid.height * grid.cellSize,
+        grid.originX + grid.width * grid.cellSize,
+        grid.originY,
+      ])
+    ) {
       return png(EMPTY);
     }
 
     // ---- resample into the tile -------------------------------------------
-    const sampled = sampleIntoTile(grid, zoom, tx, ty, project, TILE_SIZE);
+    const sampled = tileGrid ?? sampleIntoTile(grid!, zoom, tx, ty, project, TILE_SIZE);
 
     let any = false;
     let min = Infinity;
@@ -219,9 +296,30 @@ export async function GET(
       lo = min;
       hi = max > min ? max : min + 1;
     }
+    /*
+     * A diverging ramp has to be centred on zero, or its midpoint colour lands
+     * somewhere that means nothing. Left to the data's own range, a difference
+     * running -2 to +25 m would paint +11.5 m as "no change", which is the one
+     * reading this layer exists to give correctly.
+     */
+    if (signed) {
+      const reach = Math.max(Math.abs(lo), Math.abs(hi));
+      lo = -reach;
+      hi = reach;
+    }
 
     const rampName = url.searchParams.get("ramp") ?? spec.ramp;
-    const stops = rampFor(rampName);
+    let stops;
+    try {
+      stops = rampFor(rampName, { signed });
+    } catch (error) {
+      // A client asking for the wrong kind of ramp is a bad request, not a
+      // server fault, and the message says exactly why in terms worth reading.
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "unusable ramp" },
+        { status: 400 },
+      );
+    }
 
     /**
      * Flow accumulation is not a linear quantity and must not be drawn as one.
