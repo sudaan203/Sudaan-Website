@@ -1829,7 +1829,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [contours, setContours] = useState<ContourState | null>(null);
   const [contourControls, setContourControls] = useState<ContourControls>({
     labels: true,
-    colour: true,
+    /*
+     * Off by default, now that the terrain underneath carries the colour.
+     *
+     * Colouring contours by height was right when the elevation tiles were a
+     * flat brand wash: the lines were the only thing saying which way was up.
+     * With the models properly graded, a rainbow line over a rainbow surface is
+     * the same information twice and the contours disappear into the ground they
+     * are drawn on. One dark line reads over any of it. Still one click away for
+     * anyone who wants it.
+     */
+    colour: false,
     indexEvery: 5,
     low: -Infinity,
     high: Infinity,

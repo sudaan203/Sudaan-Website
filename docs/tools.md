@@ -464,6 +464,41 @@ as the page changing its mind. A tool waiting on the terrain probe now stays on
 the bar, disabled. "We do not know yet" and "it cannot be done" are different
 states and deserve different interfaces.
 
+### 3.11 The elevation models were never colour graded (#55)
+
+Malhar noticed, and he was right. The DSM and DTM a client sees by default were
+tiled before the dynamic tiler existed, with the site's own warm brand ramp and
+**no relief shading at all**. Two consequences, both bad:
+
+- You could not read a height off either of them. They were sepia washes.
+- A DSM and a DTM of the same ground came out **nearly identical**, which
+  defeats the point of publishing both.
+
+Worse, the two representations of the same raster disagreed. The layer tree drew
+the brown version while the rendered-layers panel drew a properly graded one from
+the same file, so what the data looked like depended on which control a client
+happened to find. `Important Notes.txt` asks for "a Global Mapper type of image",
+and one of the two answers was.
+
+**The fix is to share the palette rather than to invent a second one.**
+`prepare-site.mjs` now colours elevation with `rampFor("rainbow")` from
+`colour.mjs` and composites `hillshade` from `render.mjs` — the same functions
+the tiler uses — so the baked tile and the rendered tile are the same picture.
+634 elevation tiles were rebuilt across both surveys; the manifests are byte for
+byte identical, because only the pixels changed.
+
+One thing that had to be got right: the hillshade needs **metres per pixel from
+the world file**, not a default of 1. Kotba's raster is 24 cm, so a cell size of
+1 exaggerates every slope by four — which turns gentle ground into a mountain
+range and looks, at a glance, entirely convincing.
+
+The fix then exposed a second problem it had been hiding. Contours defaulted to
+**coloured by height**, which was right when the ground beneath them was a flat
+wash and the lines were the only thing saying which way was up. Over a graded
+surface it is the same information twice, and a rainbow line over a rainbow
+surface disappears into it. The default is now one dark line; the control is
+still there.
+
 ---
 
 ## 4. Judgement calls
@@ -729,7 +764,7 @@ Two more, both specific to drawing:
 | `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
 | `portal-tool-rail-test` | 34 | the tool groups, and that one tool is armed at a time |
-| `portal-contours-browser-test` | 26 | contour labels, bands, index lines, colour |
+| `portal-contours-browser-test` | 27 | contour labels, bands, index lines, colour |
 | `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
 | `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
 | `portal-surface-browser-test` | 40 | polygon tools, and the contents of the files they write |

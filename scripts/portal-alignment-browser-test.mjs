@@ -138,8 +138,28 @@ const drawn = async () => {
 console.log(`\nOpening the ${SITE} map`);
 await page.goto(`${BASE}/portal/${SITE}/map`, { waitUntil: "networkidle2", timeout: 60000 });
 await page.waitForSelector("canvas.maplibregl-canvas", { timeout: 30000 }).catch(() => {});
+/*
+ * Wait for a tool to become enabled, not for "Checking…" to disappear.
+ *
+ * Waiting for the *absence* of something races hydration: before React has run,
+ * the text is not there either, so the wait returns immediately and the tools are
+ * then found mid-probe. A measure tool now renders disabled while the elevation
+ * probe is in flight — "we do not know yet" and "it cannot be done" being
+ * different states — so this shows up as every road tool being greyed out.
+ *
+ * A positive signal cannot race: the button is enabled only once the answer is
+ * in.
+ */
 await page
-  .waitForFunction(() => !/Checking the elevation model/i.test(document.body.innerText), { timeout: 45000 })
+  .waitForFunction(
+    () => {
+      const b = [...document.querySelectorAll("button")].find(
+        (e) => e.getAttribute("aria-label") === "Spot Level",
+      );
+      return Boolean(b) && !b.disabled;
+    },
+    { timeout: 45000 },
+  )
   .catch(() => {});
 
 console.log("\nThe road tools are no longer greyed out");
