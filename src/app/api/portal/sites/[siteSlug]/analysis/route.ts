@@ -11,7 +11,7 @@ import {
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
 import { boundsOf } from "@/lib/geo/raster-window.mjs";
-import { lonLatToUtm } from "@/lib/geo/projection.mjs";
+import { lonLatToUtm, utmToLonLat } from "@/lib/geo/projection.mjs";
 import {
   spotLevel,
   profile,
@@ -26,6 +26,7 @@ import {
   chainage,
   crossSections,
   corridorAnalysis,
+  benchAnalysis,
 } from "@/lib/geo/engineering.mjs";
 import { slopeDegrees } from "@/lib/geo/hydrology.mjs";
 
@@ -120,6 +121,24 @@ export async function POST(
     const utm = raster.utmZone!;
     const rmseZ = surveyRmseZ();
     const project = (g: Geometry) => toProjected(g, crs, utm.zone, utm.northern);
+
+    /**
+     * Projected metres back to lon/lat, for anything the map has to draw.
+     *
+     * The alignment tools answer in the survey's own CRS, which is right — a
+     * chainage is a distance in metres and a station is a point in metres. But a
+     * client cannot see a station until it is on the map, and reprojecting
+     * fifty of them in the browser would mean shipping a UTM implementation to
+     * every page for the sake of four tools. One `lonlat` beside each easting
+     * and northing costs a few hundred bytes and keeps the projection in one
+     * place.
+     */
+    const unproject = ([x, y]: [number, number]): [number, number] =>
+      utmToLonLat(x, y, utm.zone, utm.northern) as [number, number];
+    const withLonLat = <T extends { easting?: number; northing?: number }>(row: T) =>
+      typeof row.easting === "number" && typeof row.northing === "number"
+        ? { ...row, lonlat: unproject([row.easting, row.northing]) }
+        : row;
     const common = {
       site: siteSlug,
       surface: kind,
@@ -256,7 +275,8 @@ export async function POST(
       case "chainage": {
         const line = project(readGeometry(body, "line", 2));
         const interval = Number(body.interval) > 0 ? Number(body.interval) : 25;
-        result = chainage(await windowed(line), line, interval, { rmseZ });
+        const answer = chainage(await windowed(line), line, interval, { rmseZ });
+        result = { ...answer, stations: answer.stations.map(withLonLat) };
         break;
       }
 
@@ -266,19 +286,75 @@ export async function POST(
       case "cross-sections": {
         const line = project(readGeometry(body, "line", 2));
         const halfWidth = Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15;
-        result = crossSections(await windowed(line, halfWidth), line, {
+        const answer = crossSections(await windowed(line, halfWidth), line, {
           interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
           halfWidth,
         });
+        result = {
+          ...answer,
+          sections: answer.sections.map((section: Record<string, unknown>) => {
+            const samples = section.samples as { easting: number; northing: number }[];
+            return {
+              ...section,
+              centreLonLat: unproject([
+                section.centreEasting as number,
+                section.centreNorthing as number,
+              ]),
+              /*
+               * The two ends of the cut, so the map can draw the tick the
+               * section was actually taken along. Derived from the first and
+               * last samples rather than from the half width and a bearing,
+               * because those samples *are* where it was measured.
+               */
+              endsLonLat: samples.length
+                ? [
+                    unproject([samples[0].easting, samples[0].northing]),
+                    unproject([
+                      samples[samples.length - 1].easting,
+                      samples[samples.length - 1].northing,
+                    ]),
+                  ]
+                : null,
+            };
+          }),
+        };
         break;
       }
       case "corridor": {
         const line = project(readGeometry(body, "line", 2));
         const halfWidth = Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15;
-        result = corridorAnalysis(await windowed(line, halfWidth), line, {
+        const answer = corridorAnalysis(await windowed(line, halfWidth), line, {
           interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
           halfWidth,
           maxGradePercent: Number(body.maxGradePercent) > 0 ? Number(body.maxGradePercent) : 10,
+          maxCrossfallPercent:
+            Number(body.maxCrossfallPercent) > 0 ? Number(body.maxCrossfallPercent) : 6,
+        });
+        result = {
+          ...answer,
+          stations: answer.stations.map(withLonLat),
+          unsafeStations: answer.unsafeStations.map(withLonLat),
+        };
+        break;
+      }
+
+      /**
+       * Tool 16, bench analysis.
+       *
+       * A section *across* a mine face, not along a road: the line is read as a
+       * profile and split into alternating flats and risers. Which means it will
+       * happily find "benches" on a natural hillside, so the result says what it
+       * measured rather than what it means. That wording is in the panel too.
+       *
+       * The window needs no margin — this samples the line itself, like a
+       * profile, and unlike the corridor ops it never reaches sideways.
+       */
+      case "bench": {
+        const line = project(readGeometry(body, "line", 2));
+        result = benchAnalysis(await windowed(line), line, {
+          benchSlopePercent:
+            Number(body.benchSlopePercent) > 0 ? Number(body.benchSlopePercent) : 10,
+          minBenchWidth: Number(body.minBenchWidth) > 0 ? Number(body.minBenchWidth) : 2,
         });
         break;
       }
@@ -286,7 +362,7 @@ export async function POST(
       default:
         throw new BadRequest(
           `Unknown op "${op}". One of: spot, profile, grid-levels, polygon-stats, volume, ` +
-            `stockpile, slope, chainage, cross-sections, corridor.`,
+            `stockpile, slope, chainage, cross-sections, corridor, bench.`,
         );
     }
 

@@ -317,6 +317,41 @@ states how many points are on screen against how many were flown — because a
 viewer silently drawing a twentieth of a cloud looks identical to one drawing
 all of it until somebody measures off it.
 
+### 3.8 One alignment, four tools (#50)
+
+Nine of the twenty-eight specified tools were **engine only**: written, tested,
+and unreachable. Four of them — 19 chainage, 20 corridor, 21 automatic cross
+sections and 16 bench analysis — were waiting on exactly the same missing piece,
+and it was not a calculation. It was a way to draw a line.
+
+That is now one mode. The client draws a centreline once and asks it four
+questions, rather than four modes each demanding the same geometry again. It is
+the same shape as cut-and-fill against stockpile: one act, several questions,
+and the rail button says which one was pressed.
+
+**What each tool now does on the map:** chainage draws its stations and labels
+them 0+000 the way a drawing does; corridor draws the same stations and turns
+the ones over your limits red; cross sections draw as the ticks they were
+actually cut along, taken from the first and last sample rather than from a
+bearing; bench analysis draws nothing, because its answer is a reading of the
+line already on screen.
+
+**Tool 18, haul road analysis, came free.** It asks for width, gradient,
+crossfall and unsafe sections, which is tool 20 with mining limits. It is marked
+live on the same engine rather than duplicated.
+
+Three things this work changed underneath:
+
+- **`corridorAnalysis` now carries coordinates through into its rows.** They
+  were computed and dropped. Every other result could be placed on a map and the
+  corridor's could not — and its flagged stations are the ones a client most
+  wants to point at.
+- **The route attaches `lonlat` to every station.** The engines answer in the
+  survey's own CRS, which is right, but a browser holding no UTM implementation
+  cannot draw that. One extra pair per station beats shipping a projection to
+  every page for the sake of four tools.
+- **Bench analysis accounts for the whole line.** See §5.
+
 ---
 
 ## 4. Judgement calls
@@ -439,6 +474,22 @@ input box.**
 | 13 | The cloud was drawn at height above **sea level**. MapLibre's camera is perspective even looking straight down, so a cloud floating 30–103 m above the map plane projects 6.5% outward — 50 m on the ground at the survey edge, and it no longer sat on the orthomosaic | Same. Anchored to the survey's own lowest ground instead |
 | 14 | Node longitude/latitude boxes built from two corners of a UTM rectangle. Grid convergence turns that rectangle half a degree against true north here, so the box missed ground the other two corners cover, and edge nodes would have been culled while still on screen | The browser suite's containment check, then arithmetic |
 
+### From the alignment tools
+
+| # | Defect | How it was caught |
+|---|---|---|
+| 15 | `benchAnalysis` silently discarded flats narrower than the minimum bench width. On a natural slope that was a quarter of the line: benches and faces came to 159 m of a 209 m alignment and nothing said where the rest went | Asserting that the classified runs account for the whole line |
+| 16 | Even after that, 11 m was still missing — the ends of the line running off the survey. Now counted as `unsurveyed`, computed from where the data starts and stops rather than as the leftover, so the sum is a real check and not an identity | The same assertion, again |
+
+A third finding was **not** a defect, and mattering more for it. The suite first
+asserted that every face is steeper than the bench threshold, mirroring the check
+for benches. It failed, correctly. A run is classified from the slope of each
+*segment*, but the slope reported for the run is its net rise over its length —
+so for a bench the guarantee holds (if every segment is within the threshold, the
+net cannot exceed it) and for a face it does not (a run of steep segments that
+zigzags has a small net slope). The asymmetry is real, and the test now asserts
+what is true rather than what looked symmetrical.
+
 ### Test-harness traps worth remembering
 
 These cost real time and will recur:
@@ -480,6 +531,11 @@ Two more, both specific to drawing:
 - `readPixels` on MapLibre's context **returns nothing**: the map has no
   preserved drawing buffer, and asking for a context with that flag returns the
   existing one. Screenshots are composited by the browser and do not care.
+- `getSource(id)._data` **is not the public contract and does not hold what a
+  `setData` put there.** It reported zero alignment stations while twenty-two
+  labels were visibly on the map. `queryRenderedFeatures({ layers: [...] })` is
+  both correct and the stronger claim: it proves the features were *drawn*, not
+  merely handed to MapLibre.
 - A marker given a **custom element keeps only that element's classes**;
   MapLibre adds `maplibregl-marker` only to elements it creates. The contour
   labels survived a sweep meant to hide overlays, then differed against the
@@ -502,6 +558,8 @@ Two more, both specific to drawing:
 | #46 | 22 Aug 2026 | This document |
 | #47 | 23 Aug 2026 | Tools grouped by discipline; contour elevation controls |
 | #48 | 23 Aug 2026 | LiDAR point cloud: pipeline, route and in-map viewer |
+| #49 | 23 Aug 2026 | Production confirmed end to end |
+| #50 | 23 Aug 2026 | The alignment tool: tools 16, 18, 19, 20, 21 |
 
 ### Infrastructure
 
@@ -512,7 +570,7 @@ Two more, both specific to drawing:
   127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
   could have answered.
 
-### Tests: 821 checks
+### Tests: 912 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -528,12 +586,14 @@ Two more, both specific to drawing:
 | `hydrology-api-test` | 61 | hydrology over HTTP |
 | `render-api-test` | 26 | tiles over HTTP, decoded |
 | `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |
+| `alignment-api-test` | 47 | the four alignment tools, as relationships |
 | `portal-map-browser-test` | 36 | measure tools in a real browser |
 | `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
-| `portal-tool-rail-test` | 39 | the tool groups, and that one tool is armed at a time |
+| `portal-tool-rail-test` | 41 | the tool groups, and that one tool is armed at a time |
 | `portal-contours-browser-test` | 26 | contour labels, bands, index lines, colour |
 | `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
+| `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
 | `portal-map-no-terrain-test` | 16 | the production case: tiles without rasters |
 | `portal-assets-test` | 7 | asset serving |
 | `portal-map-test` | 19 | manifest handling |
@@ -557,19 +617,21 @@ The full table, generated from the same list the dashboard reads, is
 
 | State | Count | Tools |
 |---|---|---|
-| **Live** — usable on the map today | 5 | 1, 25, 26, 27, 28 |
-| **Partly built** | 8 | 3, 4, 10, 14, 15, 18, 24, 37 |
-| **Engine only** — written and tested, nothing calls it | 9 | 2, 5, 11, 13, 16, 17, 19, 20, 21 |
+| **Live** — usable on the map today | 8 | 1, 16, 18, 19, 25, 26, 27, 28 |
+| **Partly built** | 9 | 3, 4, 10, 14, 15, 20, 21, 24, 37 |
+| **Engine only** — written and tested, nothing calls it | 5 | 2, 5, 11, 13, 17 |
 | **Not built** | 5 | 7, 8, 9, 12, 40 |
 | **Blocked on data** | 1 | 6 |
 | **Never specified by Malhar** | 12 | 22, 23, 29–36, 38, 39 |
 
-Nine of the twenty-eight tools that exist are engine-only, and eight of those
-nine are waiting on the same thing: **a way to draw the input**. Roads (19–21)
-and bench analysis (16) need an alignment tool; grid levels (2) needs a polygon
-routed to an op the UI does not call yet. That is one piece of UI work standing
-between four tools and being live, which makes it the highest-value item on the
-list.
+Seventeen of the twenty-eight specified tools now do something on the map, up
+from thirteen. The alignment tool moved four at once — 16, 18, 19 to live and
+20, 21 to partial — which is what the previous edition of this table predicted it
+would.
+
+Of the five that remain engine-only, three (2 grid levels, 5 surface comparison,
+13 tolerance) need only wiring; 11 needs a second flight; 17 needs a
+geotechnical limit nobody has given us.
 
 Outside the numbering: **the LiDAR point cloud** is live on the map, and
 **Area** and **Inspect** — both specified in prose rather than as numbered
@@ -738,25 +800,27 @@ anyone asks to see the cloud at full density; not worth doing on spec.
 
 In order, and none of it blocked:
 
-1. **Draw an alignment.** One piece of UI — a polyline the client draws and
-   names — makes tools 19, 20, 21 and 16 live at once. Four tools already
-   written and tested are waiting on it, which makes this the best return on the
-   list by a wide margin.
-2. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
+1. ~~**Draw an alignment.**~~ Done, PR #50. It moved four tools as predicted.
+2. **Wire the three remaining engine-only tools**, which now need nothing but a
+   panel each: 2 grid spot levels (polygon plus a spacing, and the server
+   already writes CSV, DXF, TXT and LandXML), 5 surface comparison (DSM minus
+   DTM works on both sites today) and 13 tolerance analysis. Same shape of work
+   as the alignment tool and the same kind of return.
+3. **Tools 6–9**: timeline, bookmarks, share view, and annotation if he resolves
    the contradiction. Share links need signing, expiry, revocation, site scoping
    and an owner kill switch, and belong in `portal-security-test.mjs` before they
    ship.
-3. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
+4. **Wire the export centre (tool 10 / 37).** DXF, LandXML, SHP and GeoJSON
    already exist in `export-formats.mjs` and are unreachable from the UI. GeoTIFF
    export matters more than it looks: it lets a client open the exact grid we
    computed against in Global Mapper and check our numbers, and none of Propeller,
    PIX4Dcloud or DroneDeploy offers it.
-4. **Tool 40, the dashboard summary.** Every figure on Malhar's list except
+5. **Tool 40, the dashboard summary.** Every figure on Malhar's list except
    stockpile count and cut/fill volume is already computable from the manifest
    and the recorded raster statistics. It is a panel, not an engine, and it is
    the first thing a client sees.
-5. **Slope from overviews**, closing 7.2.
-6. **The weighted overlay engine** for B4, with weights in configuration, ready
+6. **Slope from overviews**, closing 7.2.
+7. **The weighted overlay engine** for B4, with weights in configuration, ready
    for the day his model arrives.
 
 The thing worth preserving from this round is the testing habit rather than any

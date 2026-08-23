@@ -15,9 +15,9 @@ disabled with a line saying what they are waiting on.
 
 | | Tools |
 |---|---|
-| **Live** | 5 — 1, 25, 26, 27, 28 |
-| **Partly built** | 8 — 3, 4, 10, 14, 15, 18, 24, 37 |
-| **Engine only** | 9 — 2, 5, 11, 13, 16, 17, 19, 20, 21 |
+| **Live** | 8 — 1, 16, 18, 19, 25, 26, 27, 28 |
+| **Partly built** | 9 — 3, 4, 10, 14, 15, 20, 21, 24, 37 |
+| **Engine only** | 5 — 2, 5, 11, 13, 17 |
 | **Not built** | 5 — 7, 8, 9, 12, 40 |
 | **Blocked** | 1 — 6 |
 | **Never specified** | 12 — 22, 23, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39 |
@@ -120,9 +120,9 @@ we hold, whatever we do, and says why.
 | # | Tool | Status | |
 |---|---|---|---|
 | 15 | **Stockpile Volume** | Partly built | Selecting a pile and getting its volume, base area and height is live. Automatic detection is not built. |
-| 16 | **Bench Analysis** | Engine only | `benchAnalysis` finds benches along a drawn line and is tested. No route exposes it. |
+| 16 | **Bench Analysis** | Live | Reads a drawn line as alternating flats and faces. A measurement of the ground, not of the mine plan: pointed at a natural slope it reports terraces as benches, and says so. |
 | 17 | **Highwall Stability** | Engine only | `steepSlopeZones` returns the zones above a limit. The limit itself is a geotechnical number nobody has given us, and defaulting it would be inventing a safety threshold. |
-| 18 | **Haul Road Analysis** | Partly built | Corridor analysis measures width, longitudinal slope and crossfall along an alignment. "Unsafe" needs a stated limit, as with tool 17. |
+| 18 | **Haul Road Analysis** | Live | Delivered by tool 20 on the same drawn line: width, gradient and crossfall, with stations flagged above the grade and crossfall limits you set. Those limits are yours, not a standard. |
 
 > **15. Stockpile Volume** — Select or automatically detect stockpiles and instantly calculate volume, base area and height.
 >
@@ -138,9 +138,9 @@ we hold, whatever we do, and says why.
 
 | # | Tool | Status | |
 |---|---|---|---|
-| 19 | **Chainage** | Engine only | The route serves it, with proper 0+000 formatting. Nothing on the map draws an alignment to send it. |
-| 20 | **Corridor Analysis** | Engine only | Served by the analysis route. Same missing piece as 19: no alignment drawing tool on the map. |
-| 21 | **Automatic Cross Sections** | Engine only | Served by the analysis route. Needs the alignment tool, and the PDF sheet Important Notes.txt asks for ("cross sections every 10 m, export PDF as AutoCAD"). |
+| 19 | **Chainage** | Live |  |
+| 20 | **Corridor Analysis** | Partly built | Width, longitudinal grade and crossfall are live, with stations flagged against limits you set. Shoulders and median are not separated from the carriageway: that needs edge detection, not a terrain model. |
+| 21 | **Automatic Cross Sections** | Partly built | Sections are cut at 5, 10, 20 or 25 m and drawn on the map as the ticks they were taken along. The PDF sheet Important Notes.txt asks for ("cross sections every 10 m, export PDF as AutoCAD") is tool 10's job and is not built. |
 
 > **19. Chainage** — Generate chainage markers along a road alignment with elevation and profile data at each station.
 >
