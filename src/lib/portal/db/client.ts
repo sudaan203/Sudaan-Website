@@ -27,8 +27,43 @@ const globalForDb = globalThis as unknown as {
   portalSql?: ReturnType<typeof postgres>;
 };
 
-/** How long any one attempt gets before we give up on it. */
+/**
+ * How long any one attempt gets before we give up on it.
+ *
+ * ## The ladder, which has to stay in this order
+ *
+ *   connect_timeout (5s)  <  statement_timeout (6s)  <  this deadline (7s)
+ *
+ * Each layer's own guard has to fire before the layer above it, so the most
+ * specific error is the one that surfaces. Get it backwards and the outer
+ * deadline masks the real cause with a generic timeout.
+ *
+ * It *was* backwards. `connect_timeout` was 10 seconds while this deadline was
+ * 7, so a connection that needed 7 to 10 seconds — a cold pooler, a paused
+ * free-tier project waking up — was killed by us before the driver had finished
+ * trying, and `queryDb`'s single retry then handed it the same impossible
+ * budget. Both attempts died and the page rendered its error boundary.
+ *
+ * Observed in the logs on 23 Aug 2026:
+ *
+ *   [portal] session check: session check timed out after 7000ms — reconnecting
+ *   Failed query: select ... from "sites" <- write CONNECT_TIMEOUT
+ *     aws-0-ap-southeast-2.pooler.supabase.com:6543 [CONNECT_TIMEOUT]
+ *
+ * Measured from this machine the same day: 1,914 ms for the first connection,
+ * 275 ms warm. Five seconds is generous against that and fails fast against a
+ * pooler that is not answering, which is the case worth failing fast on.
+ */
 const QUERY_TIMEOUT_MS = 7000;
+
+/**
+ * Derived rather than written down, so the ladder above cannot drift.
+ *
+ * Two seconds under the deadline: enough that a connect failure is reported as a
+ * connect failure — which `isConnectionFault` recognises and retries on a fresh
+ * pool — rather than as our own timeout, which tells nobody anything.
+ */
+const CONNECT_TIMEOUT_S = Math.floor((QUERY_TIMEOUT_MS - 2000) / 1000);
 
 /** Connections in the pool. See the comment on `max` below before changing it. */
 const POOL_MAX = 8;
@@ -166,7 +201,7 @@ export function getDb(): PortalDb | null {
     // load rather than 8 connections held open.
     max: POOL_MAX,
     idle_timeout: 20,
-    connect_timeout: 10,
+    connect_timeout: CONNECT_TIMEOUT_S,
     // Recycle a connection well before the pooler decides to drop it. Supabase
     // closes pooled connections on its own schedule, and a socket that the
     // pooler has already discarded looks fine to us until the next query fails
