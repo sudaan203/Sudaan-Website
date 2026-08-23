@@ -62,9 +62,20 @@ await page.goto(`${BASE}/portal/${SITE}/map`, { waitUntil: "networkidle2", timeo
 await page.waitForSelector('[role="tab"]', { timeout: 30000 }).catch(() => {});
 // The tools stay disabled until the server has said what can be measured.
 await page
-  .waitForFunction(() => !/Checking the elevation model/i.test(document.body.innerText), {
-    timeout: 45000,
-  })
+  /*
+   * A positive signal, not the absence of one: waiting for "Checking…" to
+   * disappear races hydration, because before React runs the text is missing too
+   * and the wait returns before the page has done anything.
+   */
+  .waitForFunction(
+    () => {
+      const b = [...document.querySelectorAll("button")].find(
+        (e) => e.getAttribute("aria-label") === "Spot Level",
+      );
+      return Boolean(b) && !b.disabled;
+    },
+    { timeout: 45000 },
+  )
   .catch(() => {});
 
 const settle = (ms = 700) => new Promise((r) => setTimeout(r, ms));

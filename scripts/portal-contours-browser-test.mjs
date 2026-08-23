@@ -197,16 +197,27 @@ console.log("\nIndex contours are drawn heavier");
 
 console.log("\nColour is stretched across the band shown");
 {
-  const style = await contourStyle();
-  check("line colour is interpolated over elevation",
-    JSON.stringify(style?.colour ?? "").includes("interpolate") &&
-      JSON.stringify(style?.colour ?? "").includes("elevation"));
+  /*
+   * It starts *off* now. Colouring contours by height was right when the
+   * elevation tiles were a flat brand wash and the lines were the only thing
+   * saying which way was up; with the models properly graded it is the same
+   * information twice, and a rainbow line over a rainbow surface disappears
+   * into the ground it is drawn on. So the default is one dark line, and this
+   * checks the control in both directions rather than only the way back.
+   */
+  const flat = await contourStyle();
+  check("it starts as a single colour, the terrain carrying the height",
+    typeof flat?.colour === "string", JSON.stringify(flat?.colour ?? "").slice(0, 80));
 
   await toggle("Colour by height");
-  const flat = await contourStyle();
-  check("turning it off gives a single colour", typeof flat?.colour === "string",
-    JSON.stringify(flat?.colour ?? "").slice(0, 80));
+  const graded = await contourStyle();
+  check("turning it on interpolates the line over elevation",
+    JSON.stringify(graded?.colour ?? "").includes("interpolate") &&
+      JSON.stringify(graded?.colour ?? "").includes("elevation"));
+
   await toggle("Colour by height");
+  check("and turning it off returns to one colour",
+    typeof (await contourStyle())?.colour === "string");
 }
 
 console.log("\nAn elevation band hides the levels outside it, and only those");

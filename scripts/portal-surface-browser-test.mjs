@@ -103,7 +103,30 @@ async function openGroup(name) {
   await settle(500);
 }
 
+/**
+ * Wait until the map has stopped moving.
+ *
+ * `fitBounds` animates, and clicking into that animation puts the polygon over
+ * different ground on every run — which changes the level count, and sometimes
+ * lands it somewhere with no data at all so the export buttons never appear.
+ * That produced a suite that passed and failed alternately for reasons nothing
+ * to do with what it was testing.
+ */
+async function mapSettled() {
+  await page
+    .waitForFunction(
+      () => {
+        const m = window.__portalMap;
+        return Boolean(m) && !m.isMoving() && m.areTilesLoaded();
+      },
+      { timeout: 30000 },
+    )
+    .catch(() => {});
+  await settle(400);
+}
+
 async function drawPolygon() {
+  await mapSettled();
   const box = await (await page.$("canvas.maplibregl-canvas")).boundingBox();
   const at = (dx, dy) => [box.x + box.width / 2 + dx, box.y + box.height / 2 + dy];
   for (const [dx, dy] of [[-90, -60], [70, -60], [70, 55]]) {
@@ -124,8 +147,25 @@ async function drawPolygon() {
 console.log(`\nOpening the ${SITE} map`);
 await page.goto(`${BASE}/portal/${SITE}/map`, { waitUntil: "networkidle2", timeout: 60000 });
 await page.waitForSelector("canvas.maplibregl-canvas", { timeout: 30000 }).catch(() => {});
+/*
+ * A positive signal, not the absence of one.
+ *
+ * Waiting for "Checking the elevation model" to *disappear* races hydration:
+ * before React has run the text is not there either, so the wait returns at once
+ * and the tools are found mid-probe. A measure tool renders disabled while the
+ * probe is in flight, so the symptom is every tool greyed out and a suite of
+ * failures pointing at the wrong thing.
+ */
 await page
-  .waitForFunction(() => !/Checking the elevation model/i.test(document.body.innerText), { timeout: 45000 })
+  .waitForFunction(
+    () => {
+      const b = [...document.querySelectorAll("button")].find(
+        (e) => e.getAttribute("aria-label") === "Spot Level",
+      );
+      return Boolean(b) && !b.disabled;
+    },
+    { timeout: 45000 },
+  )
   .catch(() => {});
 
 // Capture every file the page offers, so an export can be read rather than
@@ -165,8 +205,25 @@ await page.evaluateOnNewDocument(() => {
     );
 });
 await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
+/*
+ * A positive signal, not the absence of one.
+ *
+ * Waiting for "Checking the elevation model" to *disappear* races hydration:
+ * before React has run the text is not there either, so the wait returns at once
+ * and the tools are found mid-probe. A measure tool renders disabled while the
+ * probe is in flight, so the symptom is every tool greyed out and a suite of
+ * failures pointing at the wrong thing.
+ */
 await page
-  .waitForFunction(() => !/Checking the elevation model/i.test(document.body.innerText), { timeout: 45000 })
+  .waitForFunction(
+    () => {
+      const b = [...document.querySelectorAll("button")].find(
+        (e) => e.getAttribute("aria-label") === "Spot Level",
+      );
+      return Boolean(b) && !b.disabled;
+    },
+    { timeout: 45000 },
+  )
   .catch(() => {});
 
 console.log("\nTool 2: grid spot levels");

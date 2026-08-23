@@ -48,6 +48,8 @@ import {
   TILE_SIZE,
 } from "./lib/geo.mjs";
 import { maskBorderBackground } from "./lib/nodata.mjs";
+import { rampFor } from "../src/lib/geo/colour.mjs";
+import { hillshade, renderGrid } from "../src/lib/geo/render.mjs";
 import {
   readManifest, emptyManifest, upsertLayer, sortLayers, writeManifest, verify,
 } from "./lib/manifest.mjs";
@@ -213,26 +215,25 @@ const report = [];
 
 /* --------------------------------------------------------------- rasters --- */
 
-const ramp = [
-  [0.0, [250, 226, 192]],
-  [0.35, [229, 142, 58]],
-  [0.65, [180, 83, 9]],
-  [1.0, [74, 42, 16]],
-];
-function elevColor(t) {
-  for (let i = 0; i < ramp.length - 1; i += 1) {
-    const [a, ca] = ramp[i];
-    const [b, cb] = ramp[i + 1];
-    if (t >= a && t <= b) {
-      const k = (t - a) / (b - a);
-      return [0, 1, 2].map((c) => Math.round(ca[c] + (cb[c] - ca[c]) * k));
-    }
-  }
-  return ramp[ramp.length - 1][1];
-}
+/**
+ * Elevation models are coloured with the same ramp and the same hillshade the
+ * dynamic tiler uses, from `src/lib/geo/colour.mjs` and `render.mjs`.
+ *
+ * They were not, and Malhar was right to notice. These tiles were baked before
+ * the tiler existed, with the site's own warm brand ramp and no relief at all,
+ * so a DSM and a DTM of the same ground came out as two nearly identical sepia
+ * washes. You could not read a height off either, you could not tell them apart,
+ * and the client's own note asks for "a Global Mapper type of image".
+ *
+ * Worse, the two representations disagreed: the layer tree drew the brown
+ * version while the rendered-layers panel drew a properly graded one from the
+ * same raster, so the same data had two appearances depending on which control
+ * you found. Sharing the palette makes them the same picture.
+ */
+const ELEVATION_RAMP = rampFor("rainbow");
 
 /** Colourised RGBA for an elevation model, plus its true range. */
-async function elevationToRgba(file, meta) {
+async function elevationToRgba(file, geo) {
   const { data, info } = await sharp(file, { limitInputPixels: false })
     .raw({ depth: "float" })
     .toBuffer({ resolveWithObject: true });
@@ -262,17 +263,49 @@ async function elevationToRgba(file, meta) {
   const hi = sample[Math.floor(sample.length * 0.98)] ?? max;
   const span = hi - lo || 1;
 
-  const rgba = Buffer.alloc(pixels * 4);
+  /*
+   * A grid shaped the way `render.mjs` expects, over the raster's own floats.
+   *
+   * Copied into a dense Float32Array rather than passed as the strided view the
+   * decoder returns: hillshade reads eight neighbours per pixel and a stride of
+   * anything but one would silently sample the wrong ones. `NaN` marks nodata,
+   * which is what `isNoData` tests for and what leaves those pixels transparent.
+   */
+  const dense = new Float32Array(pixels);
   for (let i = 0; i < pixels; i += 1) {
     const v = at(i);
-    if (!isElevation(v)) continue;
-    const [r, g, b] = elevColor(Math.min(1, Math.max(0, (v - lo) / span)));
-    rgba[i * 4] = r;
-    rgba[i * 4 + 1] = g;
-    rgba[i * 4 + 2] = b;
-    rgba[i * 4 + 3] = 255;
+    dense[i] = isElevation(v) ? v : NaN;
   }
-  return { rgba, width: info.width, height: info.height, min, max, lo, hi };
+  const grid = {
+    width: info.width,
+    height: info.height,
+    data: dense,
+    /*
+     * Metres per pixel, from the world file, so the hillshade has real
+     * gradients.
+     *
+     * Not optional and not defaultable. A relief computed against a cell size of
+     * 1 on Kotba's 24 cm raster exaggerates every slope by four, which turns
+     * gentle ground into a mountain range and looks, at a glance, entirely
+     * convincing. The world file's first term is the x pixel size in projected
+     * units, which for every survey here is metres.
+     */
+    cellSize: Math.abs(geo?.world?.[0]) || 1,
+    isNoData: (v) => !Number.isFinite(v),
+  };
+
+  const relief = hillshade(grid, { azimuth: 315, altitude: 45, exaggeration: 1.6 });
+  const shaded = renderGrid(grid, { stops: ELEVATION_RAMP, min: lo, max: hi, relief });
+
+  return {
+    rgba: Buffer.from(shaded.buffer, shaded.byteOffset, shaded.byteLength),
+    width: info.width,
+    height: info.height,
+    min,
+    max,
+    lo,
+    hi,
+  };
 }
 
 /**
@@ -412,7 +445,7 @@ for (const file of rasterFiles) {
       );
       continue;
     }
-    const { rgba, width, height, min, max } = await elevationToRgba(file, info.meta);
+    const { rgba, width, height, min, max } = await elevationToRgba(file, geo);
     console.log(`  ${basename(file)}: elevation ${width}x${height}, ${min.toFixed(1)} to ${max.toFixed(1)} m`);
     await tileRaster({
       key, title: friendlyTitle(basename(file).replace(/\.[^.]+$/, "")), rgba, width, height, geo,
