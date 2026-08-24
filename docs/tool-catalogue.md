@@ -201,6 +201,21 @@ lists under Layers:
   itself. Colour by RGB, height or ASPRS class; classes filterable; detail
   budgeted so a weak laptop can still pan. See `docs/tools.md`.
 
+And one tool from a request that arrived after the original five documents,
+Malhar's own prompt in full:
+
+> Add a simple Shapefile tool to my existing GIS dashboard. Create: draw
+> Point, Line or Polygon on the map and save as a shapefile. Download: a
+> valid .zip containing .shp, .shx, .dbf and .prj. Upload: a shapefile .zip,
+> displayed automatically on the map. Do not modify the existing
+> dashboard/map design, only add these functions.
+
+- **Shapefile.** Draw or import Point, Line and Polygon features, export a
+  real ESRI Shapefile — hand-written to the binary spec, not GeoJSON with a
+  different extension — and import one from another package to compare
+  against this survey. Verified against an independent Python library, not
+  only against itself. See `docs/tools.md`.
+
 ## Still on Malhar
 
 - The twelve unspecified numbers above.

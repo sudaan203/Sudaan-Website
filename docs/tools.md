@@ -501,6 +501,70 @@ still there.
 
 ---
 
+### 3.12 A shapefile tool, verified against software we did not write (#56)
+
+Malhar's own prompt, mid-project, outside the original five documents:
+
+> Add a simple Shapefile tool to my existing GIS dashboard. Create: draw Point,
+> Line or Polygon on the map and save as a shapefile. Download: a valid .zip
+> containing .shp, .shx, .dbf and .prj. Upload: a shapefile .zip, displayed
+> automatically on the map. Do not modify the existing dashboard/map design,
+> only add these functions.
+
+It arrived in the same conversation as a genuine catch of his — that the DSM
+and DTM tiles had never been colour graded (§3.11) — and the two are connected.
+He is not asking to see our numbers presented more convincingly; he is asking
+for a way to check them against software he already trusts, without taking our
+word for either.
+
+**A real ESRI Shapefile, hand-written to the binary spec**, the same way the
+LAS reader and the DXF/LandXML writers were: `.shp` geometry, `.shx` index,
+`.dbf` attributes, `.prj` projection, in a `.zip` container also written by
+hand. Not GeoJSON renamed — a client comparing our output against Global
+Mapper or QGIS needs the actual format those tools read, with the actual
+binary quirks (the outer ring of a polygon is *clockwise* in a shapefile and
+*counter-clockwise* in GeoJSON — the opposite convention — so every polygon
+this writes or reads reverses its rings, unconditionally, in both directions).
+
+**Verified against software this project did not write.** Every engine in this
+codebase has been tested against itself; this is the first tested against an
+independent implementation. `pyshp`, installed fresh, read every point, line,
+polygon-with-a-hole and attribute this pipeline wrote, correctly, with no
+warning. Python's own `zipfile.testzip()` validated every CRC in an archive
+this pipeline produced and found no corruption. And the reverse: a shapefile
+written by `pyshp` and compressed with Python's `zipfile.ZIP_DEFLATED` — the
+default a real GIS package would produce — was read back correctly by this
+pipeline's own parser, hole and all. Self-consistency proves a format is
+internally coherent; an independent reader is the only thing that proves it is
+actually the format it claims to be.
+
+**Upload accepts whatever UTM zone the file declares, not only the survey's
+own.** The tool exists to compare against something else, so a shapefile from
+a neighbouring zone is reprojected and placed, not refused for disagreeing.
+A shapefile with no `.prj` at all, or one not on the WGS84 datum, is refused
+outright — the same rule every export in this portal already follows: a file
+whose projection cannot be stated does not get placed on a map by guessing.
+
+**A separate state machine, deliberately, not a fifteenth `MeasureMode`.**
+Every numbered tool asks the server one question about one shape in progress.
+This tool accumulates any number of separate features per geometry type and
+finishes one back into "ready to draw the next", which is a different shape of
+interaction from every other tool on the map. Folding it into the shared
+click handler would have meant teaching that handler a shape of interaction
+none of the other fifteen tools have. A second, independent axis — checked
+first, so nothing else runs while it is armed — is smaller and does not risk
+the mechanism every other tool depends on. The instruction not to touch the
+existing design made this the right call rather than merely the cautious one.
+
+**The route needs `node:zlib`, so it could not stay entirely client-side** the
+way the CSV/DXF/LandXML exports do. Those are pure string templating with zero
+imports; a zip a client uploads has to tolerate deflate compression, because
+that is what QGIS, ArcGIS and Global Mapper write by default, and only Node's
+zlib decodes that here. A reader that only accepts the one compression method
+its own writer happens to use is not an interchange tool.
+
+---
+
 ## 4. Judgement calls
 
 These were decisions with real alternatives, taken deliberately.
@@ -654,7 +718,23 @@ correctly **disabled** its compute button when the test picked the DTM as a
 reference for a measurement already on the DTM: comparing a surface with itself
 is identically zero, and the panel refusing it is the feature.
 
-### Test-harness traps worth remembering
+### From the shapefile tool
+
+Two test-authoring mistakes worth recording, because both were caught by the
+same pattern — the loop closed correctly — before either reached a client:
+
+| # | What happened | How it was caught |
+|---|---|---|
+| — | A round-trip check compared a coordinate to sub-millimetre (1e-6 m) precision after it had been through two forward UTM projections and one inverse. `projection.mjs` states its own accuracy as "millimetres" — a truncated series expansion, not a closed form — so 0.047 mm of numerical noise is not a defect, and the tolerance was tightened past what the function it is testing actually promises | The test's own comment, written while investigating the failure, corrected the test rather than the library |
+| — | A browser test asserted a rail tool was clicked by searching for it inside `[role="region"][aria-label="Universal"]` — a region that does not exist; the tool rail's groups are tab labels, not landmarks. The click silently did nothing, so the shapefile mode it was meant to clear never cleared, and two unrelated-looking assertions failed together | Tracing why *both* failed the same way in the same block, rather than fixing each in isolation |
+
+Neither was a defect in the product. Both are recorded because the pattern —
+one silent no-op producing two failures that look unrelated until traced back
+to the same missing click — is the kind of thing that costs real time again if
+forgotten.
+
+### From tools 2, 5 and 13
+
 
 These cost real time and will recur:
 
@@ -732,6 +812,8 @@ Two more, both specific to drawing:
 | #51 | 23 Aug 2026 | Grid levels, surface comparison, tolerance, and exports |
 | #53 | 23 Aug 2026 | Tool 40, and a design pass over the map workspace |
 | #54 | 23 Aug 2026 | The database timeout ladder, proved live and fixed |
+| #55 | 24 Aug 2026 | DSM/DTM colour grading, shared with the dynamic tiler |
+| #56 | 24 Aug 2026 | The shapefile tool: draw, download, upload, compare |
 
 ### Infrastructure
 
@@ -741,8 +823,11 @@ Two more, both specific to drawing:
 - The point cloud is in R2 too, under `sites/<slug>/cloud/`: 990 objects,
   127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
   could have answered.
+- The shapefile tool is verified against **software this project did not
+  write** — `pyshp` and Python's own `zipfile` — not only against itself. See
+  §3.12.
 
-### Tests: 1,008 checks
+### Tests: 1,094 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -760,6 +845,8 @@ Two more, both specific to drawing:
 | `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |
 | `alignment-api-test` | 47 | the four alignment tools, as relationships |
 | `surface-api-test` | 35 | grid levels, deviation, tolerance, and the signed ramp |
+| `shapefile-test` | 40 | SHP/SHX/DBF/PRJ/ZIP, round-tripped, byte for byte |
+| `shapefile-api-test` | 30 | the shapefile route: projection, refusals, round trip |
 | `portal-map-browser-test` | 36 | measure tools in a real browser |
 | `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
@@ -768,6 +855,7 @@ Two more, both specific to drawing:
 | `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
 | `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
 | `portal-surface-browser-test` | 40 | polygon tools, and the contents of the files they write |
+| `portal-shapefile-browser-test` | 26 | draw, download, upload the same file, and see it redrawn |
 | `portal-map-no-terrain-test` | 18 | the production case: tiles without rasters |
 | `portal-assets-test` | 7 | asset serving |
 | `portal-map-test` | 19 | manifest handling |
@@ -807,9 +895,10 @@ Nothing that remains is waiting on us alone. Tool 11 needs a second flight; tool
 Tool 17 needs a geotechnical limit a terrain model cannot supply. Tool 7 needs
 Malhar to resolve his own contradiction. Tools 8 and 9 are small and unblocked.
 
-Outside the numbering: **the LiDAR point cloud** is live on the map, and
-**Area** and **Inspect** — both specified in prose rather than as numbered
-tools — are offered at the end of their groups.
+Outside the numbering: **the LiDAR point cloud** is live on the map, **Area**
+and **Inspect** are offered in prose rather than as numbered tools, and the
+**shapefile tool** — Malhar's own later prompt, not from the original five
+documents — draws, downloads, uploads and compares.
 
 ---
 
