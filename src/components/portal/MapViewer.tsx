@@ -223,8 +223,23 @@ function profileSpacing(
  * profile. One lane serves both because they are the same gesture at different
  * stages, and they must cancel each other: a profile still in flight when the
  * client closes the ring describes geometry that no longer exists.
+ *
+ * `other` is the second surface's profile over the same line, fetched
+ * alongside the primary one so the chart can overlay DSM against DTM — Malhar
+ * asked to see canopy and structures against bare earth on the one graph
+ * rather than having to flip the surface toggle and compare by memory. It is
+ * absent for a closed ring (there is no chart there to overlay onto) and when
+ * the survey only has one surface to measure against.
  */
-type ShapeResponse = AnalysisEnvelope & { result: ProfileResult | PolygonStatsResult };
+type ShapeResponse = AnalysisEnvelope & {
+  result: ProfileResult | PolygonStatsResult;
+  other?: { surface: Surface; result: ProfileResult } | null;
+};
+
+/** The surface a DSM/DTM overlay compares the active one against. */
+function otherSurface(model: Surface): Surface {
+  return model === "dsm" ? "dtm" : "dsm";
+}
 
 /**
  * What to show a client when a measurement fails.
@@ -522,6 +537,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   volumeOpRef.current = volumeOp;
   const surfaceRef = useRef<Surface>(surface);
   surfaceRef.current = surface;
+  /**
+   * Whether this survey can be measured against both models, mirrored into a
+   * ref for the same reason `surfaceRef` is: `recompute` is registered once and
+   * reads this at click time, long after the render that computed `hasBothSurfaces`
+   * below has finished. Set further down, once the terrain probe has answered.
+   */
+  const hasBothSurfacesRef = useRef(false);
   // The map's handlers are registered once, so anything they read at event time
   // has to come through a ref rather than a closed-over render value.
   const toleranceRef = useRef<number>(TOLERANCE_M);
@@ -555,16 +577,26 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   );
   const shapeLane = useRef(
     latest(
-      (
+      async (
         signal: AbortSignal,
         points: Pair[],
         closed: boolean,
         model: Surface,
         spacing: number | undefined,
-      ): Promise<ShapeResponse> =>
-        closed
-          ? client.current.polygonStats(points, { surface: model }, signal)
-          : client.current.profile(points, { surface: model, spacing }, signal),
+        overlay: boolean,
+      ): Promise<ShapeResponse> => {
+        if (closed) return client.current.polygonStats(points, { surface: model }, signal);
+        if (!overlay) return client.current.profile(points, { surface: model, spacing }, signal);
+        // Both requests share the one abort signal `latest()` handed this call,
+        // so a third click superseding this one cancels the overlay fetch along
+        // with the primary rather than leaving it to resolve into nothing.
+        const other = otherSurface(model);
+        const [primary, secondary] = await Promise.all([
+          client.current.profile(points, { surface: model, spacing }, signal),
+          client.current.profile(points, { surface: other, spacing }, signal),
+        ]);
+        return { ...primary, other: { surface: other, result: secondary.result } };
+      },
     ),
   );
   const alignmentLane = useRef(
@@ -728,6 +760,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           askForStats,
           surfaceRef.current,
           askForStats ? undefined : profileSpacing(ring, utmZone, utmNorthern, cellSizeRef.current),
+          // The overlay only means anything for a profile: a closed ring answers
+          // with one set of statistics, not a chart to draw a second line on.
+          !askForStats && hasBothSurfacesRef.current,
         );
         // Superseded by a newer click. The newer call owns the panel now.
         if (response === null) return;
@@ -747,6 +782,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 data: response.result as ProfileResult,
                 cellSize: response.cellSize,
                 computedIn: response.computedIn,
+                other: response.other ?? null,
               },
         );
       } catch (error) {
@@ -1682,6 +1718,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
   /** Both models present, so offering a choice between them means something. */
   const hasBothSurfaces = probe.state === "ready" && probe.dtm && probe.dsm;
+  hasBothSurfacesRef.current = hasBothSurfaces;
   /** Anything at all to measure against. */
   const measurable = probe.state === "ready";
 
