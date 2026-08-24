@@ -267,6 +267,32 @@ console.log("\nTool 3, distance and profile");
   const profileCall = analysisCalls.slice(before).find((c) => c.op === "profile");
   check("the page asked for a profile", Boolean(profileCall));
   check("sending the drawn line", Array.isArray(profileCall?.line) && profileCall.line.length >= 2);
+
+  /*
+   * Malhar asked for DSM and DTM overlaid on the same graph rather than read
+   * one at a time behind the surface toggle. `kotba-survey` has both models,
+   * so the page should have asked for both profiles over the identical line —
+   * one request per surface, not one surface with the other inferred — and the
+   * panel should show both as a legend and a second, dashed line on the chart.
+   */
+  const profileCalls = analysisCalls.slice(before).filter((c) => c.op === "profile");
+  const dtmAsked = profileCalls.some((c) => c.surface === "dtm");
+  const dsmAsked = profileCalls.some((c) => c.surface === "dsm");
+  check(
+    "both DTM and DSM are requested, so the graph can overlay them",
+    dtmAsked && dsmAsked,
+    `dtm asked: ${dtmAsked}, dsm asked: ${dsmAsked}`,
+  );
+  check(
+    "the overlay legend names both models",
+    /Terrain \(DTM\)/.test(withHeights) && /Surface \(DSM\)/.test(withHeights),
+    withHeights.match(/(Terrain|Surface) \((DTM|DSM)\)/g)?.join(", ") ?? "neither found",
+  );
+  const dashedOverlayDrawn = await page.evaluate(
+    (sel) => Boolean(document.querySelector(sel)?.querySelector("svg polyline[stroke-dasharray]")),
+    PANEL_SELECTOR,
+  );
+  check("the second surface is drawn as its own line on the chart", dashedOverlayDrawn);
 }
 
 console.log("\nTool 4, cut and fill");

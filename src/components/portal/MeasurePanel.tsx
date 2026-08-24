@@ -45,7 +45,20 @@ export type Measurement = {
 export type ElevationState =
   | { state: "idle" }
   | { state: "loading" }
-  | { state: "profile"; data: ProfileResult; cellSize: number; computedIn: string }
+  | {
+      state: "profile";
+      data: ProfileResult;
+      cellSize: number;
+      computedIn: string;
+      /**
+       * The other surface's profile over the same line, fetched alongside the
+       * primary one wherever both models exist for this survey — so a client
+       * can read canopy and structures against bare earth off the one graph
+       * instead of flipping the surface toggle and comparing by memory. `null`
+       * when the survey only has one surface to measure against.
+       */
+      other: { surface: Surface; result: ProfileResult } | null;
+    }
   | { state: "stats"; data: PolygonStatsResult; cellSize: number; computedIn: string }
   | { state: "error"; message: string };
 
@@ -87,7 +100,7 @@ export function MeasurePanel({
       </dl>
 
       {elevation.state === "profile" && elevation.data.points.length > 2 ? (
-        <Profile result={elevation.data} />
+        <Profile result={elevation.data} surface={surface} other={elevation.other} />
       ) : null}
 
       <ElevationFootnote elevation={elevation} surface={surface} />
@@ -263,38 +276,20 @@ function Row({
   );
 }
 
-/**
- * Elevation against chainage. Inline SVG rather than a chart library: it is a
- * polyline and two axis labels, and the portal's CSP has no reason to grow for
- * it.
- *
- * Gaps in the survey break the line rather than bridging it. A polyline drawn
- * straight across a hole looks like flat ground, which is the one reading the
- * data does not support.
- */
-function Profile({ result }: { result: ProfileResult }) {
-  const W = 240;
-  const H = 72;
-  const pad = { top: 6, right: 2, bottom: 14, left: 2 };
+/** A point with a real elevation, not a gap in the survey. */
+type ProfileSample = { chainage: number; elevation: number };
 
-  const withData = result.points.filter(
-    (p): p is typeof p & { elevation: number } =>
-      p.elevation !== null && Number.isFinite(p.elevation),
-  );
-  if (withData.length < 2) return null;
+function hasElevation<T extends { elevation: number | null }>(
+  p: T,
+): p is T & { elevation: number } {
+  return p.elevation !== null && Number.isFinite(p.elevation);
+}
 
-  const maxD = result.length || 1;
-  const lo = result.min ?? Math.min(...withData.map((p) => p.elevation));
-  const hi = result.max ?? Math.max(...withData.map((p) => p.elevation));
-  const span = hi - lo || 1;
-
-  const x = (d: number) => pad.left + (d / maxD) * (W - pad.left - pad.right);
-  const y = (e: number) => pad.top + (1 - (e - lo) / span) * (H - pad.top - pad.bottom);
-
-  // Split into runs of consecutive samples that both have data.
-  const runs: { chainage: number; elevation: number }[][] = [];
-  let run: { chainage: number; elevation: number }[] = [];
-  for (const point of result.points) {
+/** Split a profile's points into runs of consecutive samples that both have data. */
+function runsOf(points: { chainage: number; elevation: number | null }[]): ProfileSample[][] {
+  const runs: ProfileSample[][] = [];
+  let run: ProfileSample[] = [];
+  for (const point of points) {
     if (point.elevation === null || !Number.isFinite(point.elevation)) {
       if (run.length > 1) runs.push(run);
       run = [];
@@ -303,15 +298,114 @@ function Profile({ result }: { result: ProfileResult }) {
     run.push({ chainage: point.chainage, elevation: point.elevation });
   }
   if (run.length > 1) runs.push(run);
+  return runs;
+}
+
+/** The vertical extent a profile actually needs drawn, falling back to its samples. */
+function boundsOf(result: ProfileResult, withData: ProfileSample[]): [number, number] {
+  return [
+    result.min ?? Math.min(...withData.map((p) => p.elevation)),
+    result.max ?? Math.max(...withData.map((p) => p.elevation)),
+  ];
+}
+
+const SURFACE_LABEL: Record<Surface, string> = {
+  dtm: "Terrain (DTM)",
+  dsm: "Surface (DSM)",
+};
+
+/**
+ * Elevation against chainage. Inline SVG rather than a chart library: it is a
+ * polyline and two axis labels, and the portal's CSP has no reason to grow for
+ * it.
+ *
+ * Gaps in the survey break the line rather than bridging it. A polyline drawn
+ * straight across a hole looks like flat ground, which is the one reading the
+ * data does not support.
+ *
+ * `other` overlays the second surface's profile over the same line — Malhar
+ * asked to see DSM and DTM on the one graph rather than reading them one at a
+ * time behind the surface toggle. It is drawn dashed and unfilled, deliberately
+ * secondary to the filled primary line: the two describe the same ground, and
+ * flipping which one looks "on top" every time the toggle is touched would
+ * make the chart harder to read, not easier.
+ */
+function Profile({
+  result,
+  surface,
+  other,
+}: {
+  result: ProfileResult;
+  surface: Surface;
+  other: { surface: Surface; result: ProfileResult } | null;
+}) {
+  const W = 240;
+  const H = 72;
+  const pad = { top: 6, right: 2, bottom: 14, left: 2 };
+
+  const withData = result.points.filter(hasElevation);
+  if (withData.length < 2) return null;
+
+  const otherWithData = other ? other.result.points.filter(hasElevation) : [];
+  const hasOverlay = other !== null && otherWithData.length >= 2;
+
+  const maxD = result.length || 1;
+  const [primaryLo, primaryHi] = boundsOf(result, withData);
+  const [lo, hi] = hasOverlay
+    ? [
+        Math.min(primaryLo, boundsOf(other.result, otherWithData)[0]),
+        Math.max(primaryHi, boundsOf(other.result, otherWithData)[1]),
+      ]
+    : [primaryLo, primaryHi];
+  const span = hi - lo || 1;
+
+  const x = (d: number) => pad.left + (d / maxD) * (W - pad.left - pad.right);
+  const y = (e: number) => pad.top + (1 - (e - lo) / span) * (H - pad.top - pad.bottom);
+
+  const runs = runsOf(result.points);
+  const otherRuns = hasOverlay ? runsOf(other.result.points) : [];
+  const primaryLabel = SURFACE_LABEL[surface];
+  const otherLabel = hasOverlay ? SURFACE_LABEL[other.surface] : null;
 
   return (
     <figure className="space-y-1">
+      {hasOverlay ? (
+        <div className="flex items-center gap-3 text-[10px] text-ink/55">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-3 rounded-full bg-[#C2410C]" />
+            {primaryLabel}
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-3 rounded-full bg-[#1D4ED8] opacity-80" />
+            {otherLabel}
+          </span>
+        </div>
+      ) : null}
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="w-full"
         role="img"
-        aria-label={`Elevation profile, ${lo.toFixed(1)} to ${hi.toFixed(1)} metres over ${formatDistance(maxD)}`}
+        aria-label={
+          hasOverlay
+            ? `Elevation profile, ${lo.toFixed(1)} to ${hi.toFixed(1)} metres over ` +
+              `${formatDistance(maxD)}, ${primaryLabel} overlaid with ${otherLabel}`
+            : `Elevation profile, ${lo.toFixed(1)} to ${hi.toFixed(1)} metres over ${formatDistance(maxD)}`
+        }
       >
+        {/* The overlay is drawn first, so the primary's filled area sits on top of it. */}
+        {otherRuns.map((segment, index) => (
+          <polyline
+            key={`other-${index}`}
+            points={segment
+              .map((p) => `${x(p.chainage).toFixed(1)},${y(p.elevation).toFixed(1)}`)
+              .join(" ")}
+            fill="none"
+            stroke="#1D4ED8"
+            strokeWidth={1.2}
+            strokeDasharray="3 2"
+            opacity={0.8}
+          />
+        ))}
         {runs.map((segment, index) => {
           const line = segment
             .map((p) => `${x(p.chainage).toFixed(1)},${y(p.elevation).toFixed(1)}`)
@@ -354,6 +448,7 @@ function Profile({ result }: { result: ProfileResult }) {
       <figcaption className="text-[11px] text-ink/55">
         {hi.toFixed(1)} m at the top, {lo.toFixed(1)} m at the bottom
         {runs.length > 1 ? `, in ${runs.length} sections either side of missing data` : ""}.
+        {hasOverlay ? ` Dashed line is the ${otherLabel!.toLowerCase()}.` : ""}
       </figcaption>
     </figure>
   );

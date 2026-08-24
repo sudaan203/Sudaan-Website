@@ -563,6 +563,44 @@ that is what QGIS, ArcGIS and Global Mapper write by default, and only Node's
 zlib decodes that here. A reader that only accepts the one compression method
 its own writer happens to use is not an interchange tool.
 
+### 3.13 The profile chart overlays DTM against DSM (#57)
+
+Another of Malhar's own prompts: while drawing a cross-section profile, show
+both surfaces on the one graph, so the gap between them — canopy, a
+stockpile, a structure — is something a client reads off a chart rather than
+something they reconstruct by flipping the surface toggle and remembering the
+first number.
+
+**Fetched together, not toggled between.** Tool 3's profile request now asks
+for both surfaces over the identical line in one round trip — two `profile`
+calls sharing the one abort signal `latest()` already hands the lane, so a
+third click superseding the pair cancels both together rather than leaving an
+orphaned fetch to resolve into a panel that has moved on. This only happens
+where the survey actually has both models to measure against, which is the
+same `hasBothSurfaces` check the surface toggle itself is built on — a
+one-surface survey draws exactly the single line it always has.
+
+**Drawn deliberately asymmetric.** The active surface — whichever the toggle
+has selected — keeps its filled silhouette in the same orange it always drew;
+the other surface is a thin dashed line laid under it, with a two-line legend
+naming both. Recolouring or refilling both equally was the first draft, and it
+made the chart *harder* to read, not easier: two solid fills fight for the
+same area, and which one is "the real one" became a question the client had to
+answer rather than the graph. The primary line stays exactly as it drew before
+this change; the second one is new information laid on top of it, not a
+replacement for it.
+
+**The vertical scale spans both.** A profile fixes its axis to its own min and
+max; drawing a second surface's samples on that axis would clip whichever one
+happened to sit outside the first surface's range, and a clipped canopy line
+reads as flat ground. The chart's span is now the min and max across whichever
+surfaces are actually drawn.
+
+Verified against `kotba-survey`, which has both models: the browser suite now
+asserts two `profile` requests go out — one per surface, over the same
+line — that the legend names both, and that a dashed line is actually present
+in the rendered SVG, not merely that the request was made.
+
 ---
 
 ## 4. Judgement calls
@@ -814,6 +852,7 @@ Two more, both specific to drawing:
 | #54 | 23 Aug 2026 | The database timeout ladder, proved live and fixed |
 | #55 | 24 Aug 2026 | DSM/DTM colour grading, shared with the dynamic tiler |
 | #56 | 24 Aug 2026 | The shapefile tool: draw, download, upload, compare |
+| #57 | 25 Aug 2026 | The profile chart overlays DTM against DSM |
 
 ### Infrastructure
 
@@ -827,7 +866,7 @@ Two more, both specific to drawing:
   write** — `pyshp` and Python's own `zipfile` — not only against itself. See
   §3.12.
 
-### Tests: 1,094 checks
+### Tests: 1,097 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -847,7 +886,7 @@ Two more, both specific to drawing:
 | `surface-api-test` | 35 | grid levels, deviation, tolerance, and the signed ramp |
 | `shapefile-test` | 40 | SHP/SHX/DBF/PRJ/ZIP, round-tripped, byte for byte |
 | `shapefile-api-test` | 30 | the shapefile route: projection, refusals, round trip |
-| `portal-map-browser-test` | 36 | measure tools in a real browser |
+| `portal-map-browser-test` | 39 | measure tools in a real browser, including the DTM/DSM overlay |
 | `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
 | `portal-render-browser-test` | 29 | rendered layers in a real browser |
 | `portal-tool-rail-test` | 34 | the tool groups, and that one tool is armed at a time |
