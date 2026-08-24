@@ -8,7 +8,8 @@
       "Bash(npm run *)",
       "Read(//tmp/**)",
       "Bash(pkill -f \"next dev\")",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git --no-optional-locks push)"
     ]
   }
 }

@@ -61,6 +61,19 @@ import {
 } from "./AlignmentPanel";
 import { GridLevelsPanel, type GridLevelsState } from "./GridLevelsPanel";
 import { SurfacePanel, type SurfaceState } from "./SurfacePanel";
+import {
+  ShapefilePanel,
+  type ShapefileCounts,
+  type ShapefileDownloadState,
+  type ShapefileUploadState,
+} from "./ShapefilePanel";
+import {
+  ShapefileClient,
+  ShapefileError,
+  saveShapefileZip,
+  type DrawnFeature,
+  type GeometryKind,
+} from "@/lib/portal/shapefile-client";
 import { ToolRail, type RailAction } from "./ToolRail";
 import {
   ContourPanel,
@@ -265,6 +278,216 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    * what is asked of it. Defaults match the server's, so an untouched panel and
    * an untouched request agree.
    */
+  // ---- Malhar's shapefile tool --------------------------------------------
+  /**
+   * A separate, self-contained state machine, deliberately, rather than a new
+   * `MeasureMode` variant.
+   *
+   * Every numbered tool operates on one shared geometry-in-progress and one
+   * shared "recompute" path, because each one asks the server a single
+   * question about a single shape. This tool asks nothing of the server until
+   * a download is pressed, accumulates any number of separate features per
+   * geometry type rather than replacing one on each click, and finishes a
+   * feature back into "ready to draw the next one" instead of into a result
+   * panel. Folding that into the shared mechanism would mean teaching it a
+   * shape of interaction none of the other fourteen tools have, for the sake
+   * of one more. A second, independent axis — checked first, so nothing else
+   * runs while it is active — is smaller and does not risk the thing every
+   * other tool depends on.
+   */
+  const [shapefileActive, setShapefileActive] = useState<GeometryKind | null>(null);
+  const shapefileActiveRef = useRef<GeometryKind | null>(null);
+  shapefileActiveRef.current = shapefileActive;
+
+  /** Every completed feature, kept in the map's own lon/lat until a download
+   *  actually asks for it projected. */
+  const shapefileFeatures = useRef<Record<GeometryKind, DrawnFeature[]>>({
+    point: [],
+    line: [],
+    polygon: [],
+  });
+  const [shapefileCounts, setShapefileCounts] = useState<ShapefileCounts>({
+    point: 0,
+    line: 0,
+    polygon: 0,
+  });
+  /** Vertices of the line or polygon currently being clicked out. */
+  const shapefileDraw = useRef<[number, number][]>([]);
+  const [shapefileDownload, setShapefileDownload] = useState<ShapefileDownloadState>({
+    state: "idle",
+  });
+  const [shapefileUpload, setShapefileUpload] = useState<ShapefileUploadState>({ state: "idle" });
+
+  const redrawShapefileFeatures = useCallback(() => {
+    const source = map.current?.getSource("shapefile-features");
+    if (!source || !("setData" in source)) return;
+    const all = [
+      ...shapefileFeatures.current.point,
+      ...shapefileFeatures.current.line,
+      ...shapefileFeatures.current.polygon,
+    ];
+    (source as { setData: (d: unknown) => void }).setData({
+      type: "FeatureCollection",
+      features: all.map((f, i) => ({
+        type: "Feature",
+        properties: f.properties ?? { id: i + 1 },
+        geometry: f.geometry,
+      })),
+    });
+  }, []);
+
+  const redrawShapefileDraw = useCallback(() => {
+    const source = map.current?.getSource("shapefile-draw");
+    if (!source || !("setData" in source)) return;
+    const pts = shapefileDraw.current;
+    const features: GeoJSON.Feature[] = [];
+    if (pts.length >= 2) {
+      features.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: pts },
+      });
+    }
+    for (const p of pts) {
+      features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: p } });
+    }
+    (source as { setData: (d: unknown) => void }).setData({ type: "FeatureCollection", features });
+  }, []);
+
+  /** One click: a point is a complete feature; a line or polygon adds a vertex. */
+  const handleShapefileClick = useCallback(
+    (lon: number, lat: number) => {
+      const kind = shapefileActiveRef.current;
+      if (!kind) return;
+      if (kind === "point") {
+        const feature: DrawnFeature = { geometry: { type: "Point", coordinates: [lon, lat] } };
+        shapefileFeatures.current = {
+          ...shapefileFeatures.current,
+          point: [...shapefileFeatures.current.point, feature],
+        };
+        setShapefileCounts((c) => ({ ...c, point: c.point + 1 }));
+        redrawShapefileFeatures();
+        return;
+      }
+      shapefileDraw.current = [...shapefileDraw.current, [lon, lat]];
+      redrawShapefileDraw();
+    },
+    [redrawShapefileFeatures, redrawShapefileDraw],
+  );
+  const shapefileClickRef = useRef<(lon: number, lat: number) => void>(() => {});
+  shapefileClickRef.current = handleShapefileClick;
+
+  /** A double click: close the line or polygon into a completed feature. */
+  const finishShapefileDraw = useCallback(() => {
+    const kind = shapefileActiveRef.current;
+    if (!kind || kind === "point") return;
+    let pts = shapefileDraw.current;
+    // A double click is two clicks first, so the click handler above already
+    // added the same vertex twice — dropped here exactly as the measure tools
+    // drop it, so a shape never carries a zero-length closing segment.
+    if (pts.length >= 2) {
+      const [ax, ay] = pts[pts.length - 1];
+      const [bx, by] = pts[pts.length - 2];
+      if (Math.abs(ax - bx) < 1e-9 && Math.abs(ay - by) < 1e-9) pts = pts.slice(0, -1);
+    }
+    const minimum = kind === "line" ? 2 : 3;
+    if (pts.length < minimum) {
+      shapefileDraw.current = [];
+      redrawShapefileDraw();
+      return;
+    }
+    const geometry: GeoJSON.Geometry =
+      kind === "line"
+        ? { type: "LineString", coordinates: pts }
+        : { type: "Polygon", coordinates: [[...pts, pts[0]]] };
+    shapefileFeatures.current = {
+      ...shapefileFeatures.current,
+      [kind]: [...shapefileFeatures.current[kind], { geometry }],
+    };
+    setShapefileCounts((c) => ({ ...c, [kind]: c[kind] + 1 }));
+    shapefileDraw.current = [];
+    redrawShapefileDraw();
+    redrawShapefileFeatures();
+  }, [redrawShapefileDraw, redrawShapefileFeatures]);
+  const shapefileDblClickRef = useRef(() => {});
+  shapefileDblClickRef.current = finishShapefileDraw;
+
+  const clearShapefileDrawn = useCallback(() => {
+    shapefileFeatures.current = { point: [], line: [], polygon: [] };
+    shapefileDraw.current = [];
+    setShapefileCounts({ point: 0, line: 0, polygon: 0 });
+    setShapefileDownload({ state: "idle" });
+    redrawShapefileFeatures();
+    redrawShapefileDraw();
+  }, [redrawShapefileFeatures, redrawShapefileDraw]);
+
+  /** Tool download: explicit request, like every other export in this portal. */
+  const downloadShapefile = useCallback(async () => {
+    const kind = shapefileActiveRef.current;
+    if (!kind) return;
+    const features = shapefileFeatures.current[kind];
+    if (features.length === 0) return;
+    setShapefileDownload({ state: "loading" });
+    try {
+      const { blob, filename } = await shapefileClient.current.download(kind, features);
+      saveShapefileZip(blob, filename);
+      setShapefileDownload({ state: "idle" });
+    } catch (error) {
+      setShapefileDownload({
+        state: "error",
+        message:
+          error instanceof ShapefileError
+            ? error.message
+            : "The shapefile could not be built.",
+      });
+    }
+  }, []);
+
+  const uploadShapefile = useCallback(async (file: File) => {
+    setShapefileUpload({ state: "loading" });
+    try {
+      const data = await shapefileClient.current.upload(file);
+      setShapefileUpload({ state: "done", data });
+      const source = map.current?.getSource("shapefile-uploaded");
+      if (source && "setData" in source) {
+        (source as { setData: (d: unknown) => void }).setData(data.featureCollection);
+      }
+    } catch (error) {
+      setShapefileUpload({
+        state: "error",
+        message:
+          error instanceof ShapefileError ? error.message : "The shapefile could not be read.",
+      });
+    }
+  }, []);
+
+  const clearShapefileUpload = useCallback(() => {
+    setShapefileUpload({ state: "idle" });
+    const source = map.current?.getSource("shapefile-uploaded");
+    if (source && "setData" in source) {
+      (source as { setData: (d: unknown) => void }).setData({ type: "FeatureCollection", features: [] });
+    }
+  }, []);
+
+  /**
+   * Turn a shapefile draw tool on or off from its own panel, clearing whichever
+   * numbered tool was active — the same exclusivity `runAction` enforces in the
+   * other direction, so the two halves of the map can never both think they own
+   * the next click.
+   */
+  const setShapefileActiveTool = useCallback(
+    (kind: GeometryKind | null) => {
+      shapefileDraw.current = [];
+      redrawShapefileDraw();
+      setShapefileActive(kind);
+      if (kind) {
+        setMode("off");
+        setHydroMode("off");
+      }
+    },
+    [redrawShapefileDraw],
+  );
+
   /** Tool 2, and tools 5 and 13: all polygon tools, all explicit requests. */
   const [gridLevels, setGridLevels] = useState<GridLevelsState>({ state: "idle" });
   const [gridSpacing, setGridSpacing] = useState(1);
@@ -321,6 +544,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    */
   const client = useRef<AnalysisClient>(null as unknown as AnalysisClient);
   if (!client.current) client.current = new AnalysisClient(siteSlug);
+
+  const shapefileClient = useRef<ShapefileClient>(null as unknown as ShapefileClient);
+  if (!shapefileClient.current) shapefileClient.current = new ShapefileClient(siteSlug);
 
   const hoverLane = useRef(
     latest((signal: AbortSignal, at: Pair, model: Surface) =>
@@ -988,6 +1214,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     // ---- measure: click to add a vertex, double click to finish ------------
     instance.on("click", (event) => {
+      // The shapefile tool takes precedence over everything: it is a wholly
+      // separate mode axis (see the comment where its state is declared), and
+      // nothing else should read this click while it owns one.
+      if (shapefileActiveRef.current) {
+        shapefileClickRef.current(event.lngLat.lng, event.lngLat.lat);
+        return;
+      }
       // Hydrology tools take precedence: they are single-click questions about a
       // point, and they draw their own answer rather than accumulating geometry.
       if (hydroModeRef.current !== "off") {
@@ -1005,6 +1238,11 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       void recompute(instance, false);
     });
     instance.on("dblclick", (event) => {
+      if (shapefileActiveRef.current) {
+        event.preventDefault();
+        shapefileDblClickRef.current();
+        return;
+      }
       if (modeRef.current === "off" || modeRef.current === "spot") return;
       // Stop the default zoom, which would otherwise fire on the gesture that
       // finishes a measurement.
@@ -1225,6 +1463,101 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, 2, 20, 4.5],
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1,
+        },
+      });
+
+      /*
+       * Malhar's shapefile tool: three sources, because a real shapefile is
+       * three sources too — one geometry type per file — and this mirrors that
+       * rather than hiding it. `shapefile-draw` is the in-progress line or
+       * polygon while it is being clicked out; `shapefile-features` is every
+       * completed Point/Line/Polygon feature drawn so far, ready to download;
+       * `shapefile-uploaded` is a file brought in to compare against, kept
+       * entirely separate so nothing drawn here can be mistaken for it. Teal
+       * for ours, violet for an import — both well clear of the accent orange
+       * the measure tools use, the slate the alignment tools use, and the blue
+       * hydrology uses.
+       */
+      instance.addSource("shapefile-draw", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "shapefile-draw-line",
+        type: "line",
+        source: "shapefile-draw",
+        paint: { "line-color": "#0d9488", "line-width": 2, "line-dasharray": [1.5, 1.5] },
+      });
+      instance.addLayer({
+        id: "shapefile-draw-points",
+        type: "circle",
+        source: "shapefile-draw",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 3.5,
+          "circle-color": "#0d9488",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+        },
+      });
+
+      instance.addSource("shapefile-features", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "shapefile-features-fill",
+        type: "fill",
+        source: "shapefile-features",
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#0d9488", "fill-opacity": 0.16 },
+      });
+      instance.addLayer({
+        id: "shapefile-features-line",
+        type: "line",
+        source: "shapefile-features",
+        paint: { "line-color": "#0f766e", "line-width": 2 },
+      });
+      instance.addLayer({
+        id: "shapefile-features-points",
+        type: "circle",
+        source: "shapefile-features",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 4.5,
+          "circle-color": "#0f766e",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.5,
+        },
+      });
+
+      instance.addSource("shapefile-uploaded", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "shapefile-uploaded-fill",
+        type: "fill",
+        source: "shapefile-uploaded",
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#7c3aed", "fill-opacity": 0.12 },
+      });
+      instance.addLayer({
+        id: "shapefile-uploaded-line",
+        type: "line",
+        source: "shapefile-uploaded",
+        paint: { "line-color": "#6d28d9", "line-width": 1.8, "line-dasharray": [3, 1.5] },
+      });
+      instance.addLayer({
+        id: "shapefile-uploaded-points",
+        type: "circle",
+        source: "shapefile-uploaded",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 4.5,
+          "circle-color": "#7c3aed",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.5,
         },
       });
 
@@ -2195,7 +2528,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    * already looking is most of what makes an interface feel like it is paying
    * attention.
    */
-  const [inspector, setInspector] = useState<"tool" | "layers" | "water">("layers");
+  const [inspector, setInspector] = useState<"tool" | "layers" | "water" | "shapefile">("layers");
 
   /** The keys of the layers this survey can actually render, for the rail. */
   const renderableKeys = useMemo(() => renderable.map((l) => l.key), [renderable]);
@@ -2240,6 +2573,15 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    */
   const runAction = useCallback(
     (action: RailAction) => {
+      // A numbered tool and the shapefile tool are mutually exclusive, same as
+      // every pair of numbered tools already are: pressing one clears the other,
+      // so a click is never ambiguous about which is answering it. Any
+      // in-progress line or polygon is dropped too, rather than left drawn on
+      // the map with nothing able to finish or clear it.
+      setShapefileActive(null);
+      shapefileDraw.current = [];
+      redrawShapefileDraw();
+
       const already =
         railAction !== null &&
         railAction.kind === action.kind &&
@@ -2397,7 +2739,11 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         hasHydrology={Boolean(hydro)}
         renderable={renderableKeys}
         hint={
-          probe.state === "unavailable" ? (
+          shapefileActive ? (
+            shapefileActive === "point"
+              ? "Click anywhere to place a point."
+              : `Click each ${shapefileActive === "line" ? "vertex" : "corner"}, double click to finish.`
+          ) : probe.state === "unavailable" ? (
             <span className="text-signal-600">{probe.message}</span>
           ) : probe.state === "checking" ? (
             "Checking the elevation model…"
@@ -2509,6 +2855,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   ["tool", "Tool"],
                   ["layers", "Layers"],
                   ...(hydro ? ([["water", "Water"]] as const) : []),
+                  ["shapefile", "Shapefile"],
                 ] as const
               ).map(([key, label]) => (
                 <button
@@ -2645,6 +2992,20 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   busy={hydroBusy}
                   error={hydroError}
                   onClear={clearHydrology}
+                />
+              ) : null}
+
+              {inspector === "shapefile" ? (
+                <ShapefilePanel
+                  active={shapefileActive}
+                  setActive={setShapefileActiveTool}
+                  counts={shapefileCounts}
+                  download={shapefileDownload}
+                  onDownload={() => void downloadShapefile()}
+                  onClearDrawn={clearShapefileDrawn}
+                  upload={shapefileUpload}
+                  onUpload={(file) => void uploadShapefile(file)}
+                  onClearUpload={clearShapefileUpload}
                 />
               ) : null}
             </div>
