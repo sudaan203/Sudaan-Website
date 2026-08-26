@@ -12,6 +12,11 @@ import { readFileSync } from "node:fs";
 // code rather than build tooling. Re-exported here so every existing caller in
 // this directory keeps working unchanged.
 import { utmToLonLat, lonLatToUtm } from "../../src/lib/geo/projection.mjs";
+// The shapefile tool (PR #56) already had to solve "what UTM zone is this .prj"
+// for real-world files, including ones a plain "UTM_zone_43N" regex misses -
+// QGIS/GDAL write "UTM zone 43N" with spaces, not underscores. Reusing that
+// parser here rather than keeping a second, narrower one in sync by hand.
+import { parseShapefilePrj } from "../../src/lib/geo/shapefile.mjs";
 
 /**
  * Is this a real ground height, or a nodata marker?
@@ -34,9 +39,18 @@ const isElevation = (v) =>
 /** Reads a .prj far enough to know the zone and hemisphere. */
 function readProjection(prjPath) {
   const wkt = readFileSync(prjPath, "utf8");
-  const zone = /UTM_zone_(\d+)([NS])/i.exec(wkt);
-  if (!zone) throw new Error(`cannot read a UTM zone from ${prjPath}`);
-  return { zone: Number(zone[1]), northern: zone[2].toUpperCase() === "N", wkt };
+  let epsg;
+  try {
+    ({ epsg } = parseShapefilePrj(wkt));
+  } catch (err) {
+    throw new Error(`cannot read a UTM zone from ${prjPath}: ${err.message}`);
+  }
+  if (epsg === 4326) {
+    throw new Error(`${prjPath} is geographic WGS84, not a UTM zone, which this pipeline needs for metre-based tiling`);
+  }
+  const northern = epsg < 32700;
+  const zone = northern ? epsg - 32600 : epsg - 32700;
+  return { zone, northern, wkt };
 }
 
 /** World file: pixel size, rotations, then the centre of the top left pixel. */

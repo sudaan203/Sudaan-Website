@@ -79,6 +79,13 @@ const maxPixels = Number(flag("max-pixels", 120_000_000));
 // turns that off; --mask-tolerance widens what counts as the same flat colour.
 const noMask = argv.includes("--no-mask");
 const maskTolerance = Number(flag("mask-tolerance", 10));
+// 0.15 m was tuned against Kotba and Aektanagar, both a few hundred hectares.
+// Kiru's 1 m contours cover a reservoir-scale catchment and came in at 11.3
+// million vertices before thinning, 234 MB of GeoJSON after it barely moved the
+// needle - a browser cannot usefully fetch or render that as one layer. Rather
+// than hardcode a bigger number that would then be wrong for the next site at a
+// third scale, this is a flag with the old value as its default.
+const contourTolerance = Number(flag("contour-tolerance", 0.15));
 
 if (!inputDir || !siteSlug) {
   console.error(`
@@ -91,6 +98,9 @@ Usage: node scripts/prepare-site.mjs <input-folder> <site-slug> [options]
                    above it is resized to fit and flagged in the manifest.
   --no-mask        keep the flat filler around an orthomosaic footprint opaque
   --mask-tolerance N  how close to the corner colour still counts as filler (10)
+  --contour-tolerance N  simplification tolerance in metres for shapefile lines
+                   (default 0.15). Raise it for a survey covering a much larger
+                   area than a single site, where 0.15 m barely thins anything.
 
 Example:
   node scripts/prepare-site.mjs ~/surveys/reliance reliance-jamnagar
@@ -588,7 +598,7 @@ for (const shp of shapefiles) {
     const elevation = heightOf(rows[i]);
     for (const line of lines) {
       before += line.length;
-      const thinned = simplify(line, 0.15);
+      const thinned = simplify(line, contourTolerance);
       if (thinned.length < 2) continue;
       after += thinned.length;
       features.push({

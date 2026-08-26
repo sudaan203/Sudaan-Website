@@ -1,0 +1,182 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 1941 >>
+stream
+0.98 0.969 0.949 rg
+0 765.89 595.28 76 re f
+0.85 0.84 0.82 RG
+0.75 w
+36 765.89 m 559.28 765.89 l S
+BT
+/F2 11 Tf
+0.851 0.467 0.024 rg
+36 801.89 Td
+(SUDAAN GEO-ANALYTICS) Tj
+ET
+BT
+/F2 17 Tf
+0.18 0.18 0.18 rg
+36 785.89 Td
+(Topographic Survey Report) Tj
+ET
+BT
+/F2 11 Tf
+0.18 0.18 0.18 rg
+428.376 801.89 Td
+(Kiru Hydroelectric Project) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.45 rg
+459.749 785.89 Td
+(UTM zone 43N / WGS84) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 731.89 Td
+(DELIVERABLES IN THIS SURVEY) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 727.89 m 547.28 727.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 713.89 Td
+(Contours) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+477.634 713.89 Td
+(1207 to 1948 m) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 689.89 Td
+(REFERENCE SYSTEM) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 685.89 m 547.28 685.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 671.89 Td
+(Projection) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+479.889 671.89 Td
+(UTM zone 43N) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 657.89 Td
+(Horizontal datum) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+512.191 657.89 Td
+(WGS84) Tj
+ET
+BT
+/F2 8 Tf
+0.851 0.467 0.024 rg
+48 633.89 Td
+(CONTOURS) Tj
+ET
+0.85 0.84 0.82 RG
+0.6 w
+48 629.89 m 547.28 629.89 l S
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 615.89 Td
+(Interval) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+530.572 615.89 Td
+(1 m) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 601.89 Td
+(Lines delivered) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+516.631 601.89 Td
+(18,949) Tj
+ET
+BT
+/F1 9.5 Tf
+0.42 0.42 0.42 rg
+48 587.89 Td
+(Range) Tj
+ET
+BT
+/F2 9.5 Tf
+0.18 0.18 0.18 rg
+477.634 587.89 Td
+(1207 to 1948 m) Tj
+ET
+0.85 0.84 0.82 RG
+0.75 w
+36 52 m 559.28 52 l S
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+36 38 Td
+(Every figure in this report is read from the delivered survey files. Areas are planimetric. Elevations are ellipsoidal unless a vertical datum is stated.) Tj
+ET
+BT
+/F1 7.5 Tf
+0.45 0.45 0.45 rg
+380.442 38 Td
+(Generated 2026-08-26 from the delivered survey data) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Title (Kiru Hydroelectric Project topographic survey report) /Author (Sudaan Geo-Analytics) /Producer (Sudaan Geo-Analytics portal pipeline) >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000212 00000 n 
+0000000314 00000 n 
+0000002307 00000 n 
+0000002449 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R /Info 7 0 R >>
+startxref
+2612
+%%EOF
