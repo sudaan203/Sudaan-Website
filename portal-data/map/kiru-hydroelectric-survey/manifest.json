@@ -1,7 +1,65 @@
 {
   "site": "kiru-hydroelectric-survey",
-  "generatedAt": "2026-08-26T18:31:48.327Z",
+  "generatedAt": "2026-08-26T19:00:51.124Z",
   "layers": [
+    {
+      "key": "dsm-preview",
+      "kind": "raster",
+      "title": "Surface model (DSM), overview",
+      "file": "dsm-preview.webp",
+      "coordinates": [
+        [
+          75.788693,
+          33.38535
+        ],
+        [
+          76.018292,
+          33.383678
+        ],
+        [
+          76.01749,
+          33.314766
+        ],
+        [
+          75.788072,
+          33.316434
+        ]
+      ],
+      "elevation": {
+        "min": 1205.89,
+        "max": 1949.98
+      },
+      "note": "decimated overview for the base map; the dynamic tiler and analysis API read the native raster"
+    },
+    {
+      "key": "dtm-preview",
+      "kind": "raster",
+      "title": "Terrain model (DTM), overview",
+      "file": "dtm-preview.webp",
+      "coordinates": [
+        [
+          75.788693,
+          33.38535
+        ],
+        [
+          76.018294,
+          33.383678
+        ],
+        [
+          76.017492,
+          33.314766
+        ],
+        [
+          75.788072,
+          33.316433
+        ]
+      ],
+      "elevation": {
+        "min": 1205.86,
+        "max": 1949.99
+      },
+      "note": "decimated overview for the base map; the dynamic tiler and analysis API read the native raster"
+    },
     {
       "key": "kiru-dam-contour-1m-test",
       "kind": "vector",
