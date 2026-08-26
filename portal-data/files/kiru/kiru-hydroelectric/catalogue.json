@@ -1,17 +1,18 @@
 {
-  "generatedAt": "2026-08-26T18:33:57.725Z",
+  "generatedAt": "2026-08-26T18:41:29.034Z",
   "client": {
     "id": "91a5ffe4-095f-5e75-9b87-fad4aadbb33d",
-    "slug": "kiru"
+    "slug": "kiru",
+    "name": "Chenab Valley Power Projects Limited"
   },
   "site": {
     "id": "f881c67b-57d0-5806-aa14-9dacbfd8e6a5",
     "client_id": "91a5ffe4-095f-5e75-9b87-fad4aadbb33d",
     "slug": "kiru-hydroelectric-survey",
     "name": "Kiru Hydroelectric Project",
-    "location": null,
-    "district": null,
-    "state": null,
+    "location": "Kishtwar, Jammu and Kashmir",
+    "district": "Kishtwar",
+    "state": "Jammu and Kashmir",
     "area_label": null,
     "industry": "Hydropower",
     "status": "delivered",
