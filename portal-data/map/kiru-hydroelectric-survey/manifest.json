@@ -1,0 +1,17 @@
+{
+  "site": "kiru-hydroelectric-survey",
+  "generatedAt": "2026-08-26T18:31:48.327Z",
+  "layers": [
+    {
+      "key": "kiru-dam-contour-1m-test",
+      "kind": "vector",
+      "title": "Contours",
+      "file": "kiru-dam-contour-1m-test.geojson",
+      "featureCount": 18949,
+      "elevation": {
+        "min": 1207,
+        "max": 1948
+      }
+    }
+  ]
+}
