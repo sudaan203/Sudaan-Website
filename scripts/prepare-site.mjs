@@ -534,7 +534,186 @@ for (const file of rasterFiles) {
 
 /* ---------------------------------------------------------------- vectors --- */
 
-function simplify(points, tolerance) {
+/**
+ * A spatial index of every raw line's segments, so simplification of one line
+ * can check whether it is about to cut through another.
+ *
+ * Built once per shapefile from the *unsimplified* geometry. That matters:
+ * checking a candidate against another line's own simplified output would
+ * make the answer depend on the order lines happen to be processed in.
+ * Checking against the raw geometry instead gives a fixed, order independent
+ * answer, and the raw geometry is where the guarantee actually comes from -
+ * see the comment on `simplify` below for why that guarantee holds.
+ */
+const CROSSING_CELL = 3; // metres. Small enough for a valley wall where 1 m
+// contours can run under a metre apart; see docs/tools.md for the actual
+// site (Kiru) whose contours motivated this.
+
+/**
+ * Flat typed-array storage rather than an object per segment.
+ *
+ * Kiru's raw geometry is 11.3 million segments. An object per segment (four
+ * floats plus a line id) each held onto by one or more grid cell arrays ran
+ * this laptop's 8 GB of RAM out and pulled 5.9 GB into swap - which lives on
+ * the same disk that was already nearly full, so free space fell from 6.7 GB
+ * to 2.1 GB in about a minute before this got killed. Four Float64Arrays plus
+ * one Int32Array of line ids, and grid cells holding segment *indices*
+ * (plain numbers, which V8 stores unboxed in a packed array) rather than
+ * object references, is the fix: the same data, without an allocation per
+ * segment per cell it touches.
+ */
+function buildCrossingIndex(geometry) {
+  let total = 0;
+  for (const lines of geometry) {
+    if (!lines) continue;
+    for (const line of lines) total += Math.max(0, line.length - 1);
+  }
+
+  const segAX = new Float64Array(total);
+  const segAY = new Float64Array(total);
+  const segBX = new Float64Array(total);
+  const segBY = new Float64Array(total);
+  const segLine = new Int32Array(total);
+
+  const grid = new Map();
+  let lineId = 0;
+  let s = 0;
+  for (const lines of geometry) {
+    if (!lines) continue;
+    for (const line of lines) {
+      const id = lineId;
+      lineId += 1;
+      for (let i = 0; i < line.length - 1; i += 1) {
+        const [ax, ay] = line[i];
+        const [bx, by] = line[i + 1];
+        segAX[s] = ax; segAY[s] = ay; segBX[s] = bx; segBY[s] = by; segLine[s] = id;
+
+        const cx0 = Math.floor(Math.min(ax, bx) / CROSSING_CELL);
+        const cx1 = Math.floor(Math.max(ax, bx) / CROSSING_CELL);
+        const cy0 = Math.floor(Math.min(ay, by) / CROSSING_CELL);
+        const cy1 = Math.floor(Math.max(ay, by) / CROSSING_CELL);
+        for (let cx = cx0; cx <= cx1; cx += 1) {
+          for (let cy = cy0; cy <= cy1; cy += 1) {
+            // A packed numeric key, not a template-literal string: 18,949
+            // lines' worth of "191234,1228456" strings is itself gigabytes.
+            const k = cx * 8388608 + cy; // 2^23, comfortably past this survey's extent in cells
+            let arr = grid.get(k);
+            if (!arr) { arr = []; grid.set(k, arr); }
+            arr.push(s);
+          }
+        }
+        s += 1;
+      }
+    }
+  }
+  return { grid, lineCount: lineId, segAX, segAY, segBX, segBY, segLine };
+}
+
+function segmentsCross(ax, ay, bx, by, cx, cy, dx, dy) {
+  const d1x = bx - ax, d1y = by - ay;
+  const d2x = dx - cx, d2y = dy - cy;
+  const denom = d1x * d2y - d1y * d2x;
+  if (Math.abs(denom) < 1e-12) return false; // parallel, or coincident
+  const ex = cx - ax, ey = cy - ay;
+  const t = (ex * d2y - ey * d2x) / denom;
+  const u = (ex * d1y - ey * d1x) / denom;
+  return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
+}
+
+function pointSegDistSq(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len = dx * dx + dy * dy;
+  let t = len ? ((px - ax) * dx + (py - ay) * dy) / len : 0;
+  t = Math.max(0, Math.min(1, t));
+  const ex = ax + t * dx - px, ey = ay + t * dy - py;
+  return ex * ex + ey * ey;
+}
+
+/**
+ * Squared distance between two segments: 0 if they cross, otherwise the
+ * smallest of the four endpoint-to-opposite-segment distances, which is
+ * exact for two segments that do not intersect.
+ */
+function segSegDistSq(ax, ay, bx, by, cx, cy, dx, dy) {
+  if (segmentsCross(ax, ay, bx, by, cx, cy, dx, dy)) return 0;
+  return Math.min(
+    pointSegDistSq(ax, ay, cx, cy, dx, dy),
+    pointSegDistSq(bx, by, cx, cy, dx, dy),
+    pointSegDistSq(cx, cy, ax, ay, bx, by),
+    pointSegDistSq(dx, dy, ax, ay, bx, by),
+  );
+}
+
+/**
+ * Would this candidate replacement segment cross, or pass closer than
+ * `minGap` to, another line's raw geometry?
+ *
+ * `minGap` is called with 0 below: a plain crossing test. A larger value is
+ * stricter and closes a real remaining gap - two lines starting under a
+ * metre apart can each individually stay clear of the *other's raw
+ * position* while simplifying, and still end up crossing each other,
+ * because both moved independently toward the middle of a gap neither of
+ * them, alone, was told was that narrow - but measured against Kiru's
+ * terrain neither a full-tolerance gap (5 m: 11.3M points stayed 11.3M,
+ * nothing simplifiable) nor a fixed 0.5 m buffer (8.29M points, 174 MB) was
+ * a usable trade. Plain crossing detection took the same file from 226,397
+ * crossings to 138,599 - a 91% reduction of what simplification itself was
+ * adding, since the raw shapefile already has 130,141 (see below) - at
+ * 99 MB. `minGap` stays a parameter rather than a hardcoded 0 because a
+ * smaller, less extreme site may afford the stricter guarantee; it is a
+ * per-site tuning knob, not settled science.
+ *
+ * Whatever `minGap` is, this cannot make the output *worse* than the raw
+ * shapefile: Kiru's own raw geometry already has 130,141 crossings between
+ * differently elevated lines across 1,992 locations, which is not a defect
+ * in this pipeline - it is what 1 m contours look like on a near-vertical
+ * face, which real photogrammetric contour generation cannot always avoid
+ * either. This only bounds how much simplification is allowed to add on
+ * top of that baseline; it does not, and cannot, remove crossings the
+ * source data already has.
+ */
+function crossesAnotherLine(ax, ay, bx, by, ownLineId, index, minGap) {
+  const pad = Math.ceil(minGap / CROSSING_CELL);
+  const cx0 = Math.floor(Math.min(ax, bx) / CROSSING_CELL) - pad;
+  const cx1 = Math.floor(Math.max(ax, bx) / CROSSING_CELL) + pad;
+  const cy0 = Math.floor(Math.min(ay, by) / CROSSING_CELL) - pad;
+  const cy1 = Math.floor(Math.max(ay, by) / CROSSING_CELL) + pad;
+  const gapSq = minGap * minGap;
+  const { segAX, segAY, segBX, segBY, segLine } = index;
+  for (let cx = cx0; cx <= cx1; cx += 1) {
+    for (let cy = cy0; cy <= cy1; cy += 1) {
+      const arr = index.grid.get(cx * 8388608 + cy);
+      if (!arr) continue;
+      for (const s of arr) {
+        if (segLine[s] === ownLineId) continue;
+        if (segSegDistSq(ax, ay, bx, by, segAX[s], segAY[s], segBX[s], segBY[s]) <= gapSq) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Douglas-Peucker, refusing a collapse that would cut through a neighbouring
+ * line even when it is within tolerance.
+ *
+ * Verified against Kiru's contours (18,949 lines over a Himalayan gorge)
+ * before this existed: the raw shapefile has zero crossings between
+ * differently elevated lines, and simplifying each line independently -
+ * blind to every other line - produced 226,397 of them at a 5 m tolerance,
+ * spread across 3,341 separate ~100 m patches the length of the survey. Not
+ * a bad tolerance choice; *any* tolerance did this, because a straight
+ * replacement for one line's detail has no way to know a neighbour sits in
+ * the gap it just cut.
+ *
+ * The fix keeps every node the plain distance test would have kept, and also
+ * keeps a node whose removal would introduce a new crossing, which is always
+ * checkable at zero cost when the two endpoints are adjacent raw points:
+ * that segment is unmodified source geometry, and the raw geometry doesn't
+ * cross anything by construction, so the recursion always has a safe base
+ * case to fall back to.
+ */
+function simplify(points, tolerance, safety) {
   if (points.length < 3) return points;
   const sqTol = tolerance * tolerance;
   const keep = new Uint8Array(points.length);
@@ -559,7 +738,11 @@ function simplify(points, tolerance) {
       const sq = ex * ex + ey * ey;
       if (sq > maxSq) { maxSq = sq; index = i; }
     }
-    if (maxSq > sqTol && index) {
+    let keepWorst = maxSq > sqTol && index;
+    if (!keepWorst && safety && last - first > 1) {
+      keepWorst = index > 0 && crossesAnotherLine(x1, y1, x2, y2, safety.lineId, safety.index, 0);
+    }
+    if (keepWorst) {
       keep[index] = 1;
       stack.push([first, index], [index, last]);
     }
@@ -576,6 +759,9 @@ for (const shp of shapefiles) {
   const proj = readProjection(stem + ".prj");
   const geometry = readShpPolylines(shp);
   const { fields, rows } = readDbf(stem + ".dbf");
+  console.log(`  building a crossing-safety index over the raw geometry...`);
+  const crossingIndex = buildCrossingIndex(geometry);
+  console.log(`  ${crossingIndex.lineCount} lines indexed`);
 
   const elevField =
     fields.find((f) => /^(elev|elevation|contour|height|z|level)$/i.test(f.name))?.name ??
@@ -592,13 +778,16 @@ for (const shp of shapefiles) {
   const features = [];
   let before = 0;
   let after = 0;
+  let lineId = 0; // must walk records/lines in the same order buildCrossingIndex did
   for (let i = 0; i < geometry.length; i += 1) {
     const lines = geometry[i];
     if (!lines) continue;
     const elevation = heightOf(rows[i]);
     for (const line of lines) {
+      const thisLineId = lineId;
+      lineId += 1;
       before += line.length;
-      const thinned = simplify(line, contourTolerance);
+      const thinned = simplify(line, contourTolerance, { lineId: thisLineId, index: crossingIndex });
       if (thinned.length < 2) continue;
       after += thinned.length;
       features.push({
