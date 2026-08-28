@@ -98,7 +98,10 @@ import type { ToolGroupKey } from "@/lib/portal/tool-catalogue";
  *
  * - No basemap by default. Every basemap tile is a request to a third party
  *   carrying the bounding box of a client's site, which is not ours to leak.
- *   It is one toggle away, labelled with what it does.
+ *   It is one toggle away, labelled with what it does. Two choices once
+ *   turned on: OpenStreetMap streets, or Esri World Imagery satellite with
+ *   its reference labels overlaid for a hybrid look - not Google's tiles,
+ *   which are not licensed for this without the paid Maps Platform API.
  * - Contours give up their elevation on hover. Baked labels would need self
  *   hosted glyph fonts, and pointing at a line is less cluttered than the
  *   reference dashboard's permanent labels anyway.
@@ -187,6 +190,14 @@ type MeasureMode =
  */
 type VolumeOp = "volume" | "stockpile";
 
+/**
+ * Off by default (see the design note at the top of this file). "satellite"
+ * is Esri World Imagery with its reference labels layered on top - a
+ * "hybrid" look without Google's tiles, which need the paid Maps Platform
+ * API to use legitimately.
+ */
+type BasemapMode = "off" | "streets" | "satellite";
+
 /** Modes that draw a polygon rather than a path. */
 const CLOSES_A_RING = new Set<MeasureMode>(["area", "volume", "grid", "compare"]);
 
@@ -224,22 +235,15 @@ function profileSpacing(
  * stages, and they must cancel each other: a profile still in flight when the
  * client closes the ring describes geometry that no longer exists.
  *
- * `other` is the second surface's profile over the same line, fetched
- * alongside the primary one so the chart can overlay DSM against DTM — Malhar
- * asked to see canopy and structures against bare earth on the one graph
- * rather than having to flip the surface toggle and compare by memory. It is
- * absent for a closed ring (there is no chart there to overlay onto) and when
- * the survey only has one surface to measure against.
+ * Only ever the active surface's own numbers - DSM and DTM are never fetched
+ * or drawn together. An overlaid chart was tried and reversed: comparing
+ * canopy against bare earth on one graph read as a single, ambiguous line to
+ * a client unfamiliar with which colour meant what, and "which one am I
+ * looking at" is exactly what the surface toggle already answers unambiguously.
  */
 type ShapeResponse = AnalysisEnvelope & {
   result: ProfileResult | PolygonStatsResult;
-  other?: { surface: Surface; result: ProfileResult } | null;
 };
-
-/** The surface a DSM/DTM overlay compares the active one against. */
-function otherSurface(model: Surface): Surface {
-  return model === "dsm" ? "dtm" : "dsm";
-}
 
 /**
  * What to show a client when a measurement fails.
@@ -259,7 +263,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  const [basemap, setBasemap] = useState(false);
+  const [basemap, setBasemap] = useState<BasemapMode>("off");
   const [visible, setVisible] = useState<Record<string, boolean>>(() => {
     // Open on the orthomosaic, which is the layer a client recognises, rather
     // than whichever raster the pipeline happened to write first. With relief
@@ -537,13 +541,6 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   volumeOpRef.current = volumeOp;
   const surfaceRef = useRef<Surface>(surface);
   surfaceRef.current = surface;
-  /**
-   * Whether this survey can be measured against both models, mirrored into a
-   * ref for the same reason `surfaceRef` is: `recompute` is registered once and
-   * reads this at click time, long after the render that computed `hasBothSurfaces`
-   * below has finished. Set further down, once the terrain probe has answered.
-   */
-  const hasBothSurfacesRef = useRef(false);
   // The map's handlers are registered once, so anything they read at event time
   // has to come through a ref rather than a closed-over render value.
   const toleranceRef = useRef<number>(TOLERANCE_M);
@@ -577,26 +574,16 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   );
   const shapeLane = useRef(
     latest(
-      async (
+      (
         signal: AbortSignal,
         points: Pair[],
         closed: boolean,
         model: Surface,
         spacing: number | undefined,
-        overlay: boolean,
-      ): Promise<ShapeResponse> => {
-        if (closed) return client.current.polygonStats(points, { surface: model }, signal);
-        if (!overlay) return client.current.profile(points, { surface: model, spacing }, signal);
-        // Both requests share the one abort signal `latest()` handed this call,
-        // so a third click superseding this one cancels the overlay fetch along
-        // with the primary rather than leaving it to resolve into nothing.
-        const other = otherSurface(model);
-        const [primary, secondary] = await Promise.all([
-          client.current.profile(points, { surface: model, spacing }, signal),
-          client.current.profile(points, { surface: other, spacing }, signal),
-        ]);
-        return { ...primary, other: { surface: other, result: secondary.result } };
-      },
+      ): Promise<ShapeResponse> =>
+        closed
+          ? client.current.polygonStats(points, { surface: model }, signal)
+          : client.current.profile(points, { surface: model, spacing }, signal),
     ),
   );
   const alignmentLane = useRef(
@@ -760,9 +747,6 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           askForStats,
           surfaceRef.current,
           askForStats ? undefined : profileSpacing(ring, utmZone, utmNorthern, cellSizeRef.current),
-          // The overlay only means anything for a profile: a closed ring answers
-          // with one set of statistics, not a chart to draw a second line on.
-          !askForStats && hasBothSurfacesRef.current,
         );
         // Superseded by a newer click. The newer call owns the panel now.
         if (response === null) return;
@@ -782,7 +766,6 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 data: response.result as ProfileResult,
                 cellSize: response.cellSize,
                 computedIn: response.computedIn,
-                other: response.other ?? null,
               },
         );
       } catch (error) {
@@ -1718,7 +1701,6 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
   /** Both models present, so offering a choice between them means something. */
   const hasBothSurfaces = probe.state === "ready" && probe.dtm && probe.dsm;
-  hasBothSurfacesRef.current = hasBothSurfaces;
   /** Anything at all to measure against. */
   const measurable = probe.state === "ready";
 
@@ -2713,26 +2695,66 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surface]);
 
+  /**
+   * Both basemaps are added once, lazily, and left in the style thereafter -
+   * only their visibility toggles. MapLibre raster sources can't have their
+   * tile URL swapped in place, so switching mode by mutating one shared
+   * source would mean tearing it down and rebuilding it every click; two
+   * sources that just show/hide is simpler and doesn't re-fetch tiles
+   * already in the browser's cache when a client flips back and forth.
+   */
   useEffect(() => {
     const instance = map.current;
     if (!instance || !ready) return;
+    const first = instance.getStyle().layers?.[0]?.id;
 
-    if (basemap && !instance.getSource("basemap")) {
-      instance.addSource("basemap", {
+    if (basemap === "streets" && !instance.getSource("basemap-streets")) {
+      instance.addSource("basemap-streets", {
         type: "raster",
         tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
         tileSize: 256,
         maxzoom: 19,
         attribution: "&copy; OpenStreetMap contributors",
       });
-      // Underneath everything else.
-      const first = instance.getStyle().layers?.[0]?.id;
       instance.addLayer(
-        { id: "basemap", type: "raster", source: "basemap", paint: { "raster-opacity": 0.9 } },
+        { id: "basemap-streets", type: "raster", source: "basemap-streets", paint: { "raster-opacity": 0.9 } },
         first,
       );
-    } else if (instance.getLayer("basemap")) {
-      instance.setLayoutProperty("basemap", "visibility", basemap ? "visible" : "none");
+    } else if (instance.getLayer("basemap-streets")) {
+      instance.setLayoutProperty("basemap-streets", "visibility", basemap === "streets" ? "visible" : "none");
+    }
+
+    if (basemap === "satellite" && !instance.getSource("basemap-satellite")) {
+      instance.addSource("basemap-satellite", {
+        type: "raster",
+        tiles: [
+          "https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Esri, Maxar, Earthstar Geographics",
+      });
+      instance.addLayer({ id: "basemap-satellite", type: "raster", source: "basemap-satellite" }, first);
+      // Boundaries, roads and place names over the imagery - what makes it
+      // "hybrid" rather than a plain satellite photo. A separate source
+      // because it is semi-transparent by design, drawn straight on top.
+      instance.addSource("basemap-satellite-labels", {
+        type: "raster",
+        tiles: [
+          "https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Esri",
+      });
+      instance.addLayer(
+        { id: "basemap-satellite-labels", type: "raster", source: "basemap-satellite-labels" },
+        first,
+      );
+    } else if (instance.getLayer("basemap-satellite")) {
+      const visibility = basemap === "satellite" ? "visible" : "none";
+      instance.setLayoutProperty("basemap-satellite", "visibility", visibility);
+      instance.setLayoutProperty("basemap-satellite-labels", "visibility", visibility);
     }
   }, [basemap, ready]);
 
@@ -3275,8 +3297,8 @@ function LayerTree({
   opacity: Record<string, number>;
   setVisible: (fn: (v: Record<string, boolean>) => Record<string, boolean>) => void;
   setOpacity: (fn: (v: Record<string, number>) => Record<string, number>) => void;
-  basemap: boolean;
-  setBasemap: (v: boolean) => void;
+  basemap: BasemapMode;
+  setBasemap: (v: BasemapMode) => void;
   hillshade: boolean;
   setHillshade: (v: boolean) => void;
 }) {
@@ -3381,26 +3403,44 @@ function LayerTree({
           Base map
         </legend>
         {/*
-          The explanation is a description, not part of the name.
-          Nested inside the label it became part of the accessible name, so a
-          screen reader announced "OpenStreetMap Off by default. Turning this on
-          requests map tiles from OpenStreetMap, which reveals roughly where this
-          site is to a third party, checkbox" every single time. aria-describedby
-          keeps the reasoning available without reading an essay on focus.
+          The explanation is a description, not part of any one button's name.
+          Read once via aria-describedby on the group rather than repeated on
+          each option, for the same reason the old checkbox used it: a screen
+          reader reading a privacy justification on every button in the row
+          would be worse than reading it once.
         */}
-        <label className="flex min-h-6 items-center gap-2 py-0.5 text-sm text-ink-900">
-          <input
-            type="checkbox"
-            checked={basemap}
-            onChange={(e) => setBasemap(e.target.checked)}
-            aria-describedby="basemap-privacy"
-            className="h-4 w-4 rounded border-ink/25 text-accent-600 focus:ring-accent-600"
-          />
-          OpenStreetMap
-        </label>
-        <p id="basemap-privacy" className="ml-6 mt-0.5 text-[11px] leading-snug text-ink/55">
-          Off by default. Turning this on requests map tiles from OpenStreetMap,
-          which reveals roughly where this site is to a third party.
+        <div
+          className="flex items-center gap-0.5 rounded-full bg-ink/[0.045] p-0.5"
+          role="group"
+          aria-label="Base map"
+          aria-describedby="basemap-privacy"
+        >
+          {(
+            [
+              ["off", "Off"],
+              ["streets", "Streets"],
+              ["satellite", "Satellite"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={basemap === value}
+              onClick={() => setBasemap(value)}
+              className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-all duration-200 ${
+                basemap === value
+                  ? "bg-panel text-ink-900 shadow-sm"
+                  : "text-ink/55 hover:text-ink-900"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p id="basemap-privacy" className="ml-1 mt-1 text-[11px] leading-snug text-ink/55">
+          Off by default. Streets requests tiles from OpenStreetMap; Satellite
+          from Esri. Either reveals roughly where this site is to that
+          provider.
         </p>
       </fieldset>
     </div>

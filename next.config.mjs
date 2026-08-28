@@ -35,13 +35,19 @@ const contentSecurityPolicy = [
    * MapLibre just drew nothing under the survey, because a CSP violation is not a
    * failed request the map can report. The bare domain is the canonical host now;
    * the a/b/c subdomains are kept only for older clients.
+   *
+   * Esri's `services.arcgisonline.com` is the satellite/hybrid basemap option
+   * (World Imagery, with the World_Boundaries_and_Places reference layer over
+   * it) - added the same way and caught the same way: a headless browser
+   * check, not the type checker or the build, since a CSP violation is silent
+   * everywhere except the console.
    */
-  "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org",
+  "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://services.arcgisonline.com",
   "worker-src 'self' blob:",
   "child-src 'self' blob:",
   // next/font self hosts Inter, so no external font origin is needed.
   "font-src 'self' data:",
-  "connect-src 'self' https://tile.openstreetmap.org https://*.tile.openstreetmap.org",
+  "connect-src 'self' https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://services.arcgisonline.com",
   // The PDF viewer frames our own asset route, nothing else.
   "frame-src 'self'",
   "media-src 'self'",
