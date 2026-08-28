@@ -22,7 +22,7 @@
  */
 
 import { createHash, createHmac } from "node:crypto";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 const REGION = "auto"; // R2 has one region and expects this literal
@@ -84,7 +84,23 @@ const SECRET_KEY = env("R2_SECRET_ACCESS_KEY");
 const BUCKET = env("R2_BUCKET");
 const HOST = `${ACCOUNT}.r2.cloudflarestorage.com`;
 
-const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+// Node's Hash.update() rejects a single call over roughly 2 GiB ("data is
+// too long") - a real limitation, not this script's own guard, and it bit
+// Kiru's 3.76 GB DSM the same way readFileSync's 2 GiB cap did above.
+// Feeding it in chunks is well within what update() supports repeatedly.
+const HASH_CHUNK = 512 * 1024 * 1024;
+function hashOf(algorithm, data) {
+  const hash = createHash(algorithm);
+  if (typeof data === "string" || data.length <= HASH_CHUNK) {
+    hash.update(data);
+    return hash;
+  }
+  for (let offset = 0; offset < data.length; offset += HASH_CHUNK) {
+    hash.update(data.subarray(offset, offset + HASH_CHUNK));
+  }
+  return hash;
+}
+const sha256 = (data) => hashOf("sha256", data).digest("hex");
 const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
 
 /**
@@ -97,7 +113,7 @@ const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
  * than UNSIGNED-PAYLOAD, so a truncated upload fails the signature instead of
  * silently storing a partial object.
  */
-function sign({ method, key, body, contentType }) {
+function sign({ method, key, body, contentType, query }) {
   const now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
   const dateStamp = amzDate.slice(0, 8);
@@ -105,6 +121,13 @@ function sign({ method, key, body, contentType }) {
 
   const canonicalUri =
     "/" + [BUCKET, ...key.split("/")].map((s) => encodeURIComponent(s)).join("/");
+  // Sorted key=value pairs, joined with "&" - required even for a valueless
+  // param like "uploads" (multipart initiate), which still needs its "=".
+  const canonicalQuery = query
+    ? Object.keys(query).sort()
+        .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k] ?? "")}`)
+        .join("&")
+    : "";
 
   const headers = {
     host: HOST,
@@ -119,7 +142,7 @@ function sign({ method, key, body, contentType }) {
     .join("");
 
   const canonicalRequest = [
-    method, canonicalUri, "", canonicalHeaders, signedHeaders, payloadHash,
+    method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash,
   ].join("\n");
 
   const scope = `${dateStamp}/${REGION}/${SERVICE}/aws4_request`;
@@ -134,7 +157,7 @@ function sign({ method, key, body, contentType }) {
   const signature = createHmac("sha256", signingKey).update(toSign).digest("hex");
 
   return {
-    url: `https://${HOST}${canonicalUri}`,
+    url: `https://${HOST}${canonicalUri}${canonicalQuery ? `?${canonicalQuery}` : ""}`,
     headers: {
       ...headers,
       Authorization:
@@ -161,10 +184,107 @@ function walk(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) continue; // .DS_Store and friends
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walk(full));
-    else if (entry.isFile()) out.push(full);
+    if (entry.isDirectory()) { out.push(...walk(full)); continue; }
+    if (entry.isFile()) { out.push(full); continue; }
+    // Dirent.isFile()/.isDirectory() report the link itself, not its target,
+    // so a symlink is neither - which is exactly what portal-data/terrain/
+    // holds (dsm.tif/dtm.tif point at the real rasters elsewhere on disk;
+    // see the resume-point memory). Without this, this walk silently found
+    // zero files here and the upload never got them.
+    if (entry.isSymbolicLink()) {
+      const target = statSync(full); // follows the link
+      if (target.isFile()) out.push(full);
+      else if (target.isDirectory()) out.push(...walk(full));
+    }
   }
   return out;
+}
+
+// readFileSync refuses anything over 2 GiB (Node's own guard, not a real
+// memory limit) - which Kiru's terrain rasters are, at 3.76 GB and 2.3 GB.
+// Nothing above MULTIPART_THRESHOLD reaches readFileSync any more, so that
+// cap never bites: uploadMultipart below reads range by range instead.
+async function readFileRange(path, start, length) {
+  const out = Buffer.allocUnsafe(length);
+  let offset = 0;
+  for await (const chunk of createReadStream(path, { start, end: start + length - 1 })) {
+    chunk.copy(out, offset);
+    offset += chunk.length;
+  }
+  return offset === length ? out : out.subarray(0, offset);
+}
+
+// Below this, use multipart upload rather than one PUT of the whole file.
+// A single ~3.76 GB buffered PUT for Kiru's DSM failed reproducibly with a
+// TLS-level EPROTO a couple of minutes in - same failure with the sandbox on
+// and off, so not a sandbox artifact, and not obviously this machine's
+// network either since it happened at close to the same elapsed time twice.
+// Multipart is what S3-compatible storage is actually built for at this
+// size: each part is an ordinary 200 MB PUT, so one bad write costs one part
+// and a retry, not the whole file, and nothing has to hold the full file in
+// memory at once - only one part plus whatever's mid-flight.
+const MULTIPART_THRESHOLD = 200 * 1024 * 1024;
+const PART_SIZE = 200 * 1024 * 1024;
+
+async function xmlText(response, label) {
+  if (response.ok) return response.text();
+  throw new Error(`${label}: ${response.status} ${(await response.text()).slice(0, 300)}`);
+}
+
+/**
+ * Initiate, PUT each part, complete. No dedupe check here (`alreadyThere`'s
+ * plain MD5 comparison doesn't apply - R2's ETag for a multipart object is
+ * `<hash>-<partCount>`, not the whole-file MD5), so this always re-uploads.
+ * Fine for a first publish; --force-equivalent by construction.
+ */
+async function uploadMultipart(key, path, size, contentType) {
+  const initRequest = sign({ method: "POST", key, query: { uploads: "" }, contentType });
+  const initXml = await xmlText(
+    await fetch(initRequest.url, { method: "POST", headers: initRequest.headers }),
+    `multipart initiate for ${key}`,
+  );
+  const uploadId = /<UploadId>([^<]+)<\/UploadId>/.exec(initXml)?.[1];
+  if (!uploadId) throw new Error(`multipart initiate for ${key}: no UploadId in the response`);
+
+  const parts = [];
+  let partNumber = 1;
+  for (let offset = 0; offset < size; offset += PART_SIZE) {
+    const length = Math.min(PART_SIZE, size - offset);
+    const chunk = await readFileRange(path, offset, length);
+    const partRequest = sign({
+      method: "PUT", key, body: chunk,
+      query: { partNumber: String(partNumber), uploadId },
+    });
+    const partResponse = await fetch(partRequest.url, {
+      method: "PUT", headers: partRequest.headers, body: chunk,
+    });
+    if (!partResponse.ok) {
+      throw new Error(
+        `multipart part ${partNumber} of ${key}: ${partResponse.status} ` +
+          `${(await partResponse.text()).slice(0, 300)}`,
+      );
+    }
+    const etag = partResponse.headers.get("etag");
+    if (!etag) throw new Error(`multipart part ${partNumber} of ${key}: no ETag in the response`);
+    parts.push({ partNumber, etag });
+    console.log(
+      `    part ${partNumber}/${Math.ceil(size / PART_SIZE)}  ${(offset / 1024 / 1024).toFixed(0)}-` +
+        `${((offset + length) / 1024 / 1024).toFixed(0)} MB`,
+    );
+    partNumber += 1;
+  }
+
+  const completeBody =
+    `<CompleteMultipartUpload>${parts
+      .map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${p.etag}</ETag></Part>`)
+      .join("")}</CompleteMultipartUpload>`;
+  const completeRequest = sign({ method: "POST", key, body: completeBody, query: { uploadId } });
+  await xmlText(
+    await fetch(completeRequest.url, {
+      method: "POST", headers: completeRequest.headers, body: completeBody,
+    }),
+    `multipart complete for ${key}`,
+  );
 }
 
 /** Does the remote object already match, byte for byte? */
@@ -174,7 +294,7 @@ async function alreadyThere(key, body) {
   if (!response.ok) return false;
   const etag = (response.headers.get("etag") ?? "").replace(/"/g, "");
   // R2 returns the MD5 for a single part upload, which is what these are.
-  return etag === createHash("md5").update(body).digest("hex");
+  return etag === hashOf("md5", body).digest("hex");
 }
 
 const files = walk(args.from);
@@ -199,16 +319,35 @@ async function worker() {
     // Windows run would be a literal character in the object name.
     const suffix = relative(args.from, file).split(sep).join("/");
     const key = `sites/${args.site}/${suffix}`;
-    const body = readFileSync(file);
+    const size = statSync(file).size;
     const extension = file.slice(file.lastIndexOf(".") + 1).toLowerCase();
     const contentType = CONTENT_TYPES[extension] ?? "application/octet-stream";
 
     if (args.dryRun) {
-      console.log(`  would send  ${key}  ${(body.length / 1024).toFixed(0)} KB`);
+      console.log(`  would send  ${key}  ${(size / 1024).toFixed(0)} KB`);
       sent += 1;
-      bytes += body.length;
+      bytes += size;
       continue;
     }
+
+    if (size > MULTIPART_THRESHOLD) {
+      // Nothing here reads the whole file into memory - alreadyThere's plain
+      // MD5 comparison doesn't apply to a multipart object's ETag anyway, so
+      // this always sends. See the comment above uploadMultipart.
+      try {
+        await uploadMultipart(key, file, size, contentType);
+      } catch (err) {
+        failed += 1;
+        console.error(`  FAILED ${key}: ${err.message}`);
+        continue;
+      }
+      sent += 1;
+      bytes += size;
+      console.log(`  sent  ${key}  ${(size / 1024 / 1024).toFixed(0)} MB (multipart)`);
+      continue;
+    }
+
+    const body = readFileSync(file);
 
     if (!args.force && (await alreadyThere(key, body))) {
       skipped += 1;
