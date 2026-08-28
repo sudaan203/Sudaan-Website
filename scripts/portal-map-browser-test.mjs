@@ -269,30 +269,44 @@ console.log("\nTool 3, distance and profile");
   check("sending the drawn line", Array.isArray(profileCall?.line) && profileCall.line.length >= 2);
 
   /*
-   * Malhar asked for DSM and DTM overlaid on the same graph rather than read
-   * one at a time behind the surface toggle. `kotba-survey` has both models,
-   * so the page should have asked for both profiles over the identical line —
-   * one request per surface, not one surface with the other inferred — and the
-   * panel should show both as a legend and a second, dashed line on the chart.
+   * Overlaying DSM and DTM on one chart was tried and reversed: a client
+   * unfamiliar with which dashed line meant which model read it as one
+   * ambiguous line. `kotba-survey` has both models, so this is exactly the
+   * case that used to trigger the overlay — confirm it no longer does, and
+   * that the surface toggle is what switches which one is shown instead.
    */
   const profileCalls = analysisCalls.slice(before).filter((c) => c.op === "profile");
-  const dtmAsked = profileCalls.some((c) => c.surface === "dtm");
-  const dsmAsked = profileCalls.some((c) => c.surface === "dsm");
   check(
-    "both DTM and DSM are requested, so the graph can overlay them",
-    dtmAsked && dsmAsked,
-    `dtm asked: ${dtmAsked}, dsm asked: ${dsmAsked}`,
+    "only one surface is requested, not both",
+    profileCalls.length === 1,
+    `${profileCalls.length} profile call(s): ${profileCalls.map((c) => c.surface).join(", ")}`,
   );
   check(
-    "the overlay legend names both models",
-    /Terrain \(DTM\)/.test(withHeights) && /Surface \(DSM\)/.test(withHeights),
-    withHeights.match(/(Terrain|Surface) \((DTM|DSM)\)/g)?.join(", ") ?? "neither found",
+    "no overlay legend naming a second model",
+    !/Terrain \(DTM\)/.test(withHeights) || !/Surface \(DSM\)/.test(withHeights),
   );
   const dashedOverlayDrawn = await page.evaluate(
     (sel) => Boolean(document.querySelector(sel)?.querySelector("svg polyline[stroke-dasharray]")),
     PANEL_SELECTOR,
   );
-  check("the second surface is drawn as its own line on the chart", dashedOverlayDrawn);
+  check("no second, dashed line drawn on the chart", !dashedOverlayDrawn);
+
+  // Switching the surface toggle should re-run the same profile against the
+  // other model, so a client reads DSM and DTM one at a time, never overlaid.
+  const beforeToggle = analysisCalls.length;
+  const toggled = await clickTool(profileCalls[0]?.surface === "dsm" ? "Terrain" : "Surface");
+  check("the surface toggle is there and clickable", toggled);
+  // analysisCalls fills in from a Node-side request listener, not anything on
+  // the page, so this waits on the array directly rather than in the browser.
+  for (let waited = 0; waited < 20000 && analysisCalls.length === beforeToggle; waited += 200) {
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const afterToggleCalls = analysisCalls.slice(beforeToggle).filter((c) => c.op === "profile");
+  check(
+    "toggling re-requests the profile against the other surface, still just one",
+    afterToggleCalls.length === 1 && afterToggleCalls[0]?.surface !== profileCalls[0]?.surface,
+    `${afterToggleCalls.length} call(s): ${afterToggleCalls.map((c) => c.surface).join(", ")}`,
+  );
 }
 
 console.log("\nTool 4, cut and fill");
