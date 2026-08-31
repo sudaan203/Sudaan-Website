@@ -356,6 +356,102 @@ console.log("\nRefusals and isolation");
   check("non numeric coordinates are refused", status === 400, `status ${status}`);
 }
 
+console.log("\nFlood simulation, Malhar's water-level-rise tool");
+{
+  /*
+   * Anchored to a direct read of the same raster, the way every other check in
+   * this file is. The independent number here is the *count of cells at or
+   * below a level*, computed by walking the grid directly — if the route's
+   * threshold flood disagrees with that, something between the request and the
+   * engine is lying about which raster or which level.
+   */
+  const level = truthSpot + 5;
+  let belowCells = 0;
+  for (let i = 0; i < grid.data.length; i += 1) {
+    const z = grid.data[i];
+    if (!grid.isNoData(z) && level - z > 0) belowCells += 1;
+  }
+  const independentArea = belowCells * grid.cellSize * grid.cellSize;
+
+  const { status, payload } = await post({ op: "flood", levels: [level], crs: "lonlat" });
+  check("a flood with no water source is accepted", status === 200, `status ${status}`);
+  if (status === 200) {
+    check("and answered as a threshold flood, not a connected one",
+      payload.result.method === "threshold", payload.result.method);
+    near("the flooded area matches a direct read of the raster",
+      payload.result.levels[0].area_m2, independentArea, 0.5, " m2");
+    check("hectares and km2 agree with the m2 figure",
+      Math.abs(payload.result.levels[0].area_ha * 10_000 - payload.result.levels[0].area_m2) < 1e-6 &&
+      Math.abs(payload.result.levels[0].area_km2 * 1_000_000 - payload.result.levels[0].area_m2) < 1e-6);
+    // MultiPolygon, not Polygon. A flood is disconnected far more often than
+    // not, and one Polygon carrying every ring flat declares the second patch
+    // onwards to be holes in the first — see `groupRingsIntoPolygons`.
+    check("a flood polygon comes back as GeoJSON",
+      payload.result.levels[0].geojson?.features?.[0]?.geometry?.type === "MultiPolygon");
+    check("as separate patches, not one patch with the rest punched out of it",
+      payload.result.levels[0].geojson.features[0].geometry.coordinates.length >= 1);
+    check("carrying the export attributes Malhar's spec names",
+      payload.result.levels[0].geojson.features[0].properties.Water_Level !== undefined &&
+      payload.result.levels[0].geojson.features[0].properties.Flood_Area_Ha !== undefined);
+  }
+}
+{
+  // The whole ladder in one request, which is what an automatic run sends.
+  const levels = [truthSpot + 2, truthSpot + 4, truthSpot + 6];
+  const { status, payload } = await post({ op: "flood", levels, crs: "lonlat", interval: 2 });
+  check("a ladder of levels is accepted in one request", status === 200, `status ${status}`);
+  if (status === 200) {
+    check("one result per level", payload.result.levels.length === 3, `${payload.result.levels.length}`);
+    // Physically necessary, and the strongest cheap check there is: raising the
+    // water can never uncover ground. A simulation that ever shrinks has either
+    // read a different raster between steps or lost cells somewhere.
+    check("the flooded area never shrinks as the water rises",
+      payload.result.levels.every((l, i, all) => i === 0 || l.area_m2 >= all[i - 1].area_m2),
+      payload.result.levels.map((l) => l.area_ha.toFixed(2)).join(" -> "));
+    check("each polygon carries the interval it was simulated at",
+      payload.result.levels.every((l) =>
+        l.geojson.features.length === 0 || l.geojson.features[0].properties.Interval === 2));
+  }
+}
+{
+  // Seeded from a point: a connected flood, and it must not exceed the bathtub
+  // answer at the same level — connectivity can only ever remove cells.
+  const level = truthSpot + 5;
+  const bathtub = await post({ op: "flood", levels: [level], crs: "lonlat" });
+  const seeded = await post({
+    op: "flood", levels: [level], at: [[centreLon, centreLat]], crs: "lonlat",
+  });
+  check("a flood seeded at a point is accepted", seeded.status === 200, `status ${seeded.status}`);
+  if (seeded.status === 200 && bathtub.status === 200) {
+    check("and answered as a connected flood", seeded.payload.result.method === "connected");
+    check("reporting the ground elevation it was seeded at",
+      Math.abs(seeded.payload.result.seedGround_m - truthSpot) < 0.001);
+    check("the connected flood never exceeds the threshold flood at the same level",
+      seeded.payload.result.levels[0].area_m2 <= bathtub.payload.result.levels[0].area_m2 + 1e-6,
+      `${seeded.payload.result.levels[0].area_ha.toFixed(2)} ha connected, ` +
+        `${bathtub.payload.result.levels[0].area_ha.toFixed(2)} ha threshold`);
+  }
+}
+{
+  const { status } = await post({ op: "flood", crs: "lonlat" });
+  check("a flood with no level at all is refused", status === 400, `status ${status}`);
+}
+{
+  const { status } = await post({
+    op: "flood", levels: Array.from({ length: 500 }, (_, i) => truthSpot + i * 0.1), crs: "lonlat",
+  });
+  check("an unreasonable number of levels is refused rather than attempted", status === 400, `status ${status}`);
+}
+{
+  // Far outside the survey. This must be refused, not answered with an empty
+  // flood, because "no water anywhere" and "you pointed off the map" are
+  // different facts and only one of them is about the terrain.
+  const { status } = await post({
+    op: "flood", levels: [truthSpot + 5], at: [[centreLon + 5, centreLat + 5]], crs: "lonlat",
+  });
+  check("a water source outside the survey is refused", status === 400, `status ${status}`);
+}
+
 console.log("\nGeometry cross check: the browser and the server must agree");
 {
   // `geodesy.ts` in the browser and `projection.mjs` on the server are separate

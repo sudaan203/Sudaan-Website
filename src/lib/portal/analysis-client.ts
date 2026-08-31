@@ -339,6 +339,39 @@ export type BenchResult = {
   };
 };
 
+/**
+ * One water level of Malhar's flood simulation, with its polygon and its
+ * statistics.
+ *
+ * The area is repeated in three units because his spec asks for all three, and
+ * because a client reading "0.245" wants to know without arithmetic whether
+ * that is a quarter of a square kilometre or a quarter of a hectare.
+ */
+export type FloodLevel = {
+  level_m: number;
+  cells: number;
+  area_m2: number;
+  area_ha: number;
+  area_km2: number;
+  volume_m3: number;
+  maxDepth_m: number;
+  /**
+   * The flood reaches the edge of the surveyed ground, so it may continue past
+   * what was drawn. The area is then a lower bound, exactly as a catchment's
+   * `truncatedBySurveyEdge` is.
+   */
+  truncated: boolean;
+  geojson: GeoJSON.FeatureCollection;
+};
+
+export type FloodResult = {
+  /** "connected" when a water source was given, "threshold" when none was. */
+  method: "connected" | "threshold";
+  /** Ground elevation at the water source, or null for a threshold flood. */
+  seedGround_m: number | null;
+  levels: FloodLevel[];
+};
+
 /** Every parameter the four alignment ops take, each optional and each defaulted
  *  on the server so a missing one is never silently zero. */
 export type AlignmentOptions = {
@@ -515,6 +548,44 @@ export class AnalysisClient {
     signal?: AbortSignal,
   ) {
     return this.run<T>({ op, line, ...options }, signal);
+  }
+
+  /**
+   * Malhar's water-level-rise simulation.
+   *
+   * The whole ladder of levels goes in one request rather than one request per
+   * animation step. The server reads the DTM once either way, so a fifteen-step
+   * run costs barely more than a single level — and it means the animation
+   * plays from data already in the browser instead of stuttering on the
+   * network, which is what "the interval buttons must work automatically"
+   * actually requires in practice.
+   *
+   * `at` or `polygon` names a water source and asks for a connected flood.
+   * Neither asks for a plain elevation threshold, which floods every hollow
+   * below the level whether water could reach it or not. There is no default:
+   * the two are different questions, and which one was asked comes back in
+   * `method` so the panel can say which one it is showing.
+   *
+   * No `surface` option, deliberately. Water spreads over bare earth; a flood
+   * simulated over the surface model would be water flowing across treetops.
+   * The server pins this op to the DTM and ignores the field.
+   */
+  flood(
+    levels: number[],
+    source: { at?: Pair; polygon?: Pair[] } = {},
+    options: { interval?: number; crs?: Crs } = {},
+    signal?: AbortSignal,
+  ) {
+    return this.run<FloodResult>(
+      {
+        op: "flood",
+        levels,
+        ...(source.at ? { at: [source.at] } : {}),
+        ...(source.polygon ? { polygon: source.polygon } : {}),
+        ...options,
+      },
+      signal,
+    );
   }
 }
 

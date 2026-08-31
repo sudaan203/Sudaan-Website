@@ -29,6 +29,11 @@ import {
   type CrossSectionsResult,
   type Surface,
   type VolumeReference,
+  // Aliased: `hydrology-client` already exports a `FloodResult`, tool 28's
+  // single seeded flood. This is the simulation's ladder of them, and letting
+  // the two share a name in this file would make the next reader guess which
+  // tool a variable belongs to.
+  type FloodLevel as FloodSimLevel,
 } from "@/lib/portal/analysis-client";
 import {
   formatElevation,
@@ -74,6 +79,7 @@ import {
   type DrawnFeature,
   type GeometryKind,
 } from "@/lib/portal/shapefile-client";
+import { FloodPanel, type FloodControls, type FloodState } from "./FloodPanel";
 import { ToolRail, type RailAction } from "./ToolRail";
 import {
   ContourPanel,
@@ -507,6 +513,39 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     [redrawShapefileDraw],
   );
 
+  // ---- Malhar's water-level-rise simulation --------------------------------
+  /**
+   * A third independent axis, for the same reason the shapefile tool is a
+   * second one: this tool's interaction is a shape none of the numbered tools
+   * have.
+   *
+   * A numbered tool draws a geometry and asks one question of it. This asks a
+   * *ladder* of questions once, up front, and then plays the answers back
+   * locally — an animation with its own clock, its own transport controls, and
+   * a slider that has to keep working while the animation is paused. The only
+   * thing it wants from the map is a single click to place a water source,
+   * and only while it is armed for one.
+   */
+  const [floodControls, setFloodControls] = useState<FloodControls>({
+    mode: "elevation",
+    startElevation: null,
+    maxElevation: null,
+    interval: 5,
+    speed: "normal",
+  });
+  const [floodResult, setFloodResult] = useState<FloodState>({ state: "idle" });
+  const [floodSource, setFloodSource] = useState<
+    { lon: number; lat: number; ground: number | null } | null
+  >(null);
+  /** True while the next map click will be taken as the water source. */
+  const [floodPicking, setFloodPicking] = useState(false);
+  const floodPickingRef = useRef(false);
+  floodPickingRef.current = floodPicking;
+  const [floodStep, setFloodStep] = useState(0);
+  const [floodPlaying, setFloodPlaying] = useState(false);
+  const [floodOpacity, setFloodOpacity] = useState(0.55);
+  const [floodExporting, setFloodExporting] = useState(false);
+
   /** Tool 2, and tools 5 and 13: all polygon tools, all explicit requests. */
   const [gridLevels, setGridLevels] = useState<GridLevelsState>({ state: "idle" });
   const [gridSpacing, setGridSpacing] = useState(1);
@@ -633,6 +672,16 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           : client.current.volume(ring, reference, { surface: model }, signal),
     ),
   );
+  const floodLane = useRef(
+    latest(
+      (
+        signal: AbortSignal,
+        levels: number[],
+        source: { at?: Pair } ,
+        interval: number,
+      ) => client.current.flood(levels, source, { interval }, signal),
+    ),
+  );
 
   /**
    * The survey's native cell size, learned from whatever response arrives first.
@@ -652,6 +701,240 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const url = useCallback(
     (file: string) => `/api/portal/sites/${siteSlug}/map/${file}`,
     [siteSlug],
+  );
+
+  // ---- the flood simulation, end to end -----------------------------------
+
+  /** Draw one level's flood polygon, or clear the layer when there is none. */
+  const drawFlood = useCallback((level: FloodSimLevel | null) => {
+    const source = map.current?.getSource("flood");
+    if (!source || !("setData" in source)) return;
+    (source as { setData: (d: unknown) => void }).setData(
+      level?.geojson ?? { type: "FeatureCollection", features: [] },
+    );
+  }, []);
+
+  /** Arm the map to take the next click as the water source. */
+  const pickFloodSource = useCallback(() => {
+    setFloodPicking(true);
+    // The same exclusivity every other axis enforces: while this is armed for
+    // its one click, no numbered tool and no shapefile draw owns the map.
+    setMode("off");
+    setHydroMode("off");
+    setShapefileActive(null);
+  }, []);
+
+  /**
+   * The water source, from a click.
+   *
+   * The ground elevation is read by the ordinary spot-level path rather than
+   * assumed, because the starting elevation the simulation ladder is built
+   * from *is* that number — Malhar's §2 example is "user clicks a point at
+   * elevation 100 m → simulation starts at approximately 100 m" — and guessing
+   * it from a tile would reintroduce the whole Terrain-RGB problem
+   * `analysis-client.ts` exists to have solved.
+   */
+  const handleFloodClick = useCallback(async (lon: number, lat: number) => {
+    setFloodPicking(false);
+    setFloodSource({ lon, lat, ground: null });
+    try {
+      const response = await client.current.spot([lon, lat], { surface: "dtm" });
+      noteEnvelope(response);
+      const ground = response.result.elevation;
+      setFloodSource({ lon, lat, ground });
+      // Prefill the ladder's start from the ground the client actually
+      // pointed at, which is the number his worked example starts from.
+      if (ground !== null) {
+        setFloodControls((c) => ({ ...c, mode: "source", startElevation: Number(ground.toFixed(2)) }));
+      }
+    } catch {
+      // The point stands even if the level did not arrive: the simulation can
+      // still run from a typed elevation, and blanking the source the client
+      // just placed would be the more confusing failure.
+      setFloodControls((c) => ({ ...c, mode: "source" }));
+    }
+  }, [noteEnvelope]);
+  const floodClickRef = useRef<(lon: number, lat: number) => void>(() => {});
+  floodClickRef.current = (lon, lat) => void handleFloodClick(lon, lat);
+
+  const clearFlood = useCallback(() => {
+    floodLane.current.cancel();
+    setFloodResult({ state: "idle" });
+    setFloodSource(null);
+    setFloodPicking(false);
+    setFloodPlaying(false);
+    setFloodStep(0);
+    drawFlood(null);
+  }, [drawFlood]);
+
+  /**
+   * Build the ladder and run the whole thing in one request.
+   *
+   * The ladder is built here rather than on the server because it is entirely
+   * a question of what the client asked for — a start, an interval, a maximum —
+   * and sending the explicit list means the response can never be a different
+   * set of levels from the one the panel is about to animate.
+   */
+  const runFlood = useCallback(async () => {
+    const start = floodControls.startElevation ?? floodSource?.ground ?? null;
+    if (start === null) {
+      setFloodResult({
+        state: "error",
+        message:
+          "Choose a water source on the map, or type a starting elevation, before simulating.",
+      });
+      return;
+    }
+    const interval = floodControls.interval;
+    /*
+     * Without a maximum this runs ten steps, not forever and not one. Malhar's
+     * spec makes the maximum optional ("if entered, the simulation should
+     * stop"), which leaves the unstated case to us: a single level is not a
+     * simulation, and an unbounded one is a request nobody can serve. Ten
+     * steps at his own intervals is 20, 50 or 100 m of rise, which covers any
+     * flood these surveys can show.
+     */
+    const top = floodControls.maxElevation ?? start + interval * 10;
+    if (top < start) {
+      setFloodResult({
+        state: "error",
+        message: `The maximum (${top} m) is below the starting level (${start} m), so the water would never rise.`,
+      });
+      return;
+    }
+
+    const levels: number[] = [];
+    for (let level = start; level <= top + 1e-9 && levels.length < 200; level += interval) {
+      // Rounded because repeatedly adding 0.1-style intervals accumulates
+      // float error, and a level printed as "104.99999999999999 m" beside a
+      // table of clean numbers reads as a bug in the survey.
+      levels.push(Number(level.toFixed(4)));
+    }
+
+    setFloodPlaying(false);
+    setFloodStep(0);
+    setFloodResult({ state: "loading" });
+    try {
+      const source =
+        floodControls.mode === "source" && floodSource
+          ? { at: [floodSource.lon, floodSource.lat] as Pair }
+          : {};
+      const response = await floodLane.current.call(levels, source, interval);
+      if (response === null) return; // superseded by a newer run
+      noteEnvelope(response);
+      setFloodResult({ state: "done", data: response.result });
+      drawFlood(response.result.levels[0] ?? null);
+    } catch (error) {
+      setFloodResult({ state: "error", message: messageFor(error) });
+    }
+  }, [floodControls, floodSource, noteEnvelope, drawFlood]);
+
+  /** Move to one step of the simulation, drawing it. */
+  const showFloodStep = useCallback(
+    (n: number) => {
+      setFloodStep(n);
+      if (floodResult.state === "done") drawFlood(floodResult.data.levels[n] ?? null);
+    },
+    [floodResult, drawFlood],
+  );
+
+  /**
+   * The animation clock.
+   *
+   * A timer rather than `requestAnimationFrame`: the steps are a second or so
+   * apart, not a frame apart, and rAF would burn sixty wakeups to do nothing
+   * fifty-nine of them. It stops itself at the last level, which is what
+   * "continues until the maximum water level is reached" asks for — the
+   * simulation ends rather than looping back to the start, because a flood
+   * that silently restarts reads as one that is still rising.
+   */
+  useEffect(() => {
+    if (!floodPlaying || floodResult.state !== "done") return;
+    const total = floodResult.data.levels.length;
+    if (floodStep >= total - 1) {
+      setFloodPlaying(false);
+      return;
+    }
+    const delay = { slow: 1600, normal: 800, fast: 350 }[floodControls.speed];
+    const timer = setTimeout(() => {
+      const next = floodStep + 1;
+      setFloodStep(next);
+      drawFlood(floodResult.data.levels[next] ?? null);
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [floodPlaying, floodStep, floodResult, floodControls.speed, drawFlood]);
+
+  /** Keep the drawn water at whatever opacity the panel's slider says. */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance?.getLayer("flood-fill")) return;
+    instance.setPaintProperty("flood-fill", "fill-opacity", floodOpacity);
+  }, [floodOpacity]);
+
+  /**
+   * Export one level, or every level, as GeoJSON or as a real shapefile.
+   *
+   * The shapefile path goes through the same route Malhar's shapefile tool
+   * already uses, so a flood polygon and a hand-drawn polygon come out of the
+   * identical writer in the identical projection. Exporting "all levels" sends
+   * them as one multi-feature layer rather than one file per level: a client
+   * comparing 100 m against 120 m wants both in one table, and the water level
+   * is an attribute on every polygon precisely so that works.
+   */
+  const exportFlood = useCallback(
+    async (what: "current" | "all", format: "geojson" | "shapefile") => {
+      if (floodResult.state !== "done") return;
+      const chosen =
+        what === "current"
+          ? [floodResult.data.levels[floodStep]].filter(Boolean)
+          : floodResult.data.levels;
+      const features = chosen.flatMap((l) => l.geojson.features);
+      if (features.length === 0) {
+        setFloodResult({
+          state: "error",
+          message: "There is no flooded ground at this level, so there is nothing to export.",
+        });
+        return;
+      }
+
+      const stem =
+        what === "current"
+          ? `Flood_${Math.round(floodResult.data.levels[floodStep].level_m)}m`
+          : "Flood_all_levels";
+
+      if (format === "geojson") {
+        const blob = new Blob(
+          [JSON.stringify({ type: "FeatureCollection", features }, null, 2)],
+          { type: "application/geo+json;charset=utf-8" },
+        );
+        saveShapefileZip(blob, `${stem}.geojson`);
+        return;
+      }
+
+      setFloodExporting(true);
+      try {
+        const { blob, filename } = await shapefileClient.current.download(
+          "polygon",
+          features.map((f) => ({
+            geometry: f.geometry,
+            properties: f.properties as Record<string, unknown>,
+          })),
+          stem,
+        );
+        saveShapefileZip(blob, filename);
+      } catch (error) {
+        setFloodResult({
+          state: "error",
+          message:
+            error instanceof ShapefileError
+              ? error.message
+              : "The flood shapefile could not be written.",
+        });
+      } finally {
+        setFloodExporting(false);
+      }
+    },
+    [floodResult, floodStep],
   );
 
   /**
@@ -1233,6 +1516,14 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     // ---- measure: click to add a vertex, double click to finish ------------
     instance.on("click", (event) => {
+      // The flood tool, while it is armed for its one water-source click, takes
+      // precedence over everything: it is a third independent mode axis (see
+      // the comment where its state is declared) and it disarms itself the
+      // moment it has what it asked for.
+      if (floodPickingRef.current) {
+        floodClickRef.current(event.lngLat.lng, event.lngLat.lat);
+        return;
+      }
       // The shapefile tool takes precedence over everything: it is a wholly
       // separate mode axis (see the comment where its state is declared), and
       // nothing else should read this click while it owns one.
@@ -1483,6 +1774,38 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1,
         },
+      });
+
+      /*
+       * The flood simulation's water, in a blue nothing else on this map uses.
+       *
+       * Added before the shapefile and measure layers so those draw *over* the
+       * water rather than under it: a measurement or a drawn feature is the
+       * thing a client is working on, and water is the ground condition they
+       * are working against. It sits above every raster for the same reason —
+       * §11 asks for the inundation layer above the DTM.
+       *
+       * Fill opacity is a paint property rather than baked into the colour so
+       * the panel's transparency slider can change it without rebuilding the
+       * layer, and the outline stays fully opaque at every opacity: the edge of
+       * a flood is the part a client traces against a contour, and fading it
+       * with the fill makes the extent unreadable exactly when it matters.
+       */
+      instance.addSource("flood", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "flood-fill",
+        type: "fill",
+        source: "flood",
+        paint: { "fill-color": "#0ea5e9", "fill-opacity": 0.55 },
+      });
+      instance.addLayer({
+        id: "flood-outline",
+        type: "line",
+        source: "flood",
+        paint: { "line-color": "#0369a1", "line-width": 1.4 },
       });
 
       /*
@@ -2547,7 +2870,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    * already looking is most of what makes an interface feel like it is paying
    * attention.
    */
-  const [inspector, setInspector] = useState<"tool" | "layers" | "water" | "shapefile">("layers");
+  const [inspector, setInspector] = useState<
+    "tool" | "layers" | "water" | "shapefile" | "flood"
+  >("layers");
 
   /** The keys of the layers this survey can actually render, for the rail. */
   const renderableKeys = useMemo(() => renderable.map((l) => l.key), [renderable]);
@@ -2592,14 +2917,20 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    */
   const runAction = useCallback(
     (action: RailAction) => {
-      // A numbered tool and the shapefile tool are mutually exclusive, same as
-      // every pair of numbered tools already are: pressing one clears the other,
-      // so a click is never ambiguous about which is answering it. Any
-      // in-progress line or polygon is dropped too, rather than left drawn on
-      // the map with nothing able to finish or clear it.
+      // A numbered tool, the shapefile tool and the flood tool's water-source
+      // pick are mutually exclusive, same as every pair of numbered tools
+      // already are: pressing one clears the others, so a click is never
+      // ambiguous about which is answering it. Any in-progress line or polygon
+      // is dropped too, rather than left drawn on the map with nothing able to
+      // finish or clear it.
       setShapefileActive(null);
       shapefileDraw.current = [];
       redrawShapefileDraw();
+      // Only the *arming* is cleared, not the simulation. A finished flood is a
+      // result the client can still read and export while they measure
+      // something else on top of it, exactly as a finished measurement stays in
+      // its own panel.
+      setFloodPicking(false);
 
       const already =
         railAction !== null &&
@@ -2798,7 +3129,9 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         hasHydrology={Boolean(hydro)}
         renderable={renderableKeys}
         hint={
-          shapefileActive ? (
+          floodPicking ? (
+            "Click where the water starts. The simulation will rise from the ground there."
+          ) : shapefileActive ? (
             shapefileActive === "point"
               ? "Click anywhere to place a point."
               : `Click each ${shapefileActive === "line" ? "vertex" : "corner"}, double click to finish.`
@@ -2915,6 +3248,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   ["layers", "Layers"],
                   ...(hydro ? ([["water", "Water"]] as const) : []),
                   ["shapefile", "Shapefile"],
+                  ["flood", "Flood"],
                 ] as const
               ).map(([key, label]) => (
                 <button
@@ -3065,6 +3399,32 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   upload={shapefileUpload}
                   onUpload={(file) => void uploadShapefile(file)}
                   onClearUpload={clearShapefileUpload}
+                />
+              ) : null}
+
+              {inspector === "flood" ? (
+                <FloodPanel
+                  controls={floodControls}
+                  setControls={setFloodControls}
+                  source={floodSource}
+                  onPickSource={pickFloodSource}
+                  onClearSource={pickFloodSource}
+                  result={floodResult}
+                  onRun={() => void runFlood()}
+                  onClear={clearFlood}
+                  step={floodStep}
+                  setStep={showFloodStep}
+                  playing={floodPlaying}
+                  onPlay={() => setFloodPlaying(true)}
+                  onPause={() => setFloodPlaying(false)}
+                  onReset={() => {
+                    setFloodPlaying(false);
+                    showFloodStep(0);
+                  }}
+                  opacity={floodOpacity}
+                  setOpacity={setFloodOpacity}
+                  onExport={(what, format) => void exportFlood(what, format)}
+                  exporting={floodExporting}
                 />
               ) : null}
             </div>

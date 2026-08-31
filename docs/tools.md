@@ -601,6 +601,63 @@ asserts two `profile` requests go out — one per surface, over the same
 line — that the legend names both, and that a dashed line is actually present
 in the rendered SVG, not merely that the request was made.
 
+### 3.14 Simulation Water Level Rise (#58)
+
+Malhar's third self-directed prompt, and by far his longest — nine pages
+specifying a flood-inundation tool "similar in concept to the terrain-based
+water-level analysis available in tools such as Global Mapper and HEC-RAS".
+
+**Half the engine already existed.** `connectedFlood` was written for tool 28
+and has always done the hard part: grow water outward from a seed so a hilltop
+hollow at the same elevation stays dry. What this needed on top was the
+*simulation* — a ladder of levels rather than one, a polygon and a set of
+statistics per level, a drawn starting area rasterised into seed cells, and a
+`thresholdFlood` beside the connected one.
+
+**Both modes, and the panel always says which.** His §13 is the crux: a flood
+*from a water source* and *every pixel below an elevation* are different
+questions with pictures that look equally plausible. Choosing a source on the
+map switches to the connected fill; typing only an elevation asks the plain
+threshold, which is the honest answer when there is no source for anything to
+be connected to. Neither is a degraded version of the other and neither is the
+silent default.
+
+**One request, then animate locally.** His "most important requirement" is that
+the interval buttons work automatically. The way to make that smooth is not a
+fetch per frame: the whole ladder is computed in one request — the DTM is read
+once either way — and playback, the slider, step forward and step back all run
+on data already in the browser. Dragging the slider issues no request at all,
+which the browser suite asserts.
+
+**Native resolution, not the hydrology grid.** Tool 28 runs against the
+hydrology bundle, deliberately resampled to 1 m because routing flow across a
+photogrammetric surface at native resolution turns every rut into a sink. That
+reasoning is about *flow direction*, and a level threshold has none — so this
+reads the DTM at the resolution the survey was flown at, which is also what his
+§10 asks for and what makes a comparison against Global Mapper meaningful.
+
+**What of the nine pages is not built.** Three things, none of them silently
+missing:
+
+- **KML/KMZ export.** His §8 lists it as "if supported". GeoJSON and Shapefile
+  are both there; KML would be a fourth writer and nothing else in the portal
+  emits it yet.
+- **Drawing a starting-area polygon.** §2 offers a click *or* a polygon as the
+  water source. The engine takes either — `seedCellsInPolygon` is written and
+  tested — but only the click is wired to the map, because the click is what
+  his own worked example uses and a second draw mode is a separate piece of
+  interaction work.
+- **Layer order and visibility controls.** §11 asks for transparency,
+  visibility and layer order. Transparency is a slider; the water always draws
+  above the rasters and below the measure tools, which is the order that
+  question has one right answer to.
+
+**The known limit, stated plainly:** like tool 14, this is a whole-grid
+operation — a flood's extent is not known before the read, so there is no
+bounding box to window to. It therefore runs where `loadTerrain` can read the
+raster whole and does not yet work over the windowed R2 path production uses.
+See §7.
+
 ---
 
 ## 4. Judgement calls
@@ -756,6 +813,27 @@ correctly **disabled** its compute button when the test picked the DTM as a
 reference for a measurement already on the DTM: comparing a surface with itself
 is identically zero, and the panel refusing it is the feature.
 
+### From the flood simulation
+
+| # | Defect | How it was caught |
+|---|---|---|
+| 20 | **Every disconnected patch after the first was written as a *hole* in the first.** `polygonize` returns a mask's rings in one flat list — outers counter-clockwise, holes clockwise — and handing that straight to a GeoJSON `Polygon`'s `coordinates` declares ring 0 the boundary and everything else a hole punched in it. That is correct for a watershed, which is one connected region, and it was written when a watershed was the only caller. A flood is not: on Kotba at its lowest simulated level it is **207 separate ponds and 171 real holes**, and all 377 rings went out as one pond with 376 holes | MapLibre drew **nothing**, which is the lucky failure. Traced from "0 features rendered" in the browser suite rather than assumed to be a viewport problem, then confirmed by counting outer rings against holes directly on the raster |
+
+The reason that one matters more than its one-line fix suggests: **MapLibre
+silently dropping the layer was the best possible outcome.** An export would
+have opened in QGIS looking like an answer — 206 real flooded ponds described
+as voids in a 207th — and nothing anywhere would have said a word. The fix,
+`groupRingsIntoPolygons` in `vectorise.mjs`, groups each patch with the holes
+it actually contains (smallest containing ring wins, because an island in a
+lake is ordinary here) and emits a MultiPolygon.
+
+**The same latent bug was already shipped in the hydrology route.**
+`ringsToFeature` there had the identical shape and the identical history: right
+for `watershed`, wrong for `sinks`, which returns every depression on the
+survey. Fixed at the same call site rather than left because it was
+pre-existing. Both now answer MultiPolygon unconditionally, so a client never
+branches on how many pieces today's answer happens to have.
+
 ### From the shapefile tool
 
 Two test-authoring mistakes worth recording, because both were caught by the
@@ -853,6 +931,7 @@ Two more, both specific to drawing:
 | #55 | 24 Aug 2026 | DSM/DTM colour grading, shared with the dynamic tiler |
 | #56 | 24 Aug 2026 | The shapefile tool: draw, download, upload, compare |
 | #57 | 25 Aug 2026 | The profile chart overlays DTM against DSM |
+| #58 | 25 Aug 2026 | Simulation Water Level Rise, and a ring-grouping defect it exposed |
 
 ### Infrastructure
 
@@ -866,7 +945,7 @@ Two more, both specific to drawing:
   write** — `pyshp` and Python's own `zipfile` — not only against itself. See
   §3.12.
 
-### Tests: 1,097 checks
+### Tests: 1,186 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -878,12 +957,13 @@ Two more, both specific to drawing:
 | `analysis-contract-test` | 49 | the pipeline against real Kotba rasters |
 | `raster-window-test` | 55 | windowed reads vs whole-file reads, cell for cell |
 | `render-test` | 60 | PNG, colour, lighting, tile maths |
-| `analysis-api-test` | 47 | measurement over HTTP |
+| `analysis-api-test` | 65 | measurement over HTTP, flood simulation included |
 | `hydrology-api-test` | 61 | hydrology over HTTP |
 | `render-api-test` | 26 | tiles over HTTP, decoded |
 | `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |
 | `alignment-api-test` | 47 | the four alignment tools, as relationships |
 | `surface-api-test` | 35 | grid levels, deviation, tolerance, and the signed ramp |
+| `flood-test` | 30 | the flood engine: ladders, patches, holes, survey edges |
 | `shapefile-test` | 40 | SHP/SHX/DBF/PRJ/ZIP, round-tripped, byte for byte |
 | `shapefile-api-test` | 30 | the shapefile route: projection, refusals, round trip |
 | `portal-map-browser-test` | 39 | measure tools in a real browser, including the DTM/DSM overlay |
@@ -895,6 +975,7 @@ Two more, both specific to drawing:
 | `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
 | `portal-surface-browser-test` | 40 | polygon tools, and the contents of the files they write |
 | `portal-shapefile-browser-test` | 26 | draw, download, upload the same file, and see it redrawn |
+| `portal-flood-browser-test` | 59 | the water rises, animates, exports, and yields the click |
 | `portal-map-no-terrain-test` | 18 | the production case: tiles without rasters |
 | `portal-assets-test` | 7 | asset serving |
 | `portal-map-test` | 19 | manifest handling |
@@ -935,9 +1016,11 @@ Tool 17 needs a geotechnical limit a terrain model cannot supply. Tool 7 needs
 Malhar to resolve his own contradiction. Tools 8 and 9 are small and unblocked.
 
 Outside the numbering: **the LiDAR point cloud** is live on the map, **Area**
-and **Inspect** are offered in prose rather than as numbered tools, and the
-**shapefile tool** — Malhar's own later prompt, not from the original five
-documents — draws, downloads, uploads and compares.
+and **Inspect** are offered in prose rather than as numbered tools, and two
+tools from Malhar's own later prompts rather than the original five documents —
+the **shapefile tool**, which draws, downloads, uploads and compares, and
+**Simulation Water Level Rise**, which floods the DTM step by step from a
+source or an elevation and exports a polygon per level.
 
 ---
 
