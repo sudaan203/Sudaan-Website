@@ -15,7 +15,7 @@ import {
   snapToChannel,
   watershedFrom,
 } from "@/lib/geo/hydrology.mjs";
-import { polygonize } from "@/lib/geo/vectorise.mjs";
+import { groupRingsIntoPolygons, polygonize } from "@/lib/geo/vectorise.mjs";
 
 export const runtime = "nodejs";
 
@@ -455,23 +455,42 @@ export async function POST(
  * so the geometry is unprojected on the way out. The projected figures stay in
  * the properties, because those are what a CAD workflow consumes and because
  * area must never be recomputed from the degrees.
+ *
+ * ## A MultiPolygon, and why this changed
+ *
+ * This used to hand `polygonize`'s flat ring list straight to a `Polygon` as
+ * its `coordinates`, which declares ring 0 the outer boundary and **every
+ * other ring a hole in it**. For a watershed that is right — a catchment is
+ * one connected region — and it was written when watershed was the only
+ * caller. It is wrong for `sinks`, which returns every depression on the
+ * survey: all but the first became holes punched in the first, geometry no
+ * reader can make sense of and none of them complains about. Found while
+ * building the flood simulation, whose output is disconnected far more often
+ * than not (207 separate ponds on Kotba at its lowest level).
+ *
+ * `groupRingsIntoPolygons` puts each patch back with its own holes. The type
+ * is now always MultiPolygon, even for a single-patch watershed, so a client
+ * never has to branch on how many pieces today's answer happens to have.
  */
 function ringsToFeature(
   rings: number[][][],
   unproject: (p: [number, number]) => [number, number],
   properties: Record<string, unknown>,
 ) {
+  const polygons = groupRingsIntoPolygons(rings);
   return {
     type: "FeatureCollection" as const,
-    features: rings.length
+    features: polygons.length
       ? [
           {
             type: "Feature" as const,
             properties,
             geometry: {
-              type: "Polygon" as const,
-              coordinates: rings.map((ring) =>
-                ring.map(([x, y]) => unproject([x, y] as [number, number])),
+              type: "MultiPolygon" as const,
+              coordinates: polygons.map((group: number[][][]) =>
+                group.map((ring) =>
+                  ring.map(([x, y]) => unproject([x, y] as [number, number])),
+                ),
               ),
             },
           },

@@ -216,6 +216,21 @@ Malhar's own prompt in full:
   against this survey. Verified against an independent Python library, not
   only against itself. See `docs/tools.md`.
 
+And one more, from a nine-page prompt of his own:
+
+> I want to add a new dashboard tool named "Simulation Water Level Rise"...
+> run an interactive flood/water-level rise simulation over the existing
+> DTM, similar in concept to the terrain-based water-level analysis
+> available in tools such as Global Mapper and HEC-RAS.
+
+- **Simulation Water Level Rise.** Pick a water source on the map or type a
+  starting elevation, choose a 2, 5 or 10 m rise interval, and watch the
+  flood spread step by step with the inundated area in m², hectares and km²
+  beside it. Two modes, never conflated: a **connected** flood from a chosen
+  source, and a plain **elevation threshold**. Every level exports as a
+  polygon carrying its water level, interval and area, as GeoJSON or as a
+  real shapefile. See `docs/tools.md`.
+
 ## Still on Malhar
 
 - The twelve unspecified numbers above.

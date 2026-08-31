@@ -172,6 +172,22 @@ w("  against this survey. Verified against an independent Python library, not");
 w("  only against itself. See `docs/tools.md`.");
 w();
 
+w("And one more, from a nine-page prompt of his own:");
+w();
+w('> I want to add a new dashboard tool named "Simulation Water Level Rise"...');
+w("> run an interactive flood/water-level rise simulation over the existing");
+w("> DTM, similar in concept to the terrain-based water-level analysis");
+w("> available in tools such as Global Mapper and HEC-RAS.");
+w();
+w("- **Simulation Water Level Rise.** Pick a water source on the map or type a");
+w("  starting elevation, choose a 2, 5 or 10 m rise interval, and watch the");
+w("  flood spread step by step with the inundated area in m², hectares and km²");
+w("  beside it. Two modes, never conflated: a **connected** flood from a chosen");
+w("  source, and a plain **elevation threshold**. Every level exports as a");
+w("  polygon carrying its water level, interval and area, as GeoJSON or as a");
+w("  real shapefile. See `docs/tools.md`.");
+w();
+
 w("## Still on Malhar");
 w();
 w("- The twelve unspecified numbers above.");

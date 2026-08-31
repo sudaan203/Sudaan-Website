@@ -30,8 +30,22 @@ import {
   benchAnalysis,
 } from "@/lib/geo/engineering.mjs";
 import { slopeDegrees } from "@/lib/geo/hydrology.mjs";
+import { simulateFlood, seedCellsInPolygon } from "@/lib/geo/flood.mjs";
 
 export const runtime = "nodejs";
+
+/**
+ * Most water levels one flood simulation request may ask for.
+ *
+ * The client builds its own ladder from a starting elevation, an interval and
+ * a maximum, client side, and sends the whole thing in one request rather than
+ * one request per animation frame. That is far cheaper than it sounds — the
+ * DTM is read and cached once regardless — but nothing stops a crafted request
+ * asking for ten thousand one-millimetre steps, each one a whole-grid flood
+ * fill. 200 comfortably covers a 2 m interval across a 400 m relief, which is
+ * a bigger rise than any survey here has.
+ */
+const MAX_FLOOD_LEVELS = 200;
 
 /**
  * The measurement API the client dashboard operates.
@@ -104,7 +118,14 @@ export async function POST(
 
   const op = String(body.op ?? "");
   const crs = String(body.crs ?? "lonlat");
-  const kind = body.surface === "dsm" ? "dsm" : "dtm";
+  /*
+   * Flood simulation always reads the terrain model. Water spreads over bare
+   * earth, not canopy or rooftops, so a client asking this op for the surface
+   * model would get a physically meaningless answer. Rather than refuse and
+   * make a client resend, `surface` is simply not read for this one op — the
+   * panel that drives it never offers the toggle in the first place.
+   */
+  const kind = op === "flood" ? "dtm" : body.surface === "dsm" ? "dsm" : "dtm";
 
   try {
     /**
@@ -409,10 +430,78 @@ export async function POST(
         break;
       }
 
+      /**
+       * Malhar's water-level-rise simulation tool.
+       *
+       * A whole-grid operation, like slope (tool 14): a flood's extent is not
+       * known ahead of the read, so unlike every other op here there is no
+       * bounding box to window the raster to. See `flood.mjs` for why this
+       * reads the DTM at its own native resolution rather than reusing tool
+       * 28's hydrology grid, which is deliberately resampled to 1 m.
+       *
+       * `at` or `polygon` names a water source; the flood grows outward from
+       * it and a hilltop hollow at the same elevation stays dry. Neither given
+       * asks the plain question instead — every cell at or below the level —
+       * which is the only sensible answer when there is no source for
+       * anything to be connected to.
+       *
+       * `levels` carries the whole ladder an automatic run or an export-all
+       * needs in one request, so the DTM is read once regardless of how many
+       * steps the client is animating through; a single `level` is accepted
+       * as a convenience for the slider dragging to one elevation.
+       */
+      case "flood": {
+        const rawLevels = Array.isArray(body.levels)
+          ? body.levels.map(Number)
+          : Number.isFinite(Number(body.level))
+            ? [Number(body.level)]
+            : null;
+        if (!rawLevels || rawLevels.length === 0 || rawLevels.some((l) => !Number.isFinite(l))) {
+          throw new BadRequest(
+            "levels must be a non-empty array of elevations in metres (or a single level).",
+          );
+        }
+        if (rawLevels.length > MAX_FLOOD_LEVELS) {
+          throw new BadRequest(`At most ${MAX_FLOOD_LEVELS} levels can be simulated in one request.`);
+        }
+        // Deduplicated and sorted so a client that sends its ladder out of
+        // order, or with a repeated boundary value, gets exactly one result
+        // per distinct elevation rather than paying for what it happened to
+        // send twice.
+        const levels = [...new Set(rawLevels)].sort((a, b) => a - b);
+        const interval = Number(body.interval) > 0 ? Number(body.interval) : null;
+
+        const dtm = loadTerrain(siteSlug, "dtm");
+
+        let seeds: { col: number; row: number }[] | null = null;
+        if (body.polygon !== undefined) {
+          const ring = project(readGeometry(body, "polygon", 3));
+          seeds = seedCellsInPolygon(dtm, ring);
+          if (seeds.length === 0) {
+            throw new BadRequest("That starting area has no surveyed ground under it.");
+          }
+        } else if (body.at !== undefined) {
+          const [[x, y]] = project(readGeometry(body, "at", 1));
+          const cell = dtm.cellAt(x, y);
+          if (!cell) throw new BadRequest("That starting point is outside this survey.");
+          if (dtm.isNoDataAt(cell.col, cell.row)) {
+            throw new BadRequest("There is no survey data at that starting point.");
+          }
+          seeds = [cell];
+        }
+
+        result = {
+          method: seeds ? "connected" : "threshold",
+          seedGround_m: seeds ? dtm.get(seeds[0].col, seeds[0].row) : null,
+          levels: simulateFlood(dtm, levels, seeds, interval, unproject),
+        };
+        break;
+      }
+
       default:
         throw new BadRequest(
           `Unknown op "${op}". One of: spot, profile, grid-levels, polygon-stats, volume, ` +
-            `stockpile, compare, slope, chainage, cross-sections, corridor, bench.`,
+            `stockpile, compare, slope, chainage, cross-sections, corridor, bench, flood.`,
         );
     }
 

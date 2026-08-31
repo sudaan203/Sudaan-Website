@@ -139,6 +139,67 @@ export function ringArea(ring) {
   return sum / 2;
 }
 
+/** Ray casting point in polygon, on a closed ring in projected coordinates. */
+function inRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 2; i < ring.length - 1; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Group `polygonize`'s flat list of rings into GeoJSON MultiPolygon
+ * coordinates: one entry per separate patch, each an outer ring followed by
+ * its own holes.
+ *
+ * **This is not a tidiness step.** `polygonize` returns every ring of a mask
+ * in one flat list — outer rings counter clockwise, holes clockwise — and a
+ * mask is very often several disconnected patches. Handing that list straight
+ * to a `Polygon` as its `coordinates` declares ring 0 to be the outer boundary
+ * and *every other ring a hole in it*, which for disconnected patches is not
+ * merely untidy, it is false: a flood of 207 separate ponds on Kotba came out
+ * as one pond with 206 holes and 171 real holes, geometry no reader can make
+ * sense of. MapLibre drew nothing at all, which is the lucky failure; an
+ * exported shapefile would have opened in QGIS looking like an answer.
+ *
+ * Holes are assigned to the *smallest* containing outer ring, not the first
+ * one found. Nested geometry is ordinary here — an island in a lake, a knoll
+ * inside a flooded basin — and picking the first container puts the hole on
+ * whichever patch happened to be traced earliest.
+ */
+export function groupRingsIntoPolygons(rings) {
+  const outers = [];
+  const holes = [];
+  for (const ring of rings) {
+    (ringArea(ring) > 0 ? outers : holes).push(ring);
+  }
+  if (outers.length === 0) return [];
+
+  const polygons = outers
+    .map((ring) => ({ ring, area: Math.abs(ringArea(ring)), holes: [] }))
+    // Smallest first, so the first container found is the tightest one.
+    .sort((a, b) => a.area - b.area);
+
+  for (const hole of holes) {
+    const [hx, hy] = hole[0];
+    const owner = polygons.find((p) => inRing(hx, hy, p.ring));
+    // A hole with no container is geometry that should not exist. Dropped
+    // rather than attached to an arbitrary polygon, because a hole punched in
+    // the wrong patch is a lie about where the ground is, while a missing one
+    // is at worst a patch drawn slightly too solid.
+    if (owner) owner.holes.push(hole);
+  }
+
+  // Back to largest first, which is the order a reader expects and the order
+  // `polygonize` would have produced for a single-patch mask.
+  return polygons
+    .sort((a, b) => b.area - a.area)
+    .map((p) => [p.ring, ...p.holes]);
+}
+
 /**
  * Split a flow network into segments running between junctions.
  *

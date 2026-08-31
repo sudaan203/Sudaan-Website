@@ -556,6 +556,12 @@ export function slopeDegrees(dem) {
  *
  * Returns depth per cell and the storage volume, which is a real volume in cubic
  * metres because depth is summed against cell area in a projected CRS.
+ *
+ * Paired with `thresholdFlood` below, which *is* the bathtub. Malhar's flood
+ * simulation tool offers both, deliberately: a client who has not chosen a
+ * water source has not chosen a shape for the water to be connected to either,
+ * and a plain elevation threshold is the honest answer to "what is below this
+ * level", not a worse version of this function.
  */
 export function connectedFlood(dem, level, seeds) {
   const depth = dem.like(Float32Array, 0, -99999);
@@ -595,6 +601,32 @@ export function connectedFlood(dem, level, seeds) {
     }
   }
 
+  return { depth, volume, cells, area: cells * dem.cellArea };
+}
+
+/**
+ * Plain elevation threshold flood: every cell at or below the level, with no
+ * regard for whether water could actually reach it.
+ *
+ * Same return shape as `connectedFlood` on purpose, so a caller that does not
+ * yet know which mode a request wants can run either one and treat the answer
+ * identically. The one difference is what "flooded" means: a hilltop hollow at
+ * the same elevation as a real flood plain floods here too, because there is no
+ * seed to be disconnected from.
+ */
+export function thresholdFlood(dem, level) {
+  const depth = dem.like(Float32Array, 0, -99999);
+  depth.data.fill(depth.nodata);
+  let volume = 0;
+  let cells = 0;
+  for (let i = 0; i < dem.length; i += 1) {
+    const z = dem.data[i];
+    if (dem.isNoData(z) || z > level) continue;
+    const d = level - z;
+    depth.data[i] = d;
+    volume += d * dem.cellArea;
+    cells += 1;
+  }
   return { depth, volume, cells, area: cells * dem.cellArea };
 }
 
