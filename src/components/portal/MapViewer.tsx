@@ -677,9 +677,10 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       (
         signal: AbortSignal,
         levels: number[],
-        source: { at?: Pair } ,
+        source: { at?: Pair },
         interval: number,
-      ) => client.current.flood(levels, source, { interval }, signal),
+        bounds: [Pair, Pair] | undefined,
+      ) => client.current.flood(levels, source, { interval, bounds }, signal),
     ),
   );
 
@@ -819,7 +820,21 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         floodControls.mode === "source" && floodSource
           ? { at: [floodSource.lon, floodSource.lat] as Pair }
           : {};
-      const response = await floodLane.current.call(levels, source, interval);
+      /*
+       * The ground on screen is the ground simulated. Kiru's DTM is 2.5 billion
+       * cells and no request reads that whole — without this the tool answered
+       * "measurements are not available for this survey", which was both wrong
+       * and unactionable. Water reaching the edge of the view comes back
+       * flagged `truncated`, the same as water reaching the edge of the survey.
+       */
+      const view = map.current?.getBounds();
+      const bounds: [Pair, Pair] | undefined = view
+        ? [
+            [view.getWest(), view.getSouth()],
+            [view.getEast(), view.getNorth()],
+          ]
+        : undefined;
+      const response = await floodLane.current.call(levels, source, interval, bounds);
       if (response === null) return; // superseded by a newer run
       noteEnvelope(response);
       setFloodResult({ state: "done", data: response.result });

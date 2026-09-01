@@ -390,7 +390,15 @@ export function FloodPanel({
           ? "Flooded from the source you chose: hollows at this level with no path from it stay dry."
           : "Every hollow at or below the level, connected to the source or not."}{" "}
         Read from the terrain model, not the surface model — water runs over bare
-        earth, not over canopy.
+        earth, not over canopy.{" "}
+        {/*
+          Said before they press start, not only after. The simulation covers
+          the ground on screen, so what is in view changes the answer — and a
+          client who reads an area figure without knowing that would take a
+          windowed number for a whole-survey one.
+        */}
+        Computed over the area currently on screen: pan or zoom to change what is
+        simulated, then run it again.
       </p>
     </div>
   );

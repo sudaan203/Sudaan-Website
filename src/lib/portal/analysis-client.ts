@@ -569,11 +569,17 @@ export class AnalysisClient {
    * No `surface` option, deliberately. Water spreads over bare earth; a flood
    * simulated over the surface model would be water flowing across treetops.
    * The server pins this op to the DTM and ignores the field.
+   *
+   * `bounds` is the map's current view as [[west, south], [east, north]], and
+   * it is what makes this work on a large survey at all. Kiru's DTM is 2.5
+   * billion cells; nothing reads that whole, and a flood across 21 km of gorge
+   * is not a question anyone asks. The flood is computed over the ground on
+   * screen, and water reaching the edge of it comes back flagged `truncated`.
    */
   flood(
     levels: number[],
     source: { at?: Pair; polygon?: Pair[] } = {},
-    options: { interval?: number; crs?: Crs } = {},
+    options: { interval?: number; bounds?: [Pair, Pair]; crs?: Crs } = {},
     signal?: AbortSignal,
   ) {
     return this.run<FloodResult>(

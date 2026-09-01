@@ -652,11 +652,13 @@ missing:
   above the rasters and below the measure tools, which is the order that
   question has one right answer to.
 
-**The known limit, stated plainly:** like tool 14, this is a whole-grid
-operation — a flood's extent is not known before the read, so there is no
-bounding box to window to. It therefore runs where `loadTerrain` can read the
-raster whole and does not yet work over the windowed R2 path production uses.
-See §7.
+**Bounded to the view, after a whole-grid read proved untenable.** This
+shipped reading the DTM whole, like tool 14, on the reasoning that a flood's
+extent is not known before the read so there is nothing to window to. That is
+true of the *flood* and false of the *study area*, and it broke in two ways at
+once — see §5, "From the flood simulation". It now computes over the ground on
+screen, coarsening the grid when the view is large, and reports the cell size
+it actually used.
 
 ---
 
@@ -819,8 +821,26 @@ is identically zero, and the panel refusing it is the feature.
 |---|---|---|
 | 20 | **Every disconnected patch after the first was written as a *hole* in the first.** `polygonize` returns a mask's rings in one flat list — outers counter-clockwise, holes clockwise — and handing that straight to a GeoJSON `Polygon`'s `coordinates` declares ring 0 the boundary and everything else a hole punched in it. That is correct for a watershed, which is one connected region, and it was written when a watershed was the only caller. A flood is not: on Kotba at its lowest simulated level it is **207 separate ponds and 171 real holes**, and all 377 rings went out as one pond with 376 holes | MapLibre drew **nothing**, which is the lucky failure. Traced from "0 features rendered" in the browser suite rather than assumed to be a viewport problem, then confirmed by counting outer rings against holes directly on the raster |
 
-The reason that one matters more than its one-line fix suggests: **MapLibre
-silently dropping the layer was the best possible outcome.** An export would
+| 21 | **The flood op read the DTM whole, so it was dead in production for every survey and dead locally for Kiru.** `loadTerrain` reads a local file; `terrain-source.ts`'s own header says there is no value of `PORTAL_TERRAIN_DIR` that can work on a serverless filesystem, which is exactly why `openTerrain`'s windowed byte-range path exists. The flood op used the wrong one. On Vercel it therefore answered `missing` for every site — *"Measurements are not available for this survey yet"*, which is not what was wrong and gives the client nothing to act on. Locally it additionally refused Kiru, whose DTM is **83,979 × 30,046 — 2.5 billion cells, 10 GB as Float32** | A screenshot from the client demo. Not by any suite: every test ran against Kotba, which is small enough to read whole and has local rasters, so the one survey that could not work was the one nothing exercised |
+
+Two things came out of fixing that, both worth keeping:
+
+- **A flood is bounded by a study area, not by the survey.** The client sends
+  the map's own view; water reaching the edge of it is flagged `truncated` by
+  the same check that flags water reaching the edge of the survey, because for
+  that read they are the same edge. A flood across 21 km of gorge was never a
+  question anyone was going to ask.
+- **Large views are coarsened, not refused.** Measured on Kiru: a 1.6 km view
+  is 39.7 M cells and costs **~1.1 s per level**, so a ten-step ladder is
+  twelve seconds of compute. Resampled to a four-million-cell budget the same
+  ladder is about a second, and the areas agree with the full-resolution run to
+  within 0.01 ha (93.45 → 93.45, 98.81 → 98.82, 104.21 → 104.22). A flood
+  extent is a shoreline on a hillside, not a feature the size of a cell. The
+  response reports `computedAtCellSize_m`, so the figure is never quietly finer
+  than the work that produced it.
+
+The reason the ring-grouping one matters more than its one-line fix suggests:
+**MapLibre silently dropping the layer was the best possible outcome.** An export would
 have opened in QGIS looking like an answer — 206 real flooded ponds described
 as voids in a 207th — and nothing anywhere would have said a word. The fix,
 `groupRingsIntoPolygons` in `vectorise.mjs`, groups each patch with the holes
@@ -932,6 +952,7 @@ Two more, both specific to drawing:
 | #56 | 24 Aug 2026 | The shapefile tool: draw, download, upload, compare |
 | #57 | 25 Aug 2026 | The profile chart overlays DTM against DSM |
 | #58 | 25 Aug 2026 | Simulation Water Level Rise, and a ring-grouping defect it exposed |
+| #59 | 1 Sep 2026 | Flood bounded to the view, so it works on Kiru and in production |
 
 ### Infrastructure
 
@@ -945,7 +966,7 @@ Two more, both specific to drawing:
   write** — `pyshp` and Python's own `zipfile` — not only against itself. See
   §3.12.
 
-### Tests: 1,186 checks
+### Tests: 1,191 checks
 
 | Suite | Checks | Covers |
 |---|---|---|
@@ -957,7 +978,7 @@ Two more, both specific to drawing:
 | `analysis-contract-test` | 49 | the pipeline against real Kotba rasters |
 | `raster-window-test` | 55 | windowed reads vs whole-file reads, cell for cell |
 | `render-test` | 60 | PNG, colour, lighting, tile maths |
-| `analysis-api-test` | 65 | measurement over HTTP, flood simulation included |
+| `analysis-api-test` | 70 | measurement over HTTP, flood simulation included |
 | `hydrology-api-test` | 61 | hydrology over HTTP |
 | `render-api-test` | 26 | tiles over HTTP, decoded |
 | `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |

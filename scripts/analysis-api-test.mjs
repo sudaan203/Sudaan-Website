@@ -433,6 +433,52 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
   }
 }
 {
+  /*
+   * Bounds, which is what makes this op work on a survey larger than memory.
+   * It began as a whole-grid read like tool 14's and was therefore dead in
+   * production for *every* site — `loadTerrain` reads local files, and no
+   * value of PORTAL_TERRAIN_DIR exists on a serverless filesystem — as well as
+   * refusing Kiru locally, whose DTM is 2.5 billion cells. The client now
+   * sends the map's own view.
+   */
+  const d = 300; // a 600 m box around the survey centre, in metres
+  const box = [
+    utmToLonLat(centreE - d, centreN - d, 43, true),
+    utmToLonLat(centreE + d, centreN + d, 43, true),
+  ];
+  const level = truthSpot + 5;
+  const { status, payload } = await post({
+    op: "flood", levels: [level], bounds: box, crs: "lonlat",
+  });
+  check("a flood bounded to a view is accepted", status === 200, `status ${status}`);
+  if (status === 200) {
+    check("and reports the cell size it actually computed at",
+      Number.isFinite(payload.result.computedAtCellSize_m),
+      `${payload.result.computedAtCellSize_m} m`);
+    check("never finer than the survey's own native cell",
+      payload.result.computedAtCellSize_m >= payload.cellSize - 1e-9);
+    // The bounded flood must not exceed the whole-survey one at the same level:
+    // a window can only ever contain less ground.
+    const whole = await post({ op: "flood", levels: [level], crs: "lonlat" });
+    if (whole.status === 200) {
+      check("a windowed flood never exceeds the whole-survey flood at the same level",
+        payload.result.levels[0].area_m2 <= whole.result?.levels?.[0]?.area_m2 + 1
+          || whole.payload.result.levels[0].area_m2 >= payload.result.levels[0].area_m2 - 1,
+        `${payload.result.levels[0].area_ha.toFixed(2)} ha windowed`);
+    }
+  }
+}
+{
+  // A view that misses the survey entirely is a different fact from "nothing
+  // floods", and must not come back as a confident zero.
+  const far = [[centreLon + 5, centreLat + 5], [centreLon + 5.01, centreLat + 5.01]];
+  const { status } = await post({
+    op: "flood", levels: [truthSpot + 5], bounds: far, crs: "lonlat",
+  });
+  check("a view that misses the survey is refused, not answered with zero flooding",
+    status === 400, `status ${status}`);
+}
+{
   const { status } = await post({ op: "flood", crs: "lonlat" });
   check("a flood with no level at all is refused", status === 400, `status ${status}`);
 }
