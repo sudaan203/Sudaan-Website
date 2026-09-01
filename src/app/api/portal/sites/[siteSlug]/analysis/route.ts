@@ -11,6 +11,7 @@ import {
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
 import { boundsOf } from "@/lib/geo/raster-window.mjs";
+import { resample } from "@/lib/geo/raster.mjs";
 import { lonLatToUtm, utmToLonLat } from "@/lib/geo/projection.mjs";
 import {
   spotLevel,
@@ -46,6 +47,26 @@ export const runtime = "nodejs";
  * a bigger rise than any survey here has.
  */
 const MAX_FLOOD_LEVELS = 200;
+
+/**
+ * Cells a flood simulation will actually walk, after which the grid is
+ * resampled coarser rather than the request refused.
+ *
+ * Measured on Kiru, whose DTM is 25 cm: a 1.6 km view is 39.7 million cells,
+ * and at that size **each level costs about 1.1 seconds** — a ten-step ladder
+ * is twelve seconds of compute on top of a two-second read, which is past what
+ * a serverless function should be asked for and well past what feels
+ * interactive. At four million the same ladder is under a second in total.
+ *
+ * Resampling rather than refusing is the right trade here and it is the trade
+ * `hydro-run` already makes for the same reason: a flood *extent* at 1 m is the
+ * same map as a flood extent at 25 cm, because the thing being drawn is a
+ * shoreline on a hillside, not a feature the size of a cell. Malhar's §10 asks
+ * for exactly this — "DTM resolution is preserved as much as practical" beside
+ * "large DTM datasets are processed efficiently". The response reports the cell
+ * size it actually used, so the number is never quietly finer than the work.
+ */
+const MAX_FLOOD_CELLS = 4_000_000;
 
 /**
  * The measurement API the client dashboard operates.
@@ -471,7 +492,67 @@ export async function POST(
         const levels = [...new Set(rawLevels)].sort((a, b) => a - b);
         const interval = Number(body.interval) > 0 ? Number(body.interval) : null;
 
-        const dtm = loadTerrain(siteSlug, "dtm");
+        /**
+         * The ground to flood, as a window rather than the whole survey.
+         *
+         * This began as `loadTerrain`, a whole-grid read like tool 14's, on the
+         * reasoning that a flood's extent is not known before the read so there
+         * is nothing to window to. That is true of the *flood* and false of the
+         * *study area*, and the difference stopped being academic the moment
+         * Kiru arrived: its DTM is 83,979 x 30,046 cells at 25 cm — 2.5 billion
+         * cells, 10 GB as Float32 — so the whole-grid read refused it outright
+         * and the tool reported "measurements are not available for this
+         * survey", which is not what was wrong.
+         *
+         * A flood over 21 km of gorge is not a thing anyone asks for anyway.
+         * The client sends the bounds they are looking at, the flood is computed
+         * over exactly that, and water reaching the edge of it is already
+         * reported as `truncated` by the same check that flags water reaching
+         * the edge of the survey — because for this read they are the same edge.
+         *
+         * Without bounds it falls back to the whole raster, which still works
+         * for every survey small enough to hold and refuses the ones that are
+         * not, with `readTerrainWindow`'s own message naming the cell count and
+         * telling the client to draw something smaller.
+         */
+        const view =
+          body.bounds === undefined
+            ? null
+            : (() => {
+                const raw = readGeometry(body, "bounds", 2);
+                const [[west, south], [east, north]] = raw;
+                // Projected as four corners, not two: a UTM rectangle is not a
+                // lon/lat rectangle. Grid convergence turns it by up to half a
+                // degree here, so a box built from two opposite corners misses
+                // ground the other two cover — the same trap the point cloud's
+                // node bounds hit in #48.
+                return project([
+                  [west, south],
+                  [east, south],
+                  [east, north],
+                  [west, north],
+                ]);
+              })();
+
+        const read = view
+          ? await windowed(view)
+          : await readTerrainWindow(raster, raster.bounds as [number, number, number, number]);
+        if (!read) {
+          throw new BadRequest("That view does not overlap this survey.");
+        }
+
+        /*
+         * Coarsen if the view is large, rather than refusing it or spending a
+         * second a level. `resample` averages, so a coarser cell is the mean of
+         * the ground under it — which is the honest reduction for a water
+         * surface, and it refuses to upsample, so a small view keeps its native
+         * resolution untouched.
+         */
+        const cells = read.width * read.height;
+        const dtm =
+          cells > MAX_FLOOD_CELLS
+            ? resample(read, read.cellSize * Math.sqrt(cells / MAX_FLOOD_CELLS))
+            : read;
 
         let seeds: { col: number; row: number }[] | null = null;
         if (body.polygon !== undefined) {
@@ -483,7 +564,17 @@ export async function POST(
         } else if (body.at !== undefined) {
           const [[x, y]] = project(readGeometry(body, "at", 1));
           const cell = dtm.cellAt(x, y);
-          if (!cell) throw new BadRequest("That starting point is outside this survey.");
+          if (!cell) {
+            // Distinguished, because they need different actions from the
+            // client: a source outside the *survey* is a misplaced click, and
+            // one outside the *view* means panning it off screen after placing
+            // it, which is easy to do and would otherwise read as our bug.
+            throw new BadRequest(
+              view
+                ? "The water source is outside the area on screen. Pan it back into view, or place a new one."
+                : "That starting point is outside this survey.",
+            );
+          }
           if (dtm.isNoDataAt(cell.col, cell.row)) {
             throw new BadRequest("There is no survey data at that starting point.");
           }
@@ -493,6 +584,15 @@ export async function POST(
         result = {
           method: seeds ? "connected" : "threshold",
           seedGround_m: seeds ? dtm.get(seeds[0].col, seeds[0].row) : null,
+          /*
+           * The resolution the flood was actually computed at, which is not
+           * always the survey's own. `common.cellSize` reports the raster's
+           * native cell, and a client reading that beside an area computed on a
+           * coarsened grid would credit the figure with precision it does not
+           * have. Stated here, per request, next to the numbers it governs.
+           */
+          computedAtCellSize_m: dtm.cellSize,
+          resampled: dtm.cellSize > read.cellSize + 1e-9,
           levels: simulateFlood(dtm, levels, seeds, interval, unproject),
         };
         break;
