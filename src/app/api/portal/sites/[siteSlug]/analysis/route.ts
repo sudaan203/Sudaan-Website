@@ -11,7 +11,6 @@ import {
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
 import { boundsOf } from "@/lib/geo/raster-window.mjs";
-import { resample } from "@/lib/geo/raster.mjs";
 import { lonLatToUtm, utmToLonLat } from "@/lib/geo/projection.mjs";
 import {
   spotLevel,
@@ -20,6 +19,7 @@ import {
   gridLevels,
   cutFill,
   compareSurfaces,
+  pointInPolygon,
   REFERENCE,
 } from "@/lib/geo/terrain-analysis.mjs";
 import {
@@ -49,24 +49,63 @@ export const runtime = "nodejs";
 const MAX_FLOOD_LEVELS = 200;
 
 /**
- * Cells a flood simulation will actually walk, after which the grid is
- * resampled coarser rather than the request refused.
+ * Cells one flood simulation may walk. Past this the request is **refused**,
+ * never quietly coarsened.
  *
- * Measured on Kiru, whose DTM is 25 cm: a 1.6 km view is 39.7 million cells,
- * and at that size **each level costs about 1.1 seconds** — a ten-step ladder
- * is twelve seconds of compute on top of a two-second read, which is past what
- * a serverless function should be asked for and well past what feels
- * interactive. At four million the same ladder is under a second in total.
+ * Measured on Kiru, whose DTM is 25 cm: a 500 m square is 3.9 million cells and
+ * a twelve-level ladder over it takes 2.1 seconds end to end, read included. A
+ * 1.6 km square is 39.7 million cells and the same ladder takes fifteen
+ * seconds, which is past what a serverless function should be asked for and
+ * well past interactive. Four million is that 500 m square — about 2,000 cells
+ * a side, whatever the survey's resolution makes that in metres.
  *
- * Resampling rather than refusing is the right trade here and it is the trade
- * `hydro-run` already makes for the same reason: a flood *extent* at 1 m is the
- * same map as a flood extent at 25 cm, because the thing being drawn is a
- * shoreline on a hillside, not a feature the size of a cell. Malhar's §10 asks
- * for exactly this — "DTM resolution is preserved as much as practical" beside
- * "large DTM datasets are processed efficiently". The response reports the cell
- * size it actually used, so the number is never quietly finer than the work.
+ * This used to resample instead, averaging the grid down to fit the budget. It
+ * was the wrong trade and the client said so: the whole point of a 25 cm survey
+ * is that it is a 25 cm survey, and a shoreline computed on 81 cm cells is a
+ * different shoreline — one that cannot be checked against Global Mapper or
+ * HEC-RAS reading the same file, which is what this tool is *for*. Worse, the
+ * degradation was invisible in the picture. So the resampling is gone and the
+ * answer to "too much ground" is now a sentence telling the client to draw a
+ * smaller study area, with the size they asked for and the size that fits both
+ * named in it. A refusal a client can act on beats a number they cannot trust.
  */
 const MAX_FLOOD_CELLS = 4_000_000;
+
+/**
+ * The refusal, written for the client who has to do something about it.
+ *
+ * Three variants because there are three different situations behind the same
+ * cell count, and each one has a different next action: an area that was drawn
+ * too big should be redrawn smaller; a view being used *because* nothing was
+ * drawn should be replaced by a drawn area rather than zoomed in and guessed
+ * at; and a whole survey means the tool was asked to flood everything, which on
+ * Kiru is 21 km of gorge nobody was asking about.
+ */
+function floodTooLarge(
+  from: "area" | "view" | "survey",
+  cols: number,
+  rows: number,
+  cellSize: number,
+): BadRequest {
+  const million = (n: number) => `${(n / 1_000_000).toFixed(1)} million`;
+  const metres = (n: number) => `${Math.round(n).toLocaleString("en-GB")} m`;
+  // The square that does fit, in this survey's own metres, because "4 million
+  // cells" is not a size anyone can draw and "about 500 m across" is.
+  const fits = metres(Math.sqrt(MAX_FLOOD_CELLS) * cellSize);
+  const size =
+    `${metres(cols * cellSize)} by ${metres(rows * cellSize)} — ` +
+    `${million(cols * rows)} cells at this survey's ${cellSize.toFixed(3)} m resolution`;
+  const subject =
+    from === "area" ? "The study area you drew is" : from === "view" ? "The view is" : "This survey is";
+  const action =
+    from === "area"
+      ? `Draw a smaller study area — about ${fits} square or less — and run it again.`
+      : `Draw a flood study area on the map — about ${fits} square or less — and run it again.`;
+  return new BadRequest(
+    `${subject} ${size}. This tool simulates at the survey's full resolution and never ` +
+      `coarsens it, so it works over at most ${million(MAX_FLOOD_CELLS)} cells at a time. ${action}`,
+  );
+}
 
 /**
  * The measurement API the client dashboard operates.
@@ -454,11 +493,15 @@ export async function POST(
       /**
        * Malhar's water-level-rise simulation tool.
        *
-       * A whole-grid operation, like slope (tool 14): a flood's extent is not
-       * known ahead of the read, so unlike every other op here there is no
-       * bounding box to window the raster to. See `flood.mjs` for why this
-       * reads the DTM at its own native resolution rather than reusing tool
-       * 28's hydrology grid, which is deliberately resampled to 1 m.
+       * Bounded by a **study area** the client draws, and computed over it at
+       * the survey's own native resolution, always. A flood's own extent is not
+       * known before the read — that is what makes this different from a
+       * profile or a polygon's statistics — but the ground worth asking about
+       * is, because a reservoir at a dam site is a 500 m question and the
+       * survey around it is a 21 km gorge. See `flood.mjs` for why this reads
+       * the DTM at native resolution rather than reusing tool 28's hydrology
+       * grid, which is deliberately resampled to 1 m, and `MAX_FLOOD_CELLS`
+       * above for why too much ground is refused rather than coarsened.
        *
        * `at` or `polygon` names a water source; the flood grows outward from
        * it and a hilltop hollow at the same elevation stays dry. Neither given
@@ -493,86 +536,137 @@ export async function POST(
         const interval = Number(body.interval) > 0 ? Number(body.interval) : null;
 
         /**
-         * The ground to flood, as a window rather than the whole survey.
+         * The study area: the ground this simulation is allowed to touch.
          *
-         * This began as `loadTerrain`, a whole-grid read like tool 14's, on the
-         * reasoning that a flood's extent is not known before the read so there
-         * is nothing to window to. That is true of the *flood* and false of the
-         * *study area*, and the difference stopped being academic the moment
-         * Kiru arrived: its DTM is 83,979 x 30,046 cells at 25 cm — 2.5 billion
-         * cells, 10 GB as Float32 — so the whole-grid read refused it outright
-         * and the tool reported "measurements are not available for this
-         * survey", which is not what was wrong.
+         * This op began as `loadTerrain`, a whole-grid read like tool 14's, on
+         * the reasoning that a flood's extent is not known before the read so
+         * there is nothing to window to. That is true of the *flood* and false
+         * of the *study area*, and the difference stopped being academic the
+         * moment Kiru arrived: its DTM is 83,979 x 30,046 cells at 25 cm — 2.5
+         * billion cells, 10 GB as Float32 — so the whole-grid read refused it
+         * outright and the tool reported "measurements are not available for
+         * this survey", which is not what was wrong.
          *
-         * A flood over 21 km of gorge is not a thing anyone asks for anyway.
-         * The client sends the bounds they are looking at, the flood is computed
-         * over exactly that, and water reaching the edge of it is already
-         * reported as `truncated` by the same check that flags water reaching
-         * the edge of the survey — because for this read they are the same edge.
+         * Three sources, in order of how well they say what the client meant:
          *
-         * Without bounds it falls back to the whole raster, which still works
-         * for every survey small enough to hold and refuses the ones that are
-         * not, with `readTerrainWindow`'s own message naming the cell count and
-         * telling the client to draw something smaller.
+         *   `area`    a rectangle or polygon drawn on the map for this purpose.
+         *             The client said "flood here", so this is what is flooded.
+         *   `bounds`  the map's own view, as [[west, south], [east, north]],
+         *             used when nothing was drawn. A reasonable guess at intent
+         *             and nothing more, which is why the panel says so.
+         *   neither   the whole survey, which only a small one survives.
+         *
+         * All three are windowed the same way and guarded by the same cell cap,
+         * so the only thing that changes between them is the wording of the
+         * refusal when it does not fit.
+         *
+         * Projected as a ring of corners, never as two opposite ones: a UTM
+         * rectangle is not a lon/lat rectangle. Grid convergence turns it by up
+         * to half a degree here, so a box built from two corners misses ground
+         * the other two cover — the same trap the point cloud's node bounds hit
+         * in #48.
          */
-        const view =
-          body.bounds === undefined
-            ? null
-            : (() => {
-                const raw = readGeometry(body, "bounds", 2);
-                const [[west, south], [east, north]] = raw;
-                // Projected as four corners, not two: a UTM rectangle is not a
-                // lon/lat rectangle. Grid convergence turns it by up to half a
-                // degree here, so a box built from two opposite corners misses
-                // ground the other two cover — the same trap the point cloud's
-                // node bounds hit in #48.
+        const drawn = body.area !== undefined;
+        const ring: Geometry | null = drawn
+          ? project(readGeometry(body, "area", 3))
+          : body.bounds !== undefined
+            ? (() => {
+                const [[west, south], [east, north]] = readGeometry(body, "bounds", 2);
                 return project([
                   [west, south],
                   [east, south],
                   [east, north],
                   [west, north],
                 ]);
-              })();
+              })()
+            : null;
+        const from = drawn ? "area" : ring ? "view" : "survey";
 
-        const read = view
-          ? await windowed(view)
-          : await readTerrainWindow(raster, raster.bounds as [number, number, number, number]);
-        if (!read) {
-          throw new BadRequest("That view does not overlap this survey.");
-        }
-
-        /*
-         * Coarsen if the view is large, rather than refusing it or spending a
-         * second a level. `resample` averages, so a coarser cell is the mean of
-         * the ground under it — which is the honest reduction for a water
-         * surface, and it refuses to upsample, so a small view keeps its native
-         * resolution untouched.
+        /**
+         * Size the read before making it, not after.
+         *
+         * `windowFor` is arithmetic on the directory this route already parsed,
+         * so an oversized request is refused in microseconds instead of after
+         * the two seconds it would take to pull 40 million cells off disk and
+         * then decide they were too many. That ordering is the difference
+         * between a refusal that feels like an answer and one that feels like a
+         * timeout.
          */
-        const cells = read.width * read.height;
-        const dtm =
-          cells > MAX_FLOOD_CELLS
-            ? resample(read, read.cellSize * Math.sqrt(cells / MAX_FLOOD_CELLS))
-            : read;
+        const box = ring
+          ? (boundsOf(ring) as [number, number, number, number])
+          : (raster.bounds as [number, number, number, number]);
+        const window = raster.windowFor(box);
+        if (!window) {
+          throw new BadRequest(
+            drawn
+              ? "That study area does not overlap this survey. Draw it over the surveyed ground."
+              : "That view does not overlap this survey.",
+          );
+        }
+        if (window.cols * window.rows > MAX_FLOOD_CELLS) {
+          throw floodTooLarge(from, window.cols, window.rows, raster.cellSize);
+        }
+        const dtm = await raster.readWindow(window);
+        if (!dtm) throw new BadRequest("That study area does not overlap this survey.");
+
+        /**
+         * Ground outside the drawn shape is not surveyed ground, for this run.
+         *
+         * The window is a rectangle because a raster read is a rectangle, but a
+         * study area need not be: a client drawing a reservoir along a valley
+         * draws a polygon, and reporting the water in the corners of its
+         * bounding box as part of "the area you asked about" would be a wrong
+         * number in the one field this tool exists to produce. Blanking those
+         * cells to nodata makes the flood stop at the drawn line exactly, and
+         * costs one point-in-polygon test per cell — about 40 ms over a full
+         * four-million-cell budget, against the 2 s the simulation itself takes.
+         *
+         * It also makes `truncated` mean the right thing: water reaching the
+         * edge of the study area now borders nodata, so the same check that
+         * flags a flood running off the survey flags one running out of the
+         * area the client chose to look at. Both are lower bounds, and the panel
+         * says so.
+         */
+        if (ring) {
+          for (let row = 0; row < dtm.height; row += 1) {
+            const y = dtm.yOf(row);
+            for (let col = 0; col < dtm.width; col += 1) {
+              if (!pointInPolygon(dtm.xOf(col), y, ring)) {
+                dtm.data[row * dtm.width + col] = dtm.nodata;
+              }
+            }
+          }
+        }
 
         let seeds: { col: number; row: number }[] | null = null;
         if (body.polygon !== undefined) {
-          const ring = project(readGeometry(body, "polygon", 3));
-          seeds = seedCellsInPolygon(dtm, ring);
+          const start = project(readGeometry(body, "polygon", 3));
+          seeds = seedCellsInPolygon(dtm, start).filter(
+            (cell) => !dtm.isNoDataAt(cell.col, cell.row),
+          );
           if (seeds.length === 0) {
-            throw new BadRequest("That starting area has no surveyed ground under it.");
+            throw new BadRequest(
+              ring
+                ? "That starting water body has no surveyed ground under it inside the study area."
+                : "That starting area has no surveyed ground under it.",
+            );
           }
         } else if (body.at !== undefined) {
           const [[x, y]] = project(readGeometry(body, "at", 1));
           const cell = dtm.cellAt(x, y);
-          if (!cell) {
-            // Distinguished, because they need different actions from the
-            // client: a source outside the *survey* is a misplaced click, and
-            // one outside the *view* means panning it off screen after placing
-            // it, which is easy to do and would otherwise read as our bug.
+          // Tested against the ring rather than against the grid, because a
+          // point in the corner of a polygon's bounding box is inside the
+          // window and outside the study area, and the two failures need
+          // different words: one is "you drew the area somewhere else", the
+          // other is "there is a hole in the survey there".
+          const outside = !cell || (ring !== null && !pointInPolygon(x, y, ring));
+          if (outside) {
             throw new BadRequest(
-              view
-                ? "The water source is outside the area on screen. Pan it back into view, or place a new one."
-                : "That starting point is outside this survey.",
+              drawn
+                ? "The water source is outside the study area you drew. Place it inside the area, or draw the area around it."
+                : ring
+                  ? "The water source is outside the area on screen. Pan it back into view, or place a new one."
+                  : "That starting point is outside this survey.",
             );
           }
           if (dtm.isNoDataAt(cell.col, cell.row)) {
@@ -585,14 +679,26 @@ export async function POST(
           method: seeds ? "connected" : "threshold",
           seedGround_m: seeds ? dtm.get(seeds[0].col, seeds[0].row) : null,
           /*
-           * The resolution the flood was actually computed at, which is not
-           * always the survey's own. `common.cellSize` reports the raster's
-           * native cell, and a client reading that beside an area computed on a
-           * coarsened grid would credit the figure with precision it does not
-           * have. Stated here, per request, next to the numbers it governs.
+           * The resolution the flood was computed at, which is now always the
+           * survey's own and is reported anyway. It used to be able to differ —
+           * the route coarsened large windows — and a client who had read that
+           * number once should be able to read it again and see for themselves
+           * that it stopped moving, rather than take our word that the
+           * downsampling is gone.
            */
           computedAtCellSize_m: dtm.cellSize,
-          resampled: dtm.cellSize > read.cellSize + 1e-9,
+          /*
+           * What was actually simulated, so the panel can say it rather than
+           * imply it. A flooded-area figure means nothing without the ground it
+           * was measured over, and "the area on screen" was only ever true by
+           * accident once a client had panned.
+           */
+          studyArea: {
+            source: from,
+            width_m: window.cols * dtm.cellSize,
+            height_m: window.rows * dtm.cellSize,
+            cells: window.cols * window.rows,
+          },
           levels: simulateFlood(dtm, levels, seeds, interval, unproject),
         };
         break;

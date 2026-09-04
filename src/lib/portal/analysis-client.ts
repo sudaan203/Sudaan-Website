@@ -369,6 +369,25 @@ export type FloodResult = {
   method: "connected" | "threshold";
   /** Ground elevation at the water source, or null for a threshold flood. */
   seedGround_m: number | null;
+  /**
+   * The cell size the flood was computed at, which is the survey's own. It is
+   * reported rather than assumed because this route used to be able to coarsen
+   * a large window, and a client who once had to check this number should be
+   * able to keep checking it rather than take our word that it stopped moving.
+   */
+  computedAtCellSize_m: number;
+  /**
+   * The ground the simulation actually covered, so the panel can say it instead
+   * of implying it. `source` is which of the three the server used: the area
+   * the client drew, the map's view when nothing was drawn, or the whole
+   * survey.
+   */
+  studyArea: {
+    source: "area" | "view" | "survey";
+    width_m: number;
+    height_m: number;
+    cells: number;
+  };
   levels: FloodLevel[];
 };
 
@@ -570,16 +589,25 @@ export class AnalysisClient {
    * simulated over the surface model would be water flowing across treetops.
    * The server pins this op to the DTM and ignores the field.
    *
-   * `bounds` is the map's current view as [[west, south], [east, north]], and
-   * it is what makes this work on a large survey at all. Kiru's DTM is 2.5
-   * billion cells; nothing reads that whole, and a flood across 21 km of gorge
-   * is not a question anyone asks. The flood is computed over the ground on
-   * screen, and water reaching the edge of it comes back flagged `truncated`.
+   * `area` is the **study area**: a rectangle or polygon the client drew to say
+   * which ground this simulation is about. It is what makes the tool both fast
+   * and honest on a large survey — Kiru's DTM is 2.5 billion cells, nothing
+   * reads that whole, and a flood across 21 km of gorge is not a question
+   * anyone asks. The flood is computed over exactly the drawn shape, at the
+   * survey's full resolution, and water reaching its edge comes back flagged
+   * `truncated` the same as water reaching the edge of the survey.
+   *
+   * `bounds` — the map's view as [[west, south], [east, north]] — is the
+   * fallback when nothing has been drawn, and a guess at intent rather than a
+   * statement of it. Either way the server refuses more ground than it can
+   * simulate at full resolution instead of quietly coarsening the DTM, so an
+   * oversized request comes back as an `AnalysisError` whose message names the
+   * size drawn and the size that fits. It is never answered at lower accuracy.
    */
   flood(
     levels: number[],
     source: { at?: Pair; polygon?: Pair[] } = {},
-    options: { interval?: number; bounds?: [Pair, Pair]; crs?: Crs } = {},
+    options: { interval?: number; area?: Pair[]; bounds?: [Pair, Pair]; crs?: Crs } = {},
     signal?: AbortSignal,
   ) {
     return this.run<FloodResult>(
