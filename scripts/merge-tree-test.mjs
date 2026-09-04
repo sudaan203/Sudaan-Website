@@ -208,15 +208,24 @@ console.log("\nTwo bowls behind a ridge, where the merge level is known");
    */
   const W = 31, H = 11;
   const inBowl = (c, r, cx) => c >= cx - 3 && c <= cx + 3 && r >= 2 && r <= 8;
+  /*
+   * The bowls sit *against* the wall, not away from it. Centred at 7 and 23
+   * they spanned columns 4-10 and 20-26 with 105 m ground either side of the
+   * wall at 15, so at 103 m the wall submerged into a puddle of its own and
+   * neither bowl could reach it — `connectedFlood` agreed, returning 49 cells,
+   * and the fixture was asserting a merge the terrain never described.
+   * Centred at 11 and 19 they span 8-14 and 16-22, so column 15 really is the
+   * only thing between them.
+   */
   const dem = makeGrid(W, H, (c, r) => {
-    if (inBowl(c, r, 7)) return 100;
-    if (inBowl(c, r, 23)) return 100;
+    if (inBowl(c, r, 11)) return 100;
+    if (inBowl(c, r, 19)) return 100;
     if (c === 15) return 103;
     return 105;
   });
   const tree = buildMergeTree(dem);
-  const left = 5 * W + 7;
-  const right = 5 * W + 23;
+  const left = 5 * W + 11;
+  const right = 5 * W + 19;
 
   check("at 102 m the left bowl floods only itself, 49 cells",
     floodFrom(tree, left, 102, 100).cells === 49,
