@@ -49,10 +49,13 @@
 import {
   Grid,
   TYPE_SIZE,
-  lzwDecode,
   pixelReader,
   undoHorizontalPredictor,
 } from "./raster.mjs";
+// Straight from lzw.mjs rather than through raster.mjs's re-export: this is the
+// file that pays for the decoder — a window over Kiru decodes 650 tiles — so
+// the dependency is worth seeing at the top of it.
+import { lzwDecode } from "./lzw.mjs";
 
 /** Cells either side of a requested window, so edge interpolation has neighbours. */
 const MARGIN_CELLS = 2;

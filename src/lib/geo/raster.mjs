@@ -20,6 +20,9 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
+// A re-export does not create a local binding, and `decodeChunk` below calls it.
+import { lzwDecode } from "./lzw.mjs";
+
 /**
  * A north-up raster on a square cell.
  *
@@ -202,113 +205,20 @@ export class Grid {
 export const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 11: 4, 12: 8, 16: 8, 17: 8, 18: 8 };
 
 /**
- * TIFF LZW decompression.
+ * TIFF LZW decompression, which now lives in `./lzw.mjs`.
  *
- * Needed because it is what real deliverables actually arrive as. The Kherwada
- * fixture happens to be uncompressed, but `DTM/Kotba_DTM.tif`, written by the
- * processing team's own toolchain, is LZW, and so is most GeoTIFF that GDAL,
- * QGIS or Global Mapper produces by default. A reader that refuses it can only
- * open test data.
+ * It moved because it stopped being one function. Profiling put 96% of a
+ * windowed read on the Kiru DTM inside it — 1,267 ms of 1,318 ms, against 51 ms
+ * of disk — so there is now a Rust/WASM kernel beside the JavaScript one, a
+ * switch between them on `PORTAL_LZW`, and a fallback path. That is a file's
+ * worth of concern, and it is a concern about LZW rather than about rasters.
  *
- * Two details separate this from textbook LZW, and both are silent if wrong:
- *
- * - Codes are packed most significant bit first, not least.
- * - TIFF uses "early change": the code width grows one code sooner than plain
- *   LZW, at 511 rather than 512. Getting this wrong decodes the first few
- *   hundred bytes perfectly and then produces garbage, which looks like corrupt
- *   input rather than a decoder bug.
+ * Re-exported under the old name so nothing that imports it from here has to
+ * care. `lzwDecode` is the switch; `lzwDecodeJs` is the original implementation,
+ * unchanged, kept as the oracle the WASM kernel is tested against and as the
+ * runtime fallback.
  */
-export function lzwDecode(input, expectedBytes) {
-  const CLEAR = 256;
-  const EOI = 257;
-  const out = new Uint8Array(expectedBytes);
-  let outAt = 0;
-
-  // Dictionary entries as (prefix code, appended byte), walked backwards on
-  // emit. Cheaper than materialising a byte array per entry.
-  const prefix = new Int32Array(4096);
-  const suffix = new Uint8Array(4096);
-  const length = new Int32Array(4096);
-  const stack = new Uint8Array(4096);
-
-  let next = 258;
-  let width = 9;
-  let bitBuffer = 0;
-  let bitCount = 0;
-  let at = 0;
-  let previous = -1;
-
-  const reset = () => {
-    next = 258;
-    width = 9;
-    previous = -1;
-  };
-  for (let i = 0; i < 256; i += 1) { prefix[i] = -1; suffix[i] = i; length[i] = 1; }
-
-  const emit = (code) => {
-    let depth = 0;
-    let c = code;
-    while (c >= 0 && depth < 4096) {
-      stack[depth] = suffix[c];
-      depth += 1;
-      c = prefix[c];
-    }
-    for (let i = depth - 1; i >= 0; i -= 1) {
-      if (outAt < out.length) out[outAt] = stack[i];
-      outAt += 1;
-    }
-  };
-
-  while (outAt < expectedBytes) {
-    while (bitCount < width) {
-      if (at >= input.length) return out;
-      bitBuffer = (bitBuffer << 8) | input[at];
-      at += 1;
-      bitCount += 8;
-    }
-    const code = (bitBuffer >> (bitCount - width)) & ((1 << width) - 1);
-    bitCount -= width;
-
-    if (code === EOI) break;
-    if (code === CLEAR) { reset(); continue; }
-
-    if (previous === -1) {
-      emit(code);
-      previous = code;
-      continue;
-    }
-
-    if (code < next) {
-      emit(code);
-      if (next < 4096) {
-        prefix[next] = previous;
-        // First byte of the code just emitted.
-        let first = code;
-        while (prefix[first] >= 0) first = prefix[first];
-        suffix[next] = suffix[first];
-        length[next] = length[previous] + 1;
-        next += 1;
-      }
-    } else {
-      // The code is not in the table yet, the KwKwK case: it must expand to the
-      // previous string plus its own first byte.
-      let first = previous;
-      while (prefix[first] >= 0) first = prefix[first];
-      if (next < 4096) {
-        prefix[next] = previous;
-        suffix[next] = suffix[first];
-        length[next] = length[previous] + 1;
-        next += 1;
-      }
-      emit(next - 1);
-    }
-    previous = code;
-
-    // Early change: grow one code before the table is actually full.
-    if (next + 1 >= (1 << width) && width < 12) width += 1;
-  }
-  return out;
-}
+export { lzwDecode, lzwDecodeJs, lzwDecodeWasm, lzwBackend } from "./lzw.mjs";
 
 /** Undo horizontal differencing (TIFF Predictor 2). */
 export function undoHorizontalPredictor(bytes, width, samples, bitsPerSample) {
