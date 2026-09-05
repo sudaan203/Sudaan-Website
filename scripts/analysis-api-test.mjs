@@ -604,6 +604,27 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
       /full resolution/i.test(message) && /never coarsens/i.test(message), message.slice(0, 80));
     check("and tells the client what size would work",
       /square or less/i.test(message), message.slice(-70));
+
+    /*
+     * And the size it names has to actually work. The refusal suggested the
+     * arithmetic maximum, which a drawn area lands just over every time: a
+     * window is padded so edge interpolation has neighbours, it rounds outward
+     * to whole cells, and a box drawn on a lon/lat map is not square once
+     * projected. Naming a size and then refusing it is worse than refusing
+     * plainly, so the number in the message is checked by drawing it.
+     */
+    const suggested = Number(message.match(/about ([\d,]+) m square/)?.[1]?.replace(/,/g, ""));
+    check("the suggested size is a real number of metres", Number.isFinite(suggested), String(suggested));
+    if (Number.isFinite(suggested)) {
+      const h = suggested / 2;
+      const drawn = [
+        utmToLonLat(centreE - h, centreN - h, 43, true),
+        utmToLonLat(centreE + h, centreN + h, 43, true),
+      ];
+      const retry = await post({ op: "flood", levels: [truthSpot + 5], bounds: drawn, crs: "lonlat" });
+      check("and drawing exactly that size is accepted, not refused again",
+        retry.status === 200, `${suggested} m gave ${retry.status}`);
+    }
   }
 }
 {
