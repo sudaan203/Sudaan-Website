@@ -469,5 +469,361 @@ console.log("\nThe migration, applied to a throwaway database");
   }
 }
 
+// ---------------------------------------------------------------------------
+console.log("\nRecording a checkpoint report with scripts/portal-survey-accuracy.mjs");
+// ---------------------------------------------------------------------------
+/*
+ * The migration made the honest state possible; this script is what gets a
+ * survey out of it. So the thing under test is not that the tool writes a row —
+ * it is that every way of writing a WRONG row is refused in words, before the
+ * constraint, and that the row it does write reads back through resolveAccuracy
+ * as a measurement.
+ *
+ * Driven through the exported `run()` against PGlite rather than by spawning the
+ * CLI: the same code path, the same SQL, no server, and no possibility of a test
+ * finding a DATABASE_URL and touching a real database.
+ */
+{
+  let PGlite = null;
+  try {
+    ({ PGlite } = await import("@electric-sql/pglite"));
+  } catch {
+    console.log(
+      "  ..  skipped, PGlite is not installed. npm install --no-save @electric-sql/pglite",
+    );
+  }
+
+  if (PGlite) {
+    const { run, parseArgs, validateSet } = await import("./portal-survey-accuracy.mjs");
+
+    const db = await PGlite.create();
+    const dir = path.join(process.cwd(), "drizzle");
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
+      await db.exec(readFileSync(path.join(dir, file), "utf8"));
+    }
+
+    const ALPHA = "a1111111-1111-4111-8111-111111111111";
+    const BETA = "b2222222-2222-4222-8222-222222222222";
+    await db.exec(`
+      insert into clients (id, slug, name) values
+        ('${ALPHA}', 'alpha', 'Alpha Infra'),
+        ('${BETA}',  'beta',  'Beta Mining');
+      insert into sites (client_id, slug, name) values
+        ('${ALPHA}', 'kotba-survey', 'Kotba'),
+        ('${ALPHA}', 'shared',       'Alpha shared'),
+        ('${BETA}',  'shared',       'Beta shared');
+      insert into surveys (site_id, label, flown_on)
+        select id, 'Flight 1', date '2026-02-20' from sites where slug = 'kotba-survey';
+    `);
+
+    /** The adapter the CLI builds over postgres.js, built here over PGlite. */
+    const tool = { query: async (text, params = []) => (await db.query(text, params)).rows };
+
+    /** Run the tool and collect what a person would have seen. */
+    const call = async (argv) => {
+      const out = [];
+      const err = [];
+      const code = await run(tool, argv, {
+        out: (line) => out.push(line),
+        err: (line) => err.push(line),
+        fallbackRmseZ: TYPICAL_RMSE_Z,
+        // Pinned so "is this date in the future" does not depend on the day the suite runs.
+        today: "2026-09-05",
+      });
+      return { code, out: out.join("\n"), err: err.join("\n") };
+    };
+
+    const kotba = async () =>
+      (
+        await db.query(
+          `select vertical_rmse_z_m, vertical_accuracy_basis, vertical_accuracy_checkpoints,
+                  to_char(vertical_accuracy_assessed_on, 'YYYY-MM-DD') as assessed_on,
+                  vertical_accuracy_method, vertical_accuracy_source
+             from sites where slug = 'kotba-survey'`,
+        )
+      ).rows[0];
+
+    const COMPLETE = [
+      "set", "kotba-survey",
+      "--rmse", "0.031",
+      "--checkpoints", "27",
+      "--assessed-on", "2026-03-12",
+      "--method", "27 DGPS checkpoints, independent of the control network",
+      "--source", "Kotba topographic survey report, section 4",
+    ];
+    /** COMPLETE with one flag dropped, for the "the tool refuses first" sweep. */
+    const without = (flag) => {
+      const i = COMPLETE.indexOf(flag);
+      return [...COMPLETE.slice(0, i), ...COMPLETE.slice(i + 2)];
+    };
+
+    // -- The basis cannot be skipped -----------------------------------------
+    /*
+     * The single most important property of this tool. A --value flag, or a
+     * --basis flag that could be forgotten, recreates the original bug in a new
+     * place: a number recorded now and interpreted later, wrong, by somebody
+     * quoting it to a contractor.
+     */
+    {
+      const noBasis = await call(without("--rmse"));
+      check(
+        "a figure with no --rmse or --ci95 is refused",
+        noBasis.code === 1 && /--rmse|--ci95/.test(noBasis.err),
+        noBasis.err.split("\n")[0],
+      );
+      check(
+        "and the refusal explains that the two differ by about 1.96x",
+        /1\.96/.test(noBasis.err),
+        noBasis.err.split("\n")[0],
+      );
+
+      const bothWays = await call([...COMPLETE, "--ci95", "0.061"]);
+      check(
+        "giving both --rmse and --ci95 is refused rather than one silently winning",
+        bothWays.code === 1 && /not both/.test(bothWays.err),
+        bothWays.err.split("\n")[0],
+      );
+
+      const habit = parseArgs(["set", "s", "--basis", "rmse", "--value", "0.04"]);
+      check(
+        "--basis and --value do not exist, and say what to use instead",
+        habit.errors.length === 2 && habit.errors.every((e) => /--rmse 0\.031/.test(e)),
+        habit.errors.join(" | "),
+      );
+      check(
+        "--rmse and --ci95 land on different bases, not on a shared default",
+        validateSet(parseArgs(["set", "s", "--rmse", "0.04"])).values.vertical_accuracy_basis ===
+          "rmse" &&
+          validateSet(parseArgs(["set", "s", "--ci95", "0.04"])).values.vertical_accuracy_basis ===
+            "ci95",
+      );
+    }
+
+    // -- Everything the constraint would refuse is refused earlier, in words --
+    /*
+     * "Fails before the constraint" is the requirement, and the way to test it
+     * is that the message names a flag and never a constraint: a person reading
+     * `sites_vertical_accuracy_has_provenance` learns nothing they can act on.
+     */
+    {
+      const refusals = [
+        ["a figure with no --checkpoints", without("--checkpoints"), "--checkpoints"],
+        ["a figure with no --assessed-on", without("--assessed-on"), "--assessed-on"],
+        ["an empty --rmse, which Number() would read as a finite 0", ["set", "kotba-survey", "--rmse", "", "--checkpoints", "27", "--assessed-on", "2026-03-12"], "--rmse"],
+        ["a non numeric --rmse", ["set", "kotba-survey", "--rmse", "four cm", "--checkpoints", "27", "--assessed-on", "2026-03-12"], "--rmse"],
+        ["--checkpoints 0", ["set", "kotba-survey", "--rmse", "0.031", "--checkpoints", "0", "--assessed-on", "2026-03-12"], "--checkpoints"],
+        ["a date that does not exist", ["set", "kotba-survey", "--rmse", "0.031", "--checkpoints", "27", "--assessed-on", "2026-02-31"], "--assessed-on"],
+        ["a date in the future", ["set", "kotba-survey", "--rmse", "0.031", "--checkpoints", "27", "--assessed-on", "2027-01-01"], "--assessed-on"],
+      ];
+      for (const [label, argv, flag] of refusals) {
+        const r = await call(argv);
+        check(
+          `${label} is refused`,
+          r.code === 1 && r.err.includes(flag) && !/constraint/i.test(r.err),
+          r.err.split("\n")[0],
+        );
+      }
+
+      /*
+       * Centimetres typed into a metres field. The database accepts 3.1 happily
+       * — numeric(6,3) has room for it — and the portal would print "±310 cm"
+       * beside every level without anything looking broken.
+       */
+      const cm = await call(["set", "kotba-survey", "--rmse", "3.1", "--checkpoints", "27", "--assessed-on", "2026-03-12"]);
+      check(
+        "a figure in centimetres is refused, with the metres value to use",
+        cm.code === 1 && cm.err.includes("0.031"),
+        cm.err.split("\n")[0],
+      );
+
+      check(
+        "no refusal wrote anything: the site is still unmeasured",
+        (await kotba()).vertical_rmse_z_m === null,
+      );
+    }
+
+    // -- assessed_on is not the flight date ----------------------------------
+    {
+      const flightDate = await call([
+        "set", "kotba-survey", "--rmse", "0.031", "--checkpoints", "27",
+        "--assessed-on", "2026-01-05",
+      ]);
+      check(
+        "an assessment dated before the site's last flight is refused",
+        flightDate.code === 1 && flightDate.err.includes("2026-02-20"),
+        flightDate.err.split("\n")[0],
+      );
+      check("and it wrote nothing", (await kotba()).vertical_rmse_z_m === null);
+
+      const dry = await call([...COMPLETE, "--dry-run"]);
+      check(
+        "the flight dates are shown next to the date being recorded",
+        dry.out.includes("2026-02-20") && dry.out.includes("2026-03-12"),
+        (dry.out.split("\n").find((l) => l.startsWith("  Flown")) ?? "").trim(),
+      );
+    }
+
+    // -- Dry run -------------------------------------------------------------
+    {
+      const dry = await call([...COMPLETE, "--dry-run"]);
+      check(
+        "--dry-run reports what the portal would then say",
+        dry.code === 0 && dry.out.includes("Would be") && dry.out.includes("measured for this survey"),
+        (dry.out.split("\n").find((l) => l.includes("Would be")) ?? "").trim(),
+      );
+      check("--dry-run writes nothing", (await kotba()).vertical_rmse_z_m === null);
+    }
+
+    // -- The happy path ------------------------------------------------------
+    {
+      const set = await call(COMPLETE);
+      check("a complete checkpoint report is recorded", set.code === 0, set.err);
+
+      const row = await kotba();
+      check("the figure is stored to the millimetre", Number(row.vertical_rmse_z_m) === 0.031, String(row.vertical_rmse_z_m));
+      check("the basis is stored as rmse", row.vertical_accuracy_basis === "rmse");
+      check("the checkpoint count is stored", row.vertical_accuracy_checkpoints === 27);
+      check("the assessment date is stored, and is not the flight date", row.assessed_on === "2026-03-12", row.assessed_on);
+      check("the method is stored as written", row.vertical_accuracy_method?.startsWith("27 DGPS"), row.vertical_accuracy_method ?? "");
+      check("the source names a document", row.vertical_accuracy_source?.includes("section 4"), row.vertical_accuracy_source ?? "");
+
+      /*
+       * The loop this task exists to close: what the tool wrote is what the
+       * portal reads, and what the portal reads is a measurement.
+       */
+      const shown = resolveAccuracy(
+        {
+          rmseZ: Number(row.vertical_rmse_z_m),
+          basis: row.vertical_accuracy_basis,
+          checkpoints: row.vertical_accuracy_checkpoints,
+          assessedOn: row.assessed_on,
+          method: row.vertical_accuracy_method,
+          source: row.vertical_accuracy_source,
+        },
+        TYPICAL_RMSE_Z,
+      );
+      check("and the portal now reports it as measured for this survey", shown.measured === true, shown.provenance);
+      check("with the survey's figure, not the company's", shown.rmseZ === 0.031 && shown.rmseZ !== TYPICAL_RMSE_Z);
+      check("and a ± band may now be printed against a number", accuracyBand(shown) === 0.031);
+
+      const showOne = await call(["show", "kotba-survey"]);
+      check(
+        "show prints the portal's own wording back",
+        showOne.out.includes(shown.label),
+        shown.label,
+      );
+
+      // Re-recording, e.g. after a reprocess: a new figure with a new date.
+      const again = await call([
+        "set", "kotba-survey", "--ci95", "0.061", "--checkpoints", "31",
+        "--assessed-on", "2026-08-01", "--source", "Reprocessed model, report rev B",
+      ]);
+      const reassessed = await kotba();
+      check(
+        "a reassessment replaces the figure and its basis together",
+        again.code === 0 &&
+          reassessed.vertical_accuracy_basis === "ci95" &&
+          Number(reassessed.vertical_rmse_z_m) === 0.061 &&
+          reassessed.assessed_on === "2026-08-01",
+        `${reassessed.vertical_accuracy_basis} ${reassessed.vertical_rmse_z_m} ${reassessed.assessed_on}`,
+      );
+      check(
+        "and the replaced method is not left behind describing the old check",
+        reassessed.vertical_accuracy_method === null,
+        reassessed.vertical_accuracy_method ?? "null",
+      );
+      const figureLine = again.out.split("\n").find((l) => l.startsWith("  Figure")) ?? "";
+      check(
+        "a 95% interval is described as one, never as an RMSE",
+        figureLine.includes("95% confidence interval") && !figureLine.includes("RMSE"),
+        figureLine,
+      );
+      check(
+        "a missing --method is noted rather than passed over",
+        again.out.includes("No --method given"),
+        again.out.split("\n").find((l) => l.startsWith("Note:")) ?? "no note printed",
+      );
+    }
+
+    // -- Clearing ------------------------------------------------------------
+    {
+      const dry = await call(["clear", "kotba-survey", "--dry-run"]);
+      check("clear --dry-run writes nothing", dry.code === 0 && (await kotba()).vertical_rmse_z_m !== null);
+
+      const cleared = await call(["clear", "kotba-survey"]);
+      const row = await kotba();
+      check("clear removes the figure", cleared.code === 0 && row.vertical_rmse_z_m === null);
+      check(
+        "and every field of its provenance with it, so no orphan survives the constraint",
+        row.vertical_accuracy_basis === null &&
+          row.vertical_accuracy_checkpoints === null &&
+          row.assessed_on === null &&
+          row.vertical_accuracy_method === null &&
+          row.vertical_accuracy_source === null,
+      );
+      check(
+        "and the portal goes back to saying it was not measured",
+        resolveAccuracy(null, TYPICAL_RMSE_Z).label.includes("not measured for this survey"),
+      );
+
+      const twice = await call(["clear", "kotba-survey"]);
+      check("clearing a site with nothing recorded is not an error", twice.code === 0, twice.err);
+    }
+
+    // -- Picking the right site ----------------------------------------------
+    /*
+     * Slugs are unique per client, not globally. Putting one client's checkpoint
+     * report on another client's survey is the worst outcome available here, so
+     * the ambiguity is an error rather than a first match.
+     */
+    {
+      const ambiguous = await call(["set", "shared", "--rmse", "0.031", "--checkpoints", "27", "--assessed-on", "2026-03-12"]);
+      check(
+        "a slug held by two clients is refused, not resolved to the first",
+        ambiguous.code === 1 && ambiguous.err.includes("--client"),
+        ambiguous.err.split("\n")[0],
+      );
+
+      const picked = await call(["set", "shared", "--client", "beta", "--rmse", "0.031", "--checkpoints", "27", "--assessed-on", "2026-03-12"]);
+      const rows = (
+        await db.query(
+          `select c.slug as client, s.vertical_rmse_z_m from sites s join clients c on c.id = s.client_id
+            where s.slug = 'shared' order by c.slug`,
+        )
+      ).rows;
+      check(
+        "--client writes to exactly one of them",
+        picked.code === 0 && rows[0].vertical_rmse_z_m === null && rows[1].vertical_rmse_z_m !== null,
+        rows.map((r) => `${r.client}=${r.vertical_rmse_z_m}`).join(" "),
+      );
+
+      const missing = await call(["set", "no-such-site", "--rmse", "0.031", "--checkpoints", "27", "--assessed-on", "2026-03-12"]);
+      check("an unknown slug is an error, not a silent no-op", missing.code === 1 && /no site/i.test(missing.err), missing.err.split("\n")[0]);
+    }
+
+    // -- show ----------------------------------------------------------------
+    {
+      const all = await call(["show"]);
+      check(
+        "show with no site lists every site",
+        all.code === 0 && all.out.includes("alpha/kotba-survey") && all.out.includes("beta/shared"),
+        all.out.split("\n")[0],
+      );
+      check(
+        "and counts the ones still carrying no checkpoint report",
+        all.out.includes("2 of 3 site(s) have no checkpoint report"),
+        all.out.split("\n").at(-1) ?? "",
+      );
+      check(
+        "an unmeasured site is shown with the qualified wording, never a bare figure",
+        all.out.includes("typical, not measured for this survey"),
+        (all.out.split("\n").find((l) => l.includes("Portal says")) ?? "").trim(),
+      );
+    }
+
+    await db.close();
+  }
+}
+
 console.log(`\n${fail === 0 ? `all ${pass} checks passed` : `${pass} passed, ${fail} FAILED`}`);
 process.exit(fail ? 1 : 0);
