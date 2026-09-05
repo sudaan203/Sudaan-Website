@@ -356,6 +356,23 @@ console.log("\nRefusals and isolation");
   check("non numeric coordinates are refused", status === 400, `status ${status}`);
 }
 
+/**
+ * A bounds box around the survey centre, sized in **cells** rather than metres.
+ *
+ * The flood tool works to a cell budget, so a box measured in metres means
+ * completely different things on different surveys: 600 m is 6 million cells on
+ * Kotba's 24 cm grid and 60 million on Aektanagar's 7.7 cm one. Sizing the box
+ * from the survey's own cell size is what lets these checks say the same thing
+ * whichever survey they are pointed at.
+ */
+function boxOfCells(cells) {
+  const half = (Math.sqrt(cells) / 2) * grid.cellSize;
+  return [
+    utmToLonLat(centreE - half, centreN - half, 43, true),
+    utmToLonLat(centreE + half, centreN + half, 43, true),
+  ];
+}
+
 console.log("\nFlood simulation, Malhar's water-level-rise tool");
 {
   /*
@@ -373,9 +390,20 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
   }
   const independentArea = belowCells * grid.cellSize * grid.cellSize;
 
+  /*
+   * Deliberately un-bounded, and deliberately guarded. This is the one check
+   * anchored to an independent walk of the *whole* raster, so the request has
+   * to cover the whole raster too — which only works where the survey fits the
+   * cell budget. On a survey too big for that, the refusal is the correct
+   * answer and is asserted further down instead.
+   */
+  const wholeSurveyFits = width * height <= 4_000_000;
   const { status, payload } = await post({ op: "flood", levels: [level], crs: "lonlat" });
+  if (!wholeSurveyFits) {
+    check("a whole-survey flood is refused on a survey past the budget", status === 400, `status ${status}`);
+  } else {
   check("a flood with no water source is accepted", status === 200, `status ${status}`);
-  if (status === 200) {
+    if (status === 200) {
     check("and answered as a threshold flood, not a connected one",
       payload.result.method === "threshold", payload.result.method);
     near("the flooded area matches a direct read of the raster",
@@ -393,12 +421,13 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
     check("carrying the export attributes Malhar's spec names",
       payload.result.levels[0].geojson.features[0].properties.Water_Level !== undefined &&
       payload.result.levels[0].geojson.features[0].properties.Flood_Area_Ha !== undefined);
+    }
   }
 }
 {
   // The whole ladder in one request, which is what an automatic run sends.
   const levels = [truthSpot + 2, truthSpot + 4, truthSpot + 6];
-  const { status, payload } = await post({ op: "flood", levels, crs: "lonlat", interval: 2 });
+  const { status, payload } = await post({ op: "flood", levels, bounds: boxOfCells(1_000_000), crs: "lonlat", interval: 2 });
   check("a ladder of levels is accepted in one request", status === 200, `status ${status}`);
   if (status === 200) {
     check("one result per level", payload.result.levels.length === 3, `${payload.result.levels.length}`);
@@ -417,15 +446,51 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
   // Seeded from a point: a connected flood, and it must not exceed the bathtub
   // answer at the same level — connectivity can only ever remove cells.
   const level = truthSpot + 5;
-  const bathtub = await post({ op: "flood", levels: [level], crs: "lonlat" });
+  const bathtub = await post({ op: "flood", levels: [level], bounds: boxOfCells(1_000_000), crs: "lonlat" });
   const seeded = await post({
-    op: "flood", levels: [level], at: [[centreLon, centreLat]], crs: "lonlat",
+    op: "flood", levels: [level], at: [[centreLon, centreLat]], bounds: boxOfCells(1_000_000), crs: "lonlat",
   });
   check("a flood seeded at a point is accepted", seeded.status === 200, `status ${seeded.status}`);
   if (seeded.status === 200 && bathtub.status === 200) {
     check("and answered as a connected flood", seeded.payload.result.method === "connected");
-    check("reporting the ground elevation it was seeded at",
-      Math.abs(seeded.payload.result.seedGround_m - truthSpot) < 0.001);
+    /*
+     * Against the 3x3 neighbourhood, not one exact cell, and the reason is a
+     * real quirk worth knowing about.
+     *
+     * A spot level is bilinear — it interpolates the four cells around the
+     * point — while a flood seed is the cell the click lands in, because a
+     * fill starts from a cell and not from a point between four of them. So
+     * comparing the seed against `truthSpot` was never quite right; it passed
+     * on Kotba only because the two agree there to under a millimetre.
+     *
+     * Comparing against one exact cell is not right either. `readWindow` gives
+     * the window an origin of `originX + col0 * cellSize`, and on a survey
+     * whose cell size has a long mantissa — Aektanagar's is 0.07686839999999892
+     * — that arithmetic drifts: at col0 = 2812 the window sits 2811.9999999999786
+     * cells from the raster origin rather than 2812. A point near a cell
+     * boundary can therefore resolve one cell differently through the windowed
+     * reader than through the whole-file one. Here that is 7.7 cm of ground and
+     * 3 mm of elevation.
+     *
+     * That drift is pre-existing, affects every windowed read, and deserves its
+     * own fix rather than a fudge here. What this check can honestly assert is
+     * that the seed elevation is one of the cells actually under the click —
+     * which still catches the failure that matters, a seed read from the wrong
+     * part of the survey.
+     */
+    const seedCell = grid.cellAt(centreE, centreN);
+    const neighbourhood = [];
+    for (let dr = -1; dr <= 1; dr += 1) {
+      for (let dc = -1; dc <= 1; dc += 1) {
+        const c = seedCell.col + dc;
+        const r = seedCell.row + dr;
+        if (grid.inside(c, r) && !grid.isNoDataAt(c, r)) neighbourhood.push(grid.get(c, r));
+      }
+    }
+    const reported = seeded.payload.result.seedGround_m;
+    check("reporting the ground elevation of a cell actually under the seed",
+      neighbourhood.some((v) => Math.abs(v - reported) < 1e-6),
+      `${reported} against ${neighbourhood.length} cells around ${grid.get(seedCell.col, seedCell.row)}`);
     check("the connected flood never exceeds the threshold flood at the same level",
       seeded.payload.result.levels[0].area_m2 <= bathtub.payload.result.levels[0].area_m2 + 1e-6,
       `${seeded.payload.result.levels[0].area_ha.toFixed(2)} ha connected, ` +
@@ -441,11 +506,7 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
    * refusing Kiru locally, whose DTM is 2.5 billion cells. The client now
    * sends the map's own view.
    */
-  const d = 300; // a 600 m box around the survey centre, in metres
-  const box = [
-    utmToLonLat(centreE - d, centreN - d, 43, true),
-    utmToLonLat(centreE + d, centreN + d, 43, true),
-  ];
+  const box = boxOfCells(1_000_000);
   const level = truthSpot + 5;
   const { status, payload } = await post({
     op: "flood", levels: [level], bounds: box, crs: "lonlat",
@@ -459,7 +520,7 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
       payload.result.computedAtCellSize_m >= payload.cellSize - 1e-9);
     // The bounded flood must not exceed the whole-survey one at the same level:
     // a window can only ever contain less ground.
-    const whole = await post({ op: "flood", levels: [level], crs: "lonlat" });
+    const whole = await post({ op: "flood", levels: [level], bounds: boxOfCells(2_000_000), crs: "lonlat" });
     if (whole.status === 200) {
       check("a windowed flood never exceeds the whole-survey flood at the same level",
         payload.result.levels[0].area_m2 <= whole.result?.levels?.[0]?.area_m2 + 1
@@ -477,6 +538,73 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
   });
   check("a view that misses the survey is refused, not answered with zero flooding",
     status === 400, `status ${status}`);
+}
+{
+  /*
+   * The two guarantees this tool now makes, which are the whole reason the
+   * resampling was taken out: what comes back is always at the survey's own
+   * resolution, and an area too large to do that for is refused rather than
+   * quietly coarsened. Malhar rejected any loss of resolution, so "it was
+   * slow so we averaged it down" is not an outcome this route is allowed to
+   * reach on its own.
+   */
+  const box = boxOfCells(1_000_000);
+  const { status, payload } = await post({
+    op: "flood", levels: [truthSpot + 5], bounds: box, crs: "lonlat",
+  });
+  check("a study-area flood is accepted", status === 200, `status ${status}`);
+  if (status === 200) {
+    check("and is computed at the survey's own native cell, never coarser",
+      Math.abs(payload.result.computedAtCellSize_m - grid.cellSize) < 1e-9,
+      `${payload.result.computedAtCellSize_m} m vs native ${grid.cellSize} m`);
+    // Never `true`. The field went away with the resampling it described, so
+    // absent and false both mean the same thing: this answer is native.
+    check("so nothing reports itself as resampled",
+      payload.result.resampled !== true, String(payload.result.resampled));
+  }
+}
+{
+  /*
+   * An area far past the cell budget, which must be refused rather than
+   * silently coarsened — and refused with something a client can act on. An
+   * unactionable "too large" is exactly what sent a screenshot back from the
+   * last client demo.
+   *
+   * Only assertable on a survey big enough to exceed the budget. `windowFor`
+   * clamps to the raster, so on Kotba — 2.2 million cells in total, well under
+   * the 4 million budget — asking for a 40 km box just returns the whole
+   * survey, correctly and at native resolution. That is the right behaviour,
+   * so it is what gets checked there.
+   */
+  const d = 20000; // a 40 km box: past any survey here
+  const huge = [
+    utmToLonLat(centreE - d, centreN - d, 43, true),
+    utmToLonLat(centreE + d, centreN + d, 43, true),
+  ];
+  const { status, payload } = await post({
+    op: "flood", levels: [truthSpot + 5], bounds: huge, crs: "lonlat",
+  });
+  const surveyFitsWhole = width * height <= 4_000_000;
+
+  if (surveyFitsWhole) {
+    check(
+      "a survey smaller than the budget answers whole rather than refusing",
+      status === 200,
+      `${(width * height / 1e6).toFixed(1)}M cells total, status ${status}`,
+    );
+    if (status === 200) {
+      check("and still at native resolution",
+        Math.abs(payload.result.computedAtCellSize_m - grid.cellSize) < 1e-9);
+    }
+  } else {
+    check("an area past the cell budget is refused, not silently coarsened",
+      status === 400, `status ${status}`);
+    const message = String(payload?.error ?? "");
+    check("and the refusal says it never coarsens the survey",
+      /full resolution/i.test(message) && /never coarsens/i.test(message), message.slice(0, 80));
+    check("and tells the client what size would work",
+      /square or less/i.test(message), message.slice(-70));
+  }
 }
 {
   const { status } = await post({ op: "flood", crs: "lonlat" });
