@@ -263,6 +263,81 @@ console.log("\nCost: a window must not read the whole file");
   await raster.close();
 }
 
+// ---------------------------------------------------------------------------
+console.log("\nCoalesced fetches: the same bytes, in far fewer requests");
+for (const [kind, path] of [["stripped", STRIPPED], ["tiled", TILED]]) {
+  /*
+   * A windowed read used to ask for every strip or tile separately — 1,454
+   * fetches for a full read of Kotba, whose strips form a single contiguous
+   * run with no gap at all. On a warm local disk that is invisible; from a
+   * serverless function to a bucket it is 1,454 network round trips for one
+   * region of one file.
+   *
+   * `readWindow` now groups them by file offset and pulls each contiguous run
+   * once. The only thing that must not change is the data, so both paths read
+   * the same windows and are compared cell for cell — including a tall narrow
+   * window and a wide flat one, which straddle tile rows differently and so
+   * coalesce differently.
+   */
+  const shapes = [[1, 1], [3, 0.4], [0.4, 3]];
+  const runs = [];
+  let fetchesWithout = 0;
+  let fetchesWith = 0;
+
+  for (const coalesce of [false, true]) {
+    let fetches = 0;
+    const base = await fileSource(path);
+    const counting = {
+      label: base.label,
+      get size() { return base.size; },
+      async read(offset, length) { fetches += 1; return base.read(offset, length); },
+      async close() { return base.close(); },
+    };
+    const source = cached(counting);
+    // Deleting `prefetch` is exactly how the reader behaved before this change,
+    // and is also the live path for any source that cannot cache.
+    if (!coalesce) delete source.prefetch;
+    const raster = await openRaster(source);
+    const [minX, minY, maxX, maxY] = raster.bounds;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const half = (Math.sqrt(1_000_000) / 2) * raster.cellSize;
+
+    const grids = [];
+    for (const [hx, hy] of shapes) {
+      const w = raster.windowFor([cx - half * hx, cy - half * hy, cx + half * hx, cy + half * hy]);
+      grids.push(w ? await raster.readWindow(w) : null);
+    }
+    runs.push(grids);
+    if (coalesce) fetchesWith = fetches;
+    else fetchesWithout = fetches;
+    await raster.close();
+  }
+
+  let identical = true;
+  let cells = 0;
+  for (let k = 0; k < shapes.length; k += 1) {
+    const a = runs[0][k];
+    const b = runs[1][k];
+    if (!a || !b) { if (a !== b) identical = false; continue; }
+    if (a.width !== b.width || a.height !== b.height || a.originX !== b.originX) {
+      identical = false;
+      continue;
+    }
+    cells += a.data.length;
+    for (let i = 0; i < a.data.length; i += 1) {
+      const x = a.data[i];
+      const y = b.data[i];
+      if (x !== y && !(Number.isNaN(x) && Number.isNaN(y))) { identical = false; break; }
+    }
+  }
+
+  check(`${kind}: coalescing changes no data — ${shapes.length} windows, ${(cells / 1e6).toFixed(1)}M cells`,
+    identical);
+  check(`${kind}: and takes strictly fewer fetches to do it`,
+    fetchesWith < fetchesWithout, `${fetchesWithout} -> ${fetchesWith}`);
+}
+
 console.log(
   `\n${failures === 0 ? `all ${checks} checks passed` : `${failures} of ${checks} checks FAILED`}\n`,
 );

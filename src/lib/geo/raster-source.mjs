@@ -175,6 +175,31 @@ export function cached(source, { prefetch = 512 * 1024 } = {}) {
       spans.push({ start: offset, end: offset + bytes.length, bytes });
       return bytes;
     },
+
+    /**
+     * Pull one span up front, so the reads inside it become cache hits.
+     *
+     * This is what makes a windowed read one request instead of hundreds. The
+     * chunks a window needs are, in these files, physically adjacent — a full
+     * read of Kotba touches 1,575 strips that form a single contiguous run
+     * with no gap at all — and asking for them one at a time is 1,575 round
+     * trips for one region of one file. Locally that costs 0.01 ms each and
+     * hides completely; from a serverless function to a bucket it is 1,575
+     * network latencies, which is the difference between a read and a timeout.
+     *
+     * Deliberately a separate method rather than read-ahead inside `read`.
+     * Blind read-ahead cannot tell a contiguous run from a jump to the next
+     * tile row, so it would over-fetch the gap on every tiled window. The
+     * caller knows which chunks it is about to want and can group them
+     * exactly; this only does as it is told.
+     *
+     * Already-covered spans are skipped, so calling it twice costs nothing.
+     */
+    async prefetch(offset, length) {
+      if (length <= 0 || find(offset, length)) return;
+      const bytes = await source.read(offset, length);
+      if (bytes.length) spans.push({ start: offset, end: offset + bytes.length, bytes });
+    },
     async close() {
       await source.close();
     },
