@@ -223,11 +223,14 @@ And one more, from a nine-page prompt of his own:
 > DTM, similar in concept to the terrain-based water-level analysis
 > available in tools such as Global Mapper and HEC-RAS.
 
-- **Simulation Water Level Rise.** Pick a water source on the map or type a
-  starting elevation, choose a 2, 5 or 10 m rise interval, and watch the
-  flood spread step by step with the inundated area in m², hectares and km²
-  beside it. Two modes, never conflated: a **connected** flood from a chosen
-  source, and a plain **elevation threshold**. Every level exports as a
+- **Simulation Water Level Rise.** Draw a study area, pick a water source on
+  the map or type a starting elevation, choose a 2, 5 or 10 m rise interval,
+  and watch the flood spread step by step with the inundated area in m²,
+  hectares and km² beside it. Two modes, never conflated: a **connected**
+  flood from a chosen source, and a plain **elevation threshold**. It is
+  computed at the survey's own native resolution and never coarsened to go
+  faster: an area too large to simulate at full resolution is refused, with
+  the size that would work named in the refusal. Every level exports as a
   polygon carrying its water level, interval and area, as GeoJSON or as a
   real shapefile. See `docs/tools.md`.
 

@@ -8,6 +8,18 @@ point clouds and GIS analytics).
 > The company sells **data, analytics, mapping, insights and engineering
 > deliverables**, not drones, hardware, or training.
 
+**This repository holds two products.** The public marketing site is described
+below. Behind a login it also runs the **client portal**: a survey map with
+measurement, hydrology, alignment and flood tools computed from the source
+GeoTIFFs, a dynamic raster tiler, a LiDAR point-cloud viewer, and a shapefile
+import/export tool — its own geometry engine under `src/lib/geo/` and the test
+suites that hold it to account, none of which is mentioned in the sections that
+follow.
+**Read [`docs/tools.md`](docs/tools.md) for that half**: what was asked for,
+what was built, which decisions were taken, and what is honestly still missing.
+[`docs/tool-catalogue.md`](docs/tool-catalogue.md) is the tool-by-tool table,
+generated from the same list the dashboard reads.
+
 Built with **Next.js 15 (App Router)**, **TypeScript**, **Tailwind CSS** and
 **Framer Motion**. Premium, warm, engineering-consultancy design language
 (off-white / soft-orange palette), technical and data-focused.
@@ -52,6 +64,9 @@ Built with **Next.js 15 (App Router)**, **TypeScript**, **Tailwind CSS** and
 | Styling     | Tailwind CSS 3                      |
 | Animation   | Framer Motion 11                    |
 | Deployment  | Vercel                              |
+| Map         | MapLibre GL 6 (portal)              |
+| Database    | Postgres (Supabase) via Drizzle     |
+| Object store | Cloudflare R2, behind a tile Worker |
 
 ---
 
@@ -100,6 +115,22 @@ scripts/
 └── generate-reports.mjs          # regenerates the sample PDFs
 ```
 
+The client portal is the other half of the tree, and none of it appears above:
+
+```
+src/app/api/portal/       # session, sites, analysis, hydrology, render, cloud
+src/app/portal/           # the signed-in pages, including the survey map
+src/lib/geo/*.mjs         # the geometry engine: rasters, hydrology, flood,
+                          #   merge tree, shapefile, PNG, projection, LAS
+src/lib/portal/           # auth, tenanting, sources, the tool catalogue
+scripts/                  # ~70 scripts: the data pipeline and every test suite
+native/lzw/               # the Rust/WASM LZW decoder, built to a 2.2 KB .wasm
+workers/tile-gateway/     # the Cloudflare Worker in front of the R2 bucket
+portal-data/              # site manifests and tile pyramids (rasters gitignored)
+drizzle/                  # database migrations
+docs/                     # the written record; start with docs/tools.md
+```
+
 ---
 
 ## 🚀 Getting Started
@@ -118,7 +149,15 @@ npm run lint         # eslint
 node scripts/generate-reports.mjs   # regenerate sample PDF reports
 ```
 
-Requires Node 18.18+ (developed on Node 20+).
+The site builds on Node 18.18+, but **the portal's scripts and test suites are
+run on Node 22** and this machine keeps it in a keg:
+
+```bash
+PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/terrain-test.mjs
+```
+
+The browser suites additionally need `npm install --no-save puppeteer`, which is
+deliberately not a declared dependency (`docs/tools.md` §7.3).
 
 ---
 
@@ -126,7 +165,12 @@ Requires Node 18.18+ (developed on Node 20+).
 
 1. Push this repository to GitHub/GitLab/Bitbucket.
 2. In [Vercel](https://vercel.com/new), **Import** the repository.
-3. Vercel auto-detects Next.js, no configuration needed. Click **Deploy**.
+3. Vercel auto-detects Next.js. The marketing site needs no configuration; the
+   portal needs its environment — see `.env.example`, and in particular
+   `DATABASE_URL`, `PORTAL_AUTH_SECRET`, `PORTAL_TILE_SECRET` and the
+   `PORTAL_TERRAIN_URL` / `PORTAL_HYDROLOGY_URL` / `PORTAL_CLOUD_URL` object
+   store prefixes. **The `*_DIR` variables cannot work on Vercel**: a serverless
+   filesystem has none of those files (`docs/tools.md` §3.2). Click **Deploy**.
 
 CLI alternative:
 
