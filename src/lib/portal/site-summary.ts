@@ -26,7 +26,8 @@ import { readMapFile, readMapManifest } from "@/lib/portal/map-data";
 import { loadHydrology } from "@/lib/portal/hydrology-source";
 import { loadCloudManifest } from "@/lib/portal/cloud-source";
 import { listSurveys } from "@/lib/portal/store";
-import { surveyRmseZ } from "@/lib/portal/terrain-source";
+import { surveyAccuracy } from "@/lib/portal/terrain-source";
+import type { PortalSite } from "@/lib/portal/types";
 
 /** One line of the summary: a number, its unit, and where it came from. */
 export type SummaryFigure = {
@@ -124,10 +125,18 @@ function readContours(siteSlug: string, file: string): Promise<Contours | null> 
   return loading;
 }
 
+/**
+ * @param site The site row, for the figures that belong to the survey rather
+ *   than to a pipeline output. Optional so a caller with only a slug still gets
+ *   everything the manifests can answer; absent, the vertical accuracy reports
+ *   what it always could, which is that this survey has not been measured.
+ */
 export async function buildSiteSummary(
   siteSlug: string,
   siteId: string | null,
+  site?: PortalSite | null,
 ): Promise<SiteSummary> {
+  const accuracy = surveyAccuracy(site);
   const manifest = await readMapManifest(siteSlug);
   const layers = manifest?.layers ?? [];
 
@@ -210,12 +219,36 @@ export async function buildSiteSummary(
       decimals: 2,
       source: "the grid slope and drainage are computed on",
     },
+    /*
+     * The row that made this whole task necessary.
+     *
+     * It printed 0.040 m sourced to "the survey's own checkpoint report" for
+     * every site, and the number came from an environment variable with a
+     * hardcoded default. This panel's own stated rule — "a figure whose
+     * provenance cannot be stated does not belong on a dashboard" — was being
+     * broken by the dashboard itself.
+     *
+     * An unmeasured survey now shows *no value at all* here. This is one of the
+     * four headline cards, which renders a figure large and its provenance
+     * nowhere, so there is physically no room for "but that is the company's
+     * typical figure" beside the number — and the panel already has exactly the
+     * right shape for the honest answer, because "a figure we do not have is
+     * absent, never zero" is its other stated rule.
+     *
+     * A measured survey shows its figure with the basis in the unit, so the card
+     * reads "0.040 m RMSE" rather than a bare 0.040 that a reader is free to
+     * take for a worst case. The full provenance sentence rides along in
+     * `source` for anything that renders it.
+     */
     {
       label: "Vertical accuracy",
-      value: surveyRmseZ(),
-      unit: "m",
+      value: accuracy.measured ? accuracy.rmseZ : null,
+      unit: accuracy.basis === "ci95" ? "m at 95%" : accuracy.basis === "rmse" ? "m RMSE" : "m",
       decimals: 3,
-      source: "the survey's own checkpoint report",
+      source: accuracy.statement,
+      absent:
+        "Not measured. No checkpoint report has been supplied for this survey — ask us for one " +
+        "before relying on levels to a tolerance.",
     },
     {
       label: "LiDAR points",

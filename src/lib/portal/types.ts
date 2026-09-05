@@ -5,6 +5,8 @@
  * browser, they never get a download link. See docs/client-portal-plan.md.
  */
 
+import type { SiteVerticalAccuracy } from "./accuracy.mjs";
+
 /**
  * "owner" is the Google era name for Sudaan staff. "admin" is the Phase 1 name and
  * means the same thing; it is still accepted so password logins keep working
@@ -62,6 +64,15 @@ export type PortalClient = {
   name: string;
 };
 
+/**
+ * A figure from a survey's own checkpoint report, or absent.
+ *
+ * Re-exported from accuracy.mjs rather than redeclared, so the shape the
+ * database stores, the shape the store hands out and the shape the wording is
+ * built from cannot drift apart.
+ */
+export type { SiteVerticalAccuracy };
+
 /** A surveyed project. Equivalent of a "Monument" in the reference portal. */
 export type PortalSite = {
   id: string;
@@ -75,6 +86,15 @@ export type PortalSite = {
   industry?: string;
   status: "in_progress" | "delivered" | "archived";
   summary: string;
+  /**
+   * This survey's measured vertical accuracy, or null when no checkpoint report
+   * has been supplied — which is true of every site published so far.
+   *
+   * Nullable on purpose and never defaulted here. Everything that needs a number
+   * goes through `surveyAccuracy()`, which is the only place allowed to reach
+   * for the company's typical figure and the only place that labels it as one.
+   */
+  verticalAccuracy?: SiteVerticalAccuracy | null;
 };
 
 /** One flight or acquisition campaign for a site. */

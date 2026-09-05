@@ -47,6 +47,9 @@ import {
   latest as latestCore,
   referenceToWire as referenceToWireCore,
 } from "./analysis-core.mjs";
+import type { SurveyAccuracy } from "./accuracy.mjs";
+
+export type { SurveyAccuracy };
 
 export type Crs = "lonlat" | "utm";
 export type Surface = "dtm" | "dsm";
@@ -87,7 +90,21 @@ export type AnalysisEnvelope = {
   surface: Surface;
   computedIn: string;
   cellSize: number;
+  /**
+   * The vertical accuracy the arithmetic used, in metres, or null when none is
+   * stated. Kept flat because every engine option and every result already
+   * carries it under this name.
+   */
   rmseZ: number | null;
+  /**
+   * Where that number came from — this survey's checkpoint report, or Sudaan's
+   * typical figure — and the sentence to print.
+   *
+   * The panels branch on `accuracy.measured`, never on `rmseZ !== null`. The two
+   * used to be the same question only because the answer was always the company
+   * figure dressed as a measurement.
+   */
+  accuracy: SurveyAccuracy;
 };
 
 export type SpotResult = {

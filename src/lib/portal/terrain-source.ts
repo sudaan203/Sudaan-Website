@@ -35,6 +35,8 @@ import { readGeoTiff } from "@/lib/geo/raster.mjs";
 import { cached, fileSource, httpSource } from "@/lib/geo/raster-source.mjs";
 import { openRaster } from "@/lib/geo/raster-window.mjs";
 import { createTileGrant, TILE_GRANT_COOKIE } from "@/lib/portal/tile-grant";
+import { parseFallbackRmseZ, resolveAccuracy } from "@/lib/portal/accuracy.mjs";
+import type { SiteVerticalAccuracy, SurveyAccuracy } from "@/lib/portal/accuracy.mjs";
 
 /**
  * Biggest raster to load whole, in cells.
@@ -269,15 +271,38 @@ export function availableTerrain(siteSlug: string): TerrainKind[] {
 }
 
 /**
- * The survey's stated vertical accuracy, used for the uncertainty band on every
- * volume.
+ * What may be said about this survey's vertical accuracy.
  *
- * A per survey column is the right home for this and it is on the phase 0 list;
- * until that lands it comes from configuration rather than being hardcoded in
- * the analysis, so the number that appears beside a volume is at least in one
- * place. Sudaan advertises plus or minus 3 to 4 cm.
+ * This used to be `surveyRmseZ()`: no arguments, one environment variable, a
+ * hardcoded 0.04 default, and the same number attached to every survey ever
+ * published while the client-facing wording called it "the survey's own
+ * checkpoint report". It was Sudaan's advertised figure. A client noticed.
+ *
+ * Now the site's own recorded figure comes first and the environment variable is
+ * an explicit fallback that is never presented as a measurement. The rules and
+ * the wording are in accuracy.mjs so the API, the panels and the project summary
+ * cannot say three different things; this function's only job is to read the
+ * configured fallback, which is the one part that needs the server.
  */
-export function surveyRmseZ(): number {
-  const configured = Number(process.env.PORTAL_SURVEY_RMSE_Z);
-  return Number.isFinite(configured) && configured > 0 ? configured : 0.04;
+export function surveyAccuracy(
+  site: { verticalAccuracy?: SiteVerticalAccuracy | null } | null | undefined,
+): SurveyAccuracy {
+  return resolveAccuracy(site?.verticalAccuracy ?? null, configuredFallback());
+}
+
+/**
+ * The configured fallback figure, or null for "quote nothing".
+ *
+ * The parsing lives in accuracy.mjs so it can be tested without an environment;
+ * all that is here is the environment read and the warning, logged once rather
+ * than on every measurement a client takes.
+ */
+let warnedFallback = false;
+function configuredFallback(): number | null {
+  const { rmseZ, warning } = parseFallbackRmseZ(process.env.PORTAL_SURVEY_RMSE_Z);
+  if (warning && !warnedFallback) {
+    warnedFallback = true;
+    console.warn(`[portal] ${warning}`);
+  }
+  return rmseZ;
 }

@@ -4,10 +4,12 @@ import { useState } from "react";
 import type {
   StockpileResult,
   Surface,
+  SurveyAccuracy,
   VolumeReference,
   VolumeResult,
 } from "@/lib/portal/analysis-client";
 import { describeReference } from "@/lib/portal/analysis-client";
+import { bandClause } from "@/lib/portal/accuracy.mjs";
 import { formatArea, formatDistance } from "@/lib/portal/geodesy";
 
 /**
@@ -29,9 +31,17 @@ import { formatArea, formatDistance } from "@/lib/portal/geodesy";
  *    against the polygon's own rim, and against a second surface are three
  *    different questions with three different answers. The server refuses an
  *    unstated reference too; this is the same rule, made visible.
- * 2. **The uncertainty travels with the number.** Systematic error over an area
- *    is `bias × area`, so ±4 cm over a hectare is ±400 m³ — the figure that turns
- *    up in a dispute. It is printed next to the volume, not in a footnote.
+ * 2. **The uncertainty travels with the number, and so does its provenance.**
+ *    Systematic error over an area is `bias × area`, so ±4 cm over a hectare is
+ *    ±400 m³ — the figure that turns up in a dispute. It is printed next to the
+ *    volume, not in a footnote.
+ *
+ *    Unlike a spot level, a volume's band is too large to omit: a client reading
+ *    "12,400 m³" with no band will treat it as good to the cubic metre. So this
+ *    panel keeps the band even on a survey with no checkpoint report and
+ *    qualifies it instead — `bandClause` says whether ±400 m³ came from this
+ *    survey's own measured accuracy or from Sudaan's typical figure. Those are
+ *    different claims and only one of them is defensible in the dispute.
  * 3. **A partly covered polygon says so.** The arithmetic is happy to measure
  *    less ground than the client drew and return a plausible number.
  */
@@ -51,6 +61,7 @@ export function VolumePanel({
   ready,
   polygonArea,
   surface,
+  accuracy,
   result,
   pile = false,
   onCompute,
@@ -60,6 +71,11 @@ export function VolumePanel({
   ready: boolean;
   polygonArea: number;
   surface: Surface;
+  /**
+   * What may be claimed about this survey's vertical accuracy. Null until the
+   * first analysis response says.
+   */
+  accuracy: SurveyAccuracy | null;
   result: VolumeState;
   /** Tool 15 rather than tool 4: the polygon is a stockpile, not an earthwork. */
   pile?: boolean;
@@ -216,7 +232,7 @@ export function VolumePanel({
             </p>
           ) : null}
 
-          <Result result={result} pile={pile} />
+          <Result result={result} pile={pile} accuracy={accuracy} />
         </>
       )}
     </div>
@@ -256,7 +272,15 @@ function Choice({
   );
 }
 
-function Result({ result, pile }: { result: VolumeState; pile: boolean }) {
+function Result({
+  result,
+  pile,
+  accuracy,
+}: {
+  result: VolumeState;
+  pile: boolean;
+  accuracy: SurveyAccuracy | null;
+}) {
   if (result.state === "idle") return null;
   if (result.state === "loading") {
     return <p className="text-[11px] text-ink/45">Reading the model…</p>;
@@ -323,10 +347,8 @@ function Result({ result, pile }: { result: VolumeState; pile: boolean }) {
 
         <p className="text-[11px] leading-snug text-ink/55">
           The volume of material standing above {describeReference(reference)}, on the{" "}
-          {surface === "dsm" ? "surface model" : "terrain model"}, in {data.computedIn}
-          {data.rmseZ !== null
-            ? `. The ± band is the survey's own ${(data.rmseZ * 100).toFixed(0)} cm vertical accuracy across ${formatArea(data.measuredArea)}.`
-            : "."}
+          {surface === "dsm" ? "surface model" : "terrain model"}, in {data.computedIn}.{" "}
+          {bandClause(accuracy, formatArea(data.measuredArea))}
         </p>
       </div>
     );
@@ -397,10 +419,9 @@ function Result({ result, pile }: { result: VolumeState; pile: boolean }) {
         Cut is ground standing above the reference, fill is the void below it, and net is
         cut minus fill, so a positive net is material to export. Measured against{" "}
         {describeReference(reference)}, on the{" "}
-        {surface === "dsm" ? "surface model" : "terrain model"}, in {data.computedIn}
-        {data.rmseZ !== null
-          ? `. The ± band is the survey's own ${(data.rmseZ * 100).toFixed(0)} cm vertical accuracy across ${formatArea(data.measuredArea)}, which is the error that does not average away.`
-          : "."}
+        {surface === "dsm" ? "surface model" : "terrain model"}, in {data.computedIn}.{" "}
+        {bandClause(accuracy, formatArea(data.measuredArea))}{" "}
+        {data.rmseZ !== null ? "That is the error that does not average away." : ""}
       </p>
     </div>
   );

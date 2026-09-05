@@ -18,6 +18,7 @@ import type {
   PortalSite,
   PortalSurvey,
   PortalVideo,
+  SiteVerticalAccuracy,
 } from "./types";
 
 /**
@@ -70,6 +71,35 @@ function denyUnqueryable(viewer: Viewer, where: string): true {
 type SiteRow = typeof schema.sites.$inferSelect;
 type AssetRow = typeof schema.assets.$inferSelect;
 
+/**
+ * The survey's own vertical accuracy, or null when it has not been measured.
+ *
+ * Two coercions here are load bearing and both fail silently if got wrong:
+ *
+ * - `numeric` comes back from the driver as a **string**, so it has to go
+ *   through Number(). `Number(null)` is 0 and finite, which would present an
+ *   unmeasured survey as one accurate to zero centimetres, so the guard is
+ *   `> 0` rather than a null check.
+ * - Without its basis the number cannot be interpreted at all — an RMSE and a
+ *   95% interval differ by about 1.96x — so a row carrying a figure and no
+ *   basis degrades to "not measured" rather than being shown. The check
+ *   constraint in drizzle/0003 should make that unreachable; this is what stops
+ *   a row written around it becoming a client-facing claim.
+ */
+function toVerticalAccuracy(row: SiteRow): SiteVerticalAccuracy | null {
+  const rmseZ = Number(row.verticalRmseZM);
+  if (!Number.isFinite(rmseZ) || rmseZ <= 0) return null;
+  if (row.verticalAccuracyBasis !== "rmse" && row.verticalAccuracyBasis !== "ci95") return null;
+  return {
+    rmseZ,
+    basis: row.verticalAccuracyBasis,
+    checkpoints: row.verticalAccuracyCheckpoints ?? null,
+    assessedOn: row.verticalAccuracyAssessedOn ?? null,
+    method: row.verticalAccuracyMethod ?? null,
+    source: row.verticalAccuracySource ?? null,
+  };
+}
+
 function toSite(row: SiteRow): PortalSite {
   return {
     id: row.id,
@@ -83,6 +113,7 @@ function toSite(row: SiteRow): PortalSite {
     industry: row.industry ?? undefined,
     status: row.status,
     summary: row.summary ?? "",
+    verticalAccuracy: toVerticalAccuracy(row),
   };
 }
 

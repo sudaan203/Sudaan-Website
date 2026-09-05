@@ -7,7 +7,7 @@ import {
   loadTerrain,
   openTerrain,
   readTerrainWindow,
-  surveyRmseZ,
+  surveyAccuracy,
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
 import { boundsOf } from "@/lib/geo/raster-window.mjs";
@@ -285,7 +285,20 @@ export async function POST(
      */
     raster.resetStats?.();
     const utm = raster.utmZone!;
-    const rmseZ = surveyRmseZ();
+    /**
+     * What may be said about this survey's accuracy, resolved from the site row
+     * the tenant check already loaded rather than from a global default.
+     *
+     * `rmseZ` is still what the arithmetic takes, and it is still nullable, so
+     * the engineering functions are unchanged: they already return a null
+     * uncertainty when there is no figure. What is new is that the response
+     * carries the *provenance* beside it, because a client asking "where does
+     * ±4 cm come from" deserves an answer from the API rather than from an email
+     * thread — and because a typical figure and a measured one look identical
+     * once they are a number on a screen.
+     */
+    const accuracy = surveyAccuracy(site);
+    const rmseZ = accuracy.rmseZ;
     const project = (g: Geometry) => toProjected(g, crs, utm.zone, utm.northern);
 
     /**
@@ -311,6 +324,7 @@ export async function POST(
       computedIn: `EPSG:${raster.epsg}`,
       cellSize: raster.cellSize,
       rmseZ,
+      accuracy,
     };
 
     /**

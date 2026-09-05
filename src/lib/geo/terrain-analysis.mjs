@@ -693,7 +693,14 @@ export function compareSurfaces(grid, ring, reference, { tolerance = null, rmseZ
     resolvable: tolerance === null || rmseZ === null ? null : rmseZ < tolerance,
     note:
       tolerance !== null && rmseZ !== null && rmseZ >= tolerance
-        ? `The survey's vertical accuracy (${(rmseZ * 1000).toFixed(0)} mm) is not finer ` +
+        /*
+          * Deliberately "a vertical accuracy of", not "the survey's". This
+          * function is handed a number and has no way to know whether it came
+          * from the survey's own checkpoint report or from the company's
+          * typical figure, and the old wording asserted the first whichever it
+          * was. The caller states the provenance; this states the arithmetic.
+          */
+        ? `A vertical accuracy of ${(rmseZ * 1000).toFixed(0)} mm is not finer ` +
           `than the tolerance (${(tolerance * 1000).toFixed(0)} mm), so this cannot ` +
           `distinguish a real deviation from survey noise.`
         : null,
