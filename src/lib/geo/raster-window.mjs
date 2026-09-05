@@ -236,9 +236,10 @@ export async function openRaster(source) {
   async function chunk(index, expectedBytes, rowWidth) {
     let t = now();
     const raw = await source.read(offsets[index], counts[index]);
+    // Time only. After coalescing this is usually a cache hit costing nothing,
+    // and counting it as a request would report 1,575 fetches for one. What
+    // actually reached the network is counted from the source below.
     stats.ioMs += now() - t;
-    stats.requests += 1;
-    stats.bytes += raw.length;
     if (compression !== 5) return { bytes: raw, base: 0 };
     t = now();
     let decoded = lzwDecode(raw, expectedBytes);
@@ -305,7 +306,19 @@ export async function openRaster(source) {
     }
     runs.push([runStart, runEnd]);
 
-    for (const [start, end] of runs) await source.prefetch(start, end - start);
+    /*
+     * Counted, because these are the fetches that actually reach the network.
+     * The per-chunk reads below now hit the cache and cost nothing, so leaving
+     * the prefetch uncounted made `readStats` — and the `Server-Timing` header
+     * built from it — report "io 1 ms" for a read that had just pulled 4.6 MB
+     * over the wire. An instrumentation that stops seeing the thing it was
+     * added to measure is worse than none.
+     */
+    for (const [start, end] of runs) {
+      const t = now();
+      await source.prefetch(start, end - start);
+      stats.ioMs += now() - t;
+    }
   }
 
   return {
@@ -471,7 +484,23 @@ export async function openRaster(source) {
      * reads and a caller measuring one window wants the total of them.
      */
     get readStats() {
-      return { ...stats };
+      /*
+       * Requests and bytes come from the source, not from this file's own
+       * counters, because only the source knows which reads actually reached
+       * disk or network. Counting them here double-counted after coalescing:
+       * the prefetch fetched 7 MB and then 1,575 cache hits claimed to fetch
+       * it again, so a read of 7 MB reported 14 MB in 1,576 requests.
+       *
+       * `cached()` tracks its own spans; a source without that falls back to
+       * this file's counters, which for an uncached source are exactly right
+       * because every chunk read is then a real one.
+       */
+      const fromSource = source.stats;
+      return {
+        ...stats,
+        requests: fromSource?.requests ?? stats.requests,
+        bytes: fromSource?.bytes ?? stats.bytes,
+      };
     },
 
     resetStats() {
