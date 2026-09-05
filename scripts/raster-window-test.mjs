@@ -338,6 +338,54 @@ for (const [kind, path] of [["stripped", STRIPPED], ["tiled", TILED]]) {
     fetchesWith < fetchesWithout, `${fetchesWithout} -> ${fetchesWith}`);
 }
 
+// ---------------------------------------------------------------------------
+console.log("\nThe two readers must agree on which cell a coordinate is in");
+for (const [kind, path] of [["stripped", STRIPPED], ["tiled", TILED]]) {
+  /*
+   * A windowed grid gets an origin of `originX + col0 * cellSize`, and on a
+   * survey whose cell size has a long mantissa that product does not
+   * round-trip: on Aektanagar (0.07686839999999892) at col0 = 2812 the window
+   * sits 2811.9999999999786 cells from the raster origin. A point exactly on a
+   * cell boundary is then at cell k in the window's frame and a hair under
+   * dCol + k in the whole file's, and `Math.floor` sent the two readers one
+   * cell apart — 258 of 1,047 boundary coordinates, a quarter of them.
+   *
+   * That is not an exotic case. A grid of levels at a stated spacing generates
+   * boundary coordinates by construction, and a spot level a client reads off
+   * one reader must not disagree with a volume computed through the other.
+   *
+   * Checked at boundaries, mid-cell, and an arbitrary fraction, so a fix that
+   * bought boundary agreement by moving ordinary points would fail here too.
+   */
+  const whole = readGeoTiff(path);
+  const { raster } = await open(path);
+  const cx = whole.originX + (whole.width / 2) * whole.cellSize;
+  const cy = whole.originY - (whole.height / 2) * whole.cellSize;
+  const window = raster.windowFor([cx - 40, cy - 40, cx + 40, cy + 40]);
+  const g = await raster.readWindow(window);
+
+  const dCol = Math.round((g.originX - whole.originX) / whole.cellSize);
+  const dRow = Math.round((whole.originY - g.originY) / whole.cellSize);
+
+  let disagreed = 0;
+  let compared = 0;
+  for (let k = 0; k < 1500; k += 1) {
+    for (const fraction of [0, 0.5, 0.27]) {
+      const x = g.originX + (k + fraction) * g.cellSize;
+      const y = g.originY - (k + fraction) * g.cellSize;
+      const a = whole.cellAt(x, y);
+      const b = g.cellAt(x, y);
+      if (!a || !b) continue;
+      compared += 1;
+      if (a.col !== b.col + dCol || a.row !== b.row + dRow) disagreed += 1;
+    }
+  }
+
+  check(`${kind}: the windowed and whole-file readers agree on every cell — ${compared} points`,
+    disagreed === 0, `${disagreed} disagreed`);
+  await raster.close();
+}
+
 console.log(
   `\n${failures === 0 ? `all ${checks} checks passed` : `${failures} of ${checks} checks FAILED`}\n`,
 );
