@@ -3745,6 +3745,10 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 <FloodPanel
                   controls={floodControls}
                   setControls={setFloodControls}
+                  area={floodArea}
+                  drawingArea={floodAreaDrawing}
+                  onDrawArea={startFloodAreaDraw}
+                  onClearArea={clearFloodArea}
                   source={floodSource}
                   onPickSource={pickFloodSource}
                   onClearSource={pickFloodSource}
