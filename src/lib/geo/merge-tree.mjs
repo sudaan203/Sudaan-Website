@@ -342,6 +342,18 @@ export function buildMergeTree(dem, { withExtent = true, onProgress } = {}) {
   // --- Fill the run arrays -------------------------------------------------
   say("fill");
   const zRun = new Float32Array(n);
+  /**
+   * Which grid cell sits at each position of the run layout.
+   *
+   * Four bytes a cell, and it is what turns a flood *mask* from a scan of the
+   * whole grid into a contiguous read. The stats already exploit the layout —
+   * a component's cells are its descendants' runs, whole, plus a prefix of its
+   * own — so with the cell index recorded the same two intervals hand back the
+   * cells themselves rather than only their count. Without it the only honest
+   * way to draw the flood is to walk every cell in the survey and ask whether
+   * it is in the subtree, which is exactly the cost the tree exists to avoid.
+   */
+  const cellAt = new Int32Array(n);
   const fill = new Int32Array(m);
   let pMinC = null, pMaxC = null, pMinR = null, pMaxR = null;
   if (withExtent) {
@@ -357,6 +369,7 @@ export function buildMergeTree(dem, { withExtent = true, onProgress } = {}) {
     fill[v] = f + 1;
     const p = runStart[v] + f;
     zRun[p] = data[c];
+    cellAt[p] = c;
     if (withExtent) {
       const col = c % W;
       const row = (c - col) / W;
@@ -438,6 +451,7 @@ export function buildMergeTree(dem, { withExtent = true, onProgress } = {}) {
     nodeOf,
     level,
     parent,
+    cellAt,
     runStart,
     runLen,
     subSize,
@@ -685,6 +699,59 @@ export function componentCellsOnGrid(tree, dem, cell, level, sourceElevation) {
   return out;
 }
 
+/**
+ * The flooded cells as a 0/1 mask over the grid, ready for `polygonize`.
+ *
+ * The fast counterpart to `componentCellsOnGrid`, and the one the portal uses.
+ * Both answer the same question and are asserted to agree; the difference is
+ * that this one never looks at a cell that is not flooded.
+ *
+ * The whole trick is the run layout. A component's cells are exactly its
+ * descendants' runs — entire, because a cell in a descendant's run joined
+ * before that descendant merged upwards, so it is already at or below this
+ * level — plus a prefix of the component's own run, which is the part of it
+ * standing at or below the water. Both are contiguous intervals of `cellAt`,
+ * so the mask is two straight reads and costs what the flood covers rather
+ * than what the survey covers.
+ *
+ * Returns the mask and the count, so a caller that wants both does not walk it
+ * twice.
+ */
+export function floodMask(tree, dem, cell, level, sourceElevation) {
+  const mask = dem.like(Uint8Array, 0, 255);
+  const r = floodFrom(tree, cell, level, sourceElevation);
+  if (r.node < 0 || r.cells === 0) return { mask, cells: 0, indices: new Int32Array(0) };
+
+  const u = r.node;
+  const start = tree.runStart[u];
+  const own = tree.runLen[u];
+  const end = start + tree.subSize[u];
+  const k = runCountAtOrBelow(tree, u, level);
+
+  // The flooded cells are handed back as well as marked. A caller computing
+  // depth, volume or an edge test then walks the water rather than the survey,
+  // which is the difference between a cost that grows with the flood and one
+  // that grows with the raster.
+  const indices = new Int32Array(r.cells);
+  let n = 0;
+  // Everything below `u`, whole.
+  for (let p = start + own; p < end; p += 1) {
+    const c = tree.cellAt[p];
+    mask.data[c] = 1;
+    indices[n] = c;
+    n += 1;
+  }
+  // Then `u`'s own run, trimmed to the water line.
+  for (let p = start; p < start + k; p += 1) {
+    const c = tree.cellAt[p];
+    mask.data[c] = 1;
+    indices[n] = c;
+    n += 1;
+  }
+
+  return { mask, cells: r.cells, indices };
+}
+
 /** Resident bytes of the queryable structure, by part. */
 export function structureBytes(tree) {
   const n = tree.cells;
@@ -695,6 +762,7 @@ export function structureBytes(tree) {
     cum: n * 8,
   };
   const perNode = {
+    cellAt: n * 4,
     level: m * 4, parent: m * 4, runStart: m * 4, runLen: m * 4, subSize: m * 4,
     jumps: m * 4 * tree.jumps.length,
   };
