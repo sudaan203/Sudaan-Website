@@ -32,6 +32,7 @@ import { fileSource, cached } from "../src/lib/geo/raster-source.mjs";
 import { openRaster } from "../src/lib/geo/raster-window.mjs";
 import {
   buildMergeTree,
+  floodMask,
   floodFrom,
   floodFromMany,
   floodLadder,
@@ -440,6 +441,66 @@ console.log("\nReal terrain: the Kotba DTM at native resolution");
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+console.log("\nThe fast mask, which is what the portal actually draws");
+{
+  /*
+   * `componentCellsOnGrid` scans the whole grid and exists so the tests can
+   * compare cell for cell. `floodMask` reads the two contiguous intervals of
+   * the run layout that the statistics already use, so it costs what the flood
+   * covers rather than what the survey covers. They must agree exactly, or the
+   * polygon drawn on the map is not the flood whose area was reported.
+   */
+  const W = 60, H = 40;
+  const dem = makeGrid(W, H, (c, r) => {
+    const bowl = Math.hypot(c - 20, r - 20) < 12 ? 100 + Math.hypot(c - 20, r - 20) : 130;
+    const other = Math.hypot(c - 45, r - 20) < 8 ? 105 + Math.hypot(c - 45, r - 20) : 130;
+    return Math.min(bowl, other);
+  });
+  const tree = buildMergeTree(dem);
+  const seed = 20 * W + 20;
+  const sourceZ = dem.data[seed];
+
+  let agreed = 0;
+  let checked = 0;
+  for (const level of [101, 105, 110, 118, 125, 131]) {
+    const fast = floodMask(tree, dem, seed, level, sourceZ);
+    const slow = componentCellsOnGrid(tree, dem, seed, level, sourceZ);
+    let same = fast.cells === slow.size;
+    if (same) {
+      for (const i of slow) if (fast.mask.data[i] !== 1) { same = false; break; }
+    }
+    if (same) {
+      // And nothing set that the slow version did not name.
+      let extra = 0;
+      for (let i = 0; i < fast.mask.length; i += 1) {
+        if (fast.mask.data[i] === 1 && !slow.has(i)) extra += 1;
+      }
+      if (extra > 0) same = false;
+    }
+    checked += 1;
+    if (same) agreed += 1;
+  }
+  check(`the fast mask matches the grid scan at every level — ${checked} levels`,
+    agreed === checked, `${agreed} of ${checked}`);
+
+  // An unreachable level must produce an empty mask, not a full one.
+  const dry = floodMask(tree, dem, seed, sourceZ - 5, sourceZ);
+  let anySet = false;
+  for (let i = 0; i < dry.mask.length; i += 1) if (dry.mask.data[i] === 1) { anySet = true; break; }
+  check("a level below the source floods nothing", dry.cells === 0 && !anySet);
+
+  // The mask must never mark a cell standing above the water.
+  const high = floodMask(tree, dem, seed, 118, sourceZ);
+  let aboveWater = 0;
+  for (let i = 0; i < high.mask.length; i += 1) {
+    if (high.mask.data[i] === 1 && dem.data[i] > 118) aboveWater += 1;
+  }
+  check("no cell above the water line is ever in the mask", aboveWater === 0, `${aboveWater} above`);
+}
+
+// Counted here, not earlier: computing the total partway down the file means
+// any section added after that point prints its checks and is not counted.
 const total = pass + fail;
 console.log(`\n${fail === 0 ? `all ${total} checks passed` : `${fail} of ${total} checks FAILED`}\n`);
 process.exit(fail === 0 ? 0 : 1);

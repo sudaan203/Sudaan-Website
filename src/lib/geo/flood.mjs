@@ -38,6 +38,7 @@
 import { connectedFlood, thresholdFlood } from "./hydrology.mjs";
 import { pointInPolygon } from "./terrain-analysis.mjs";
 import { groupRingsIntoPolygons, polygonize } from "./vectorise.mjs";
+import { floodMask } from "./merge-tree.mjs";
 
 /**
  * Grid cells whose centre falls inside a ring, in the grid's own projected
@@ -158,6 +159,22 @@ function floodAt(grid, level, seeds, interval, unproject) {
     }
   }
 
+  return describeFlood(
+    grid, level, cells, volume, maxDepth, touchesEdge, mask, interval, unproject, Boolean(seeds),
+  );
+}
+
+/**
+ * The result object, assembled in exactly one place.
+ *
+ * Both the traversal path and the merge-tree path end here. That is the point:
+ * a caller must not be able to tell which one ran, and two copies of this
+ * would be two places for the units, the rounding or the export attribute
+ * names to drift apart.
+ */
+function describeFlood(
+  grid, level, cells, volume, maxDepth, touchesEdge, mask, interval, unproject, connected,
+) {
   const area_m2 = cells * grid.cellArea;
   const area_ha = area_m2 / 10_000;
   const area_km2 = area_m2 / 1_000_000;
@@ -173,7 +190,7 @@ function floodAt(grid, level, seeds, interval, unproject) {
     truncated: touchesEdge,
     geojson: maskToFeature(mask, grid, unproject, {
       kind: "flood",
-      method: seeds ? "connected" : "threshold",
+      method: connected ? "connected" : "threshold",
       // The exact attribute names Malhar's spec asks an exported polygon carry.
       Water_Level: Number(level.toFixed(2)),
       Interval: interval,
@@ -195,6 +212,84 @@ function floodAt(grid, level, seeds, interval, unproject) {
  * at a time and an automatic run asks for a whole ladder, and both are this
  * same call with a different length array.
  */
-export function simulateFlood(grid, levels, seeds, interval, unproject) {
+/**
+ * @param {object|null} [tree] A merge tree over this same grid, from `buildMergeTree`.
+ */
+export function simulateFlood(grid, levels, seeds, interval, unproject, tree = undefined) {
+  /*
+   * With a merge tree, a flood stops being a traversal.
+   *
+   * `connectedFlood` walks the grid once per level, so a twelve step ladder
+   * walks it twelve times. The tree already encodes which cells join which
+   * component at which elevation, so every level in the ladder is a lookup
+   * plus a contiguous read of the cells it covers — the same answer, from an
+   * index instead of a search. Verified cell for cell against `connectedFlood`
+   * in `scripts/merge-tree-test.mjs`; this is a speed change, never an
+   * accuracy one, and nothing here samples the terrain any more coarsely.
+   *
+   * Only for a single source cell. A drawn source polygon seeds thousands of
+   * cells at once and would need the union of every component they touch,
+   * which is more machinery than the common case justifies — that path keeps
+   * the traversal, and is no slower than it was.
+   */
+  if (tree && seeds && seeds.length === 1) {
+    const cell = seeds[0].row * grid.width + seeds[0].col;
+    const sourceZ = grid.data[cell];
+    if (!grid.isNoData(sourceZ)) {
+      return levels.map((level) =>
+        floodAtFromTree(grid, tree, cell, sourceZ, level, interval, unproject));
+    }
+  }
   return levels.map((level) => floodAt(grid, level, seeds, interval, unproject));
+}
+
+/**
+ * One level, answered from the tree.
+ *
+ * Deliberately assembles the same result object as `floodAt`, field for field,
+ * because the route and the client cannot be allowed to tell which path ran.
+ * The statistics walk the flooded cells rather than the grid, so the cost is
+ * the water and not the survey.
+ */
+function floodAtFromTree(grid, tree, cell, sourceZ, level, interval, unproject) {
+  const { mask, indices } = floodMask(tree, grid, cell, level, sourceZ);
+
+  let maxDepth = 0;
+  let volume = 0;
+  let cells = 0;
+  let touchesEdge = false;
+  for (let n = 0; n < indices.length; n += 1) {
+    const i = indices[n];
+    const d = level - grid.data[i];
+    /*
+     * The tree answers "at or below this level", which is the right reading of
+     * a level set and is what its own tests assert against `connectedFlood`.
+     * This tool asks something slightly stricter — water has to have depth —
+     * and the difference is exactly the cells standing at the water line. They
+     * are dropped here rather than in the tree, because this is where that
+     * rule is stated and where Malhar's worked example lives: the first step of
+     * a simulation, at the source's own ground elevation, must read 0 ha.
+     */
+    if (!(d > 0)) {
+      mask.data[i] = 0;
+      continue;
+    }
+    cells += 1;
+    if (d > maxDepth) maxDepth = d;
+    volume += d * grid.cellArea;
+
+    const col = i % grid.width;
+    const row = (i - col) / grid.width;
+    if (
+      col === 0 || row === 0 || col === grid.width - 1 || row === grid.height - 1 ||
+      grid.isNoDataAt(col - 1, row) || grid.isNoDataAt(col + 1, row) ||
+      grid.isNoDataAt(col, row - 1) || grid.isNoDataAt(col, row + 1)
+    ) {
+      touchesEdge = true;
+    }
+  }
+
+  return describeFlood(
+    grid, level, cells, volume, maxDepth, touchesEdge, mask, interval, unproject, true,
+  );
 }

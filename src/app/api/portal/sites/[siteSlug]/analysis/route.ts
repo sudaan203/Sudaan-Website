@@ -32,6 +32,7 @@ import {
 } from "@/lib/geo/engineering.mjs";
 import { slopeDegrees } from "@/lib/geo/hydrology.mjs";
 import { simulateFlood, seedCellsInPolygon } from "@/lib/geo/flood.mjs";
+import { buildMergeTree } from "@/lib/geo/merge-tree.mjs";
 
 export const runtime = "nodejs";
 
@@ -70,6 +71,24 @@ const MAX_FLOOD_LEVELS = 200;
  * named in it. A refusal a client can act on beats a number they cannot trust.
  */
 const MAX_FLOOD_CELLS = 4_000_000;
+
+/**
+ * The last merge tree built, kept for the next request against the same ground.
+ *
+ * A flood ladder is not one question, it is the same question at a dozen water
+ * levels, and a client exploring a reservoir asks it again every time they move
+ * the interval, the maximum or the slider. The tree does not depend on any of
+ * those — only on the ground — so rebuilding it per request is paying the one
+ * genuinely expensive part over and over for an answer that has not changed.
+ *
+ * One entry, not a map. Two clients on different surveys would evict each
+ * other, which costs a rebuild and never a wrong answer; a map keyed by window
+ * would hold hundreds of megabytes of somebody else's survey against the
+ * chance they come back. The key is the ground itself — site, surface and the
+ * exact window read — so a tree is only ever reused for the raster it was
+ * built from.
+ */
+let floodTreeCache: { key: string; tree: ReturnType<typeof buildMergeTree> } | null = null;
 
 /**
  * The refusal, written for the client who has to do something about it.
@@ -675,6 +694,20 @@ export async function POST(
           seeds = [cell];
         }
 
+        /*
+         * Only for a single source cell, which is the only shape `simulateFlood`
+         * can use a tree for, and only when there is more than one level to
+         * answer — below that the build costs more than the traversal it saves.
+         */
+        const floodTree = (() => {
+          if (!seeds || seeds.length !== 1 || levels.length < 2) return null;
+          const key = `${siteSlug}:dtm:${window.col0},${window.row0},${window.cols},${window.rows}`;
+          if (floodTreeCache?.key === key) return floodTreeCache.tree;
+          const tree = buildMergeTree(dtm);
+          floodTreeCache = { key, tree };
+          return tree;
+        })();
+
         result = {
           method: seeds ? "connected" : "threshold",
           seedGround_m: seeds ? dtm.get(seeds[0].col, seeds[0].row) : null,
@@ -699,7 +732,7 @@ export async function POST(
             height_m: window.rows * dtm.cellSize,
             cells: window.cols * window.rows,
           },
-          levels: simulateFlood(dtm, levels, seeds, interval, unproject),
+          levels: simulateFlood(dtm, levels, seeds, interval, unproject, floodTree),
         };
         break;
       }
