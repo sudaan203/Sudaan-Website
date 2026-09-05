@@ -215,11 +215,35 @@ export async function openRaster(source) {
   const across = tiled ? Math.ceil(width / tileWidth) : 1;
 
   /** Decode one tile or strip into a pixel reader. */
+  /**
+   * Where a read's time actually went, for the request that wants to say so.
+   *
+   * Fetching bytes and decompressing them are the two halves of a windowed
+   * read and they answer to completely different fixes — one is network or
+   * disk, the other is CPU — so a single "read took 1.3 s" cannot tell you
+   * which lever to pull. Locally the split is 51 ms of I/O against 1,267 ms of
+   * LZW; across the internet from a serverless function to a bucket it will
+   * not be, and *that difference* is the entire argument for moving compute
+   * next to the data. It should be measured rather than assumed.
+   *
+   * Counters, not timers around the whole thing: a window is many chunk reads
+   * and the interesting number is how many, how large, and how long they took
+   * in total.
+   */
+  const stats = { requests: 0, bytes: 0, ioMs: 0, decodeMs: 0 };
+  const now = () => Number(process.hrtime.bigint() / 1000n) / 1000;
+
   async function chunk(index, expectedBytes, rowWidth) {
+    let t = now();
     const raw = await source.read(offsets[index], counts[index]);
+    stats.ioMs += now() - t;
+    stats.requests += 1;
+    stats.bytes += raw.length;
     if (compression !== 5) return { bytes: raw, base: 0 };
+    t = now();
     let decoded = lzwDecode(raw, expectedBytes);
     if (predictor === 2) decoded = undoHorizontalPredictor(decoded, rowWidth, samples, bits);
+    stats.decodeMs += now() - t;
     return { bytes: Buffer.from(decoded.buffer, decoded.byteOffset, decoded.length), base: 0 };
   }
 
@@ -357,6 +381,23 @@ export async function openRaster(source) {
         crs: null,
         epsg,
       });
+    },
+
+    /**
+     * Byte-fetch and decode cost since the last `resetStats()`.
+     *
+     * Cumulative rather than per-call because `readWindow` issues many chunk
+     * reads and a caller measuring one window wants the total of them.
+     */
+    get readStats() {
+      return { ...stats };
+    },
+
+    resetStats() {
+      stats.requests = 0;
+      stats.bytes = 0;
+      stats.ioMs = 0;
+      stats.decodeMs = 0;
     },
 
     async close() {

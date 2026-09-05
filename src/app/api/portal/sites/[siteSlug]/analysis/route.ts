@@ -192,6 +192,32 @@ function toProjected(geometry: Geometry, crs: string, zone: number, northern: bo
 
 class BadRequest extends Error {}
 
+/**
+ * The read/decode/compute split for one request, as a `Server-Timing` value.
+ *
+ * `io` is fetching bytes — a disk read locally, a range request to the tile
+ * Worker in production. `decode` is LZW. `compute` is everything after the
+ * pixels are in memory, derived rather than measured directly so the three
+ * always sum to the whole and no time goes missing between them.
+ */
+function serverTiming(
+  raster: { readStats?: { requests: number; bytes: number; ioMs: number; decodeMs: number } },
+  startedAt: number,
+): string {
+  const total = performance.now() - startedAt;
+  const s = raster.readStats;
+  if (!s) return `total;dur=${total.toFixed(1)}`;
+  const compute = Math.max(0, total - s.ioMs - s.decodeMs);
+  return [
+    `io;desc="bytes";dur=${s.ioMs.toFixed(1)}`,
+    `decode;desc="lzw";dur=${s.decodeMs.toFixed(1)}`,
+    `compute;dur=${compute.toFixed(1)}`,
+    `reads;desc="range requests";dur=${s.requests}`,
+    `fetched;desc="KB";dur=${(s.bytes / 1024).toFixed(0)}`,
+    `total;dur=${total.toFixed(1)}`,
+  ].join(", ");
+}
+
 function readGeometry(body: Record<string, unknown>, key: string, minimum: number): Geometry {
   const raw = body[key];
   if (!Array.isArray(raw) || raw.length < minimum) {
@@ -251,7 +277,13 @@ export async function POST(
      * pixels are then fetched once, for the bounding box that was actually
      * drawn.
      */
+    const startedAt = performance.now();
     const raster = await openTerrain(siteSlug, kind);
+    /*
+     * Counters cleared per request, so `Server-Timing` below describes this
+     * measurement and not everything the cached raster has ever served.
+     */
+    raster.resetStats?.();
     const utm = raster.utmZone!;
     const rmseZ = surveyRmseZ();
     const project = (g: Geometry) => toProjected(g, crs, utm.zone, utm.northern);
@@ -805,6 +837,25 @@ export async function POST(
       { op, ...common, result },
       {
         headers: {
+          /**
+           * Where this request's time went, in the header the platform already
+           * has for it.
+           *
+           * Every read timing this project has is from a laptop with a warm
+           * page cache — 28 ms of I/O against 51 ms of LZW on Kotba. In
+           * production the bytes come from R2 over the network into a
+           * serverless function, and whether that flips the ratio is the whole
+           * question behind moving compute next to the data. Guessing at it
+           * from local numbers would be guessing at the one number that
+           * decides it, so every response now carries its own.
+           *
+           * Durations only — no sizes of anything a client cannot already see,
+           * and it is behind the same session check as the measurement itself.
+           * `Server-Timing` because browsers already chart it and `curl -D -`
+           * already prints it; a bespoke debug endpoint would be one more
+           * thing to secure and to remember exists.
+           */
+          "Server-Timing": serverTiming(raster, startedAt),
           "Cache-Control": "private, no-store, max-age=0",
           "X-Robots-Tag": "noindex, nofollow",
           "X-Content-Type-Options": "nosniff",
