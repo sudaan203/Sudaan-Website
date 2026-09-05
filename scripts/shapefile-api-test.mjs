@@ -19,7 +19,7 @@
 import { SignJWT } from "jose";
 import postgres from "postgres";
 import { readFileSync } from "node:fs";
-import { readShapefileGeometry, readDbf, writeShapefilePrj } from "../src/lib/geo/shapefile.mjs";
+import { readShapefileGeometry, readDbf, writeShapefilePrj, parseShapefilePrj } from "../src/lib/geo/shapefile.mjs";
 import { readZip, writeZip } from "../src/lib/geo/zip.mjs";
 import { lonLatToUtm, utmToLonLat } from "../src/lib/geo/projection.mjs";
 
@@ -273,6 +273,51 @@ console.log("\nUpload: a shapefile in a different UTM zone still places correctl
   const [lon, lat] = body.featureCollection.features[0].geometry.coordinates;
   const [ex, ey] = utmToLonLat(zone44Point[0], zone44Point[1], 44, true);
   check("reprojected correctly using its own zone", near(lon, ex, 1e-9) && near(lat, ey, 1e-9));
+}
+
+// ---------------------------------------------------------------------------
+console.log("\nThe projection comes from the survey, not only from its manifest");
+{
+  /*
+   * `siteUtmZone` used to read the zone from the map manifest alone and refuse
+   * the export when it was absent. Kiru's manifest carries no `utmZone` on any
+   * layer, so every shapefile export from that survey answered "This site has
+   * no recorded UTM zone to export in" — while every other tool on the same
+   * site worked, because they all read the zone from the raster.
+   *
+   * The tool built so a client could check our coordinates against his own
+   * software was the one tool that could not run on the survey he was checking,
+   * and nothing caught it because the suite only ever ran against Kotba, whose
+   * manifest happens to carry the zone.
+   *
+   * Checked here for whichever survey SITE names, so the next survey published
+   * without a complete manifest fails this rather than a client.
+   */
+  // The point need not be inside the survey: the bug was in looking up the
+  // site's zone, not in projecting the geometry into it.
+  const response = await authed({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      op: "download",
+      geometryType: "point",
+      features: [{ geometry: { type: "Point", coordinates: [73.73, 20.84] }, properties: {} }],
+    }),
+  });
+  check(`${SITE} can export at all`, response.ok, `status ${response.status}`);
+
+  if (response.ok) {
+    const entries = readZip(Buffer.from(await response.arrayBuffer()));
+    const prj = entries.find((e) => e.name.endsWith(".prj"));
+    check("the zip carries a .prj", Boolean(prj));
+    if (prj) {
+      const crs = parseShapefilePrj(prj.data.toString("latin1"));
+      check("and it names a real UTM zone rather than defaulting",
+        Number.isFinite(crs.epsg) &&
+          ((crs.epsg >= 32601 && crs.epsg <= 32660) || (crs.epsg >= 32701 && crs.epsg <= 32760)),
+        `EPSG:${crs.epsg} — ${crs.description}`);
+    }
+  }
 }
 
 console.log(
