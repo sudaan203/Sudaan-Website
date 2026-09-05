@@ -14,6 +14,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -67,6 +68,25 @@ export const sites = pgTable(
     summary: text("summary"),
     thumbnailKey: text("thumbnail_key"),
     isPublished: boolean("is_published").notNull().default(false),
+    /*
+     * This survey's own vertical accuracy, from its checkpoint report, and null
+     * until one has been supplied — which is the state of every site today.
+     *
+     * Null is not a missing value to be filled in with a default. It is the
+     * fact that we have not measured this survey, and drizzle/0003 refuses a
+     * figure that arrives without its basis, its checkpoint count and its date,
+     * because a bare number here is how "±4 cm" came to be printed under every
+     * elevation in the portal in the first place.
+     *
+     * numeric, not real: the figure is quoted to the client in centimetres and
+     * a float would make 0.035 render as 3.4999999 cm somewhere eventually.
+     */
+    verticalRmseZM: numeric("vertical_rmse_z_m"),
+    verticalAccuracyBasis: text("vertical_accuracy_basis", { enum: ["rmse", "ci95"] }),
+    verticalAccuracyCheckpoints: integer("vertical_accuracy_checkpoints"),
+    verticalAccuracyAssessedOn: date("vertical_accuracy_assessed_on"),
+    verticalAccuracyMethod: text("vertical_accuracy_method"),
+    verticalAccuracySource: text("vertical_accuracy_source"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

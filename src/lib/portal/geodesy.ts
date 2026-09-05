@@ -180,9 +180,22 @@ export function formatArea(sqMetres: number): string {
   return `${(sqMetres / 1000000).toFixed(4)} km²`;
 }
 
-/** Elevation with its tolerance, because a bare number reads as exact. */
-export function formatElevation(metres: number, toleranceM = 0.04): string {
-  return `${metres.toFixed(2)} m ±${(toleranceM * 100).toFixed(0)} cm`;
+/**
+ * An elevation, with its tolerance when there is one to state.
+ *
+ * A bare number reads as exact, which over ±4 cm terrain it is not — but a ±
+ * band that was never measured reads as exact *and* verified, which is worse.
+ * The band therefore has no default: callers pass `accuracyBand(accuracy)`,
+ * which yields a number only for a survey with its own checkpoint report and
+ * null otherwise, and the panel says in prose what it cannot say in a table row.
+ *
+ * The previous signature defaulted to 0.04, so every caller that forgot to pass
+ * anything quietly asserted the company's advertised figure about whichever
+ * survey it happened to be rendering.
+ */
+export function formatElevation(metres: number, toleranceM: number | null): string {
+  const value = `${metres.toFixed(2)} m`;
+  return toleranceM === null ? value : `${value} ±${(toleranceM * 100).toFixed(0)} cm`;
 }
 
 /**

@@ -34,7 +34,9 @@ import {
   // the two share a name in this file would make the next reader guess which
   // tool a variable belongs to.
   type FloodLevel as FloodSimLevel,
+  type SurveyAccuracy,
 } from "@/lib/portal/analysis-client";
+import { accuracyBand } from "@/lib/portal/accuracy.mjs";
 import {
   formatElevation,
   lonLatToUtm,
@@ -145,15 +147,6 @@ const RASTER_OPACITY = 0.85;
  * postinstall script, so it cannot drift from the installed version.
  */
 setWorkerUrl("/vendor/maplibre-gl-worker.mjs");
-
-/**
- * The survey's own stated accuracy, used to qualify every elevation shown.
- *
- * A fallback only. Every analysis response carries the survey's real `rmseZ`
- * from its own checkpoint report, and that is preferred wherever it arrives;
- * this is what the hover readout uses before the first response lands.
- */
-const TOLERANCE_M = 0.04;
 
 /**
  * How long the pointer must settle before the map asks the server how high the
@@ -619,8 +612,15 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    * ground under it, so it is a visible control rather than an assumption.
    */
   const [surface, setSurface] = useState<Surface>("dtm");
-  /** The accuracy the server last reported for this survey, preferred over the default. */
-  const [rmseZ, setRmseZ] = useState<number | null>(null);
+  /**
+   * What the server last said may be claimed about this survey's accuracy.
+   *
+   * Null until the first response lands, and null renders no ± band anywhere.
+   * There used to be a 0.04 constant here doing that job, which meant the map
+   * asserted the company's advertised figure about a survey before it had asked
+   * the server anything at all.
+   */
+  const [accuracy, setAccuracy] = useState<SurveyAccuracy | null>(null);
 
   // Points live in a ref as well, because the map's click handler is registered
   // once and would otherwise close over the first render's empty array.
@@ -633,14 +633,21 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   surfaceRef.current = surface;
   // The map's handlers are registered once, so anything they read at event time
   // has to come through a ref rather than a closed-over render value.
-  const toleranceRef = useRef<number>(TOLERANCE_M);
+  const bandRef = useRef<number | null>(null);
 
   const dem = layers.find((l) => l.kind === "dem");
   const utmZone = dem?.utmZone ?? 43;
   const utmNorthern = dem?.utmNorthern ?? true;
 
-  const tolerance = rmseZ ?? TOLERANCE_M;
-  toleranceRef.current = tolerance;
+  /*
+   * The ± band an individual number may carry: this survey's measured accuracy,
+   * or nothing. Never the typical figure — a "±4 cm" in a hover readout has
+   * nowhere to carry "but that is the company's figure, not this survey's", so
+   * where the qualifier cannot travel the band does not either. The panels state
+   * the position in prose instead, from `accuracy.statement`.
+   */
+  const band = accuracyBand(accuracy);
+  bandRef.current = band;
 
   /**
    * The analysis API, bound to this site, with three independent "latest wins"
@@ -745,10 +752,25 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const cellSizeRef = useRef<number | null>(null);
 
   /** Record the accuracy and resolution every response carries. */
-  const noteEnvelope = useCallback((response: { cellSize: number; rmseZ: number | null }) => {
-    cellSizeRef.current = response.cellSize;
-    if (response.rmseZ !== null) setRmseZ((current) => (current === response.rmseZ ? current : response.rmseZ));
-  }, []);
+  const noteEnvelope = useCallback(
+    (response: { cellSize: number; accuracy?: SurveyAccuracy }) => {
+      cellSizeRef.current = response.cellSize;
+      /*
+       * Replaced only when it actually changes, compared on provenance and
+       * figure rather than by identity: the envelope is a fresh object on every
+       * response, so an identity check would re-render every panel on every
+       * hover.
+       */
+      const next = response.accuracy;
+      if (!next) return;
+      setAccuracy((current) =>
+        current && current.provenance === next.provenance && current.rmseZ === next.rmseZ
+          ? current
+          : next,
+      );
+    },
+    [],
+  );
 
   const url = useCallback(
     (file: string) => `/api/portal/sites/${siteSlug}/map/${file}`,
@@ -1731,7 +1753,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
             noteEnvelope(response);
             const height = response.result.elevation;
             if (height === null) return;
-            setReadout(`${formatElevation(height, toleranceRef.current)}  ·  ${base}`);
+            setReadout(`${formatElevation(height, bandRef.current)}  ·  ${base}`);
           })
           .catch(() => {
             // A hover readout is an aid, not a measurement. If the server cannot
@@ -3630,7 +3652,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                     compare={compare}
                     compareOp={compareOp}
                     onComputeCompare={(r, t) => void computeCompare(r, t)}
-                    tolerance={tolerance}
+                    accuracy={accuracy}
                     onClear={clearMeasurement}
                     onComputeVolume={computeVolume}
                     onRemoveSpot={(id) => setSpots((s) => s.filter((r) => r.id !== id))}
@@ -3812,7 +3834,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           compare={compare}
           compareOp={compareOp}
           onComputeCompare={(r, t) => void computeCompare(r, t)}
-          tolerance={tolerance}
+          accuracy={accuracy}
           onClear={clearMeasurement}
           onComputeVolume={computeVolume}
           onRemoveSpot={(id) => setSpots((s) => s.filter((r) => r.id !== id))}
@@ -3866,7 +3888,7 @@ function ToolPanel({
   compare,
   compareOp,
   onComputeCompare,
-  tolerance,
+  accuracy,
   onClear,
   onComputeVolume,
   onRemoveSpot,
@@ -3892,7 +3914,8 @@ function ToolPanel({
   compare: SurfaceState;
   compareOp: "difference" | "tolerance";
   onComputeCompare: (reference: VolumeReference, tolerance: number | null) => void;
-  tolerance: number;
+  /** Null until the first analysis response says what may be claimed. */
+  accuracy: SurveyAccuracy | null;
   onClear: () => void;
   onComputeVolume: (reference: VolumeReference) => void;
   onRemoveSpot: (id: number) => void;
@@ -3902,7 +3925,7 @@ function ToolPanel({
     mode === "spot" ? (
       <SpotLevelPanel
         readings={spots}
-        toleranceM={tolerance}
+        accuracy={accuracy}
         busy={spotBusy}
         error={spotError}
         onRemove={onRemoveSpot}
@@ -3923,6 +3946,7 @@ function ToolPanel({
         ready={Boolean(measurement?.closed) && (measurement?.points.length ?? 0) > 2}
         polygonArea={measurement?.area ?? 0}
         surface={surface}
+        accuracy={accuracy}
         result={compare}
         tolerance={compareOp === "tolerance"}
         onCompute={onComputeCompare}
@@ -3944,6 +3968,7 @@ function ToolPanel({
         ready={Boolean(measurement?.closed) && (measurement?.points.length ?? 0) > 2}
         polygonArea={measurement?.area ?? 0}
         surface={surface}
+        accuracy={accuracy}
         result={volume}
         pile={volumeOp === "stockpile"}
         onCompute={onComputeVolume}
@@ -3955,7 +3980,7 @@ function ToolPanel({
         elevation={elevation}
         surface={surface}
         onClear={onClear}
-        toleranceM={tolerance}
+        accuracy={accuracy}
       />
     ) : null;
 
