@@ -1,0 +1,29 @@
+[package]
+name = "lzw"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# cdylib is what produces a bare .wasm module with our #[no_mangle] functions as
+# exports. rustc passes --no-entry to the linker for this crate type on
+# wasm32-unknown-unknown, so there is no main and no start section to satisfy.
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# No dependencies, and none are wanted. The house rule in this repo is that a
+# well-specified format gets written out rather than pulled in (see
+# src/lib/geo/zip.mjs and png.mjs); a Rust crate is held to the same bar. LZW is
+# forty lines of state machine and the whole crate is #![no_std], so there is
+# nothing here a crate would save us.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# panic = "abort" removes the unwinding machinery. Nothing in this crate can
+# panic on purpose, and a panic that did happen would be a bug in the kernel
+# rather than something a caller could recover from.
+panic = "abort"
+strip = true
