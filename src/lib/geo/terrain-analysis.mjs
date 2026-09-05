@@ -110,16 +110,104 @@ export function polygonPerimeter(ring) {
  * polygon, a road corridor or a haul road, the boundary cells can be most of the
  * cells there are.
  */
-function cellCoverage(grid, col, row, ring, samples = 4) {
+/**
+ * Which corners of the cell lattice fall inside the ring, by scanline.
+ *
+ * The reason this exists is a cost that grew with the wrong thing. Every cell
+ * in the window asked `pointInPolygon` about its four corners, and
+ * `pointInPolygon` walks the entire ring — so a polygon's statistics cost
+ * *vertices x cells*, when only the cells the boundary actually crosses have
+ * any business looking at the boundary. Measured on a 1.9 million cell window:
+ * 274 ms for a 4-vertex ring, 1.88 s at 64 vertices, **7.4 s at 256** — and a
+ * 256-vertex ring is an ordinary traced stockpile, not a pathological case.
+ * That is on the path of every area, volume, cut-and-fill and surface
+ * comparison in the portal.
+ *
+ * A horizontal line crosses the ring at a fixed set of x positions, so one
+ * pass per corner *row* — not per corner — finds them, and every corner on
+ * that row is then a binary search. The ray-casting rule is reproduced exactly
+ * rather than approximated: same crossing arithmetic, same strict comparison,
+ * so a corner lands inside here if and only if `pointInPolygon` says it does.
+ * `scripts/geo-differential-test.mjs` holds that claim to cell-for-cell
+ * equality against the old path.
+ */
+export function cornerLattice(grid, ring, col0, col1, row0, row1) {
+  /*
+   * An empty window is a real case, not a guard for its own sake: `ringWindow`
+   * clamps to the grid, so a polygon drawn entirely off the survey comes back
+   * with `col1 < col0` and a negative span. The walkers handle that by their
+   * loops simply never running — `for (row = row0; row <= row1)` — and this
+   * has to survive it too rather than trying to allocate a negative array.
+   */
+  const cols = Math.max(0, col1 - col0 + 2); // corners bound cells, one more of each
+  const rows = Math.max(0, row1 - row0 + 2);
+  const inside = new Uint8Array(cols * rows);
+  const xs = [];
+
+  for (let r = 0; r < rows; r += 1) {
+    const y = grid.cornerY(row0 + r);
+    xs.length = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+      const yi = ring[i][1];
+      const yj = ring[j][1];
+      // Exactly `pointInPolygon`'s crossing test, including which side is
+      // strict: an edge counts when the row separates its endpoints.
+      if (yi > y !== yj > y) {
+        const xi = ring[i][0];
+        const xj = ring[j][0];
+        xs.push(((xj - xi) * (y - yi)) / (yj - yi) + xi);
+      }
+    }
+    if (xs.length === 0) continue;
+    xs.sort((a, b) => a - b);
+
+    for (let c = 0; c < cols; c += 1) {
+      const x = grid.cornerX(col0 + c);
+      /*
+       * `pointInPolygon` toggles for every crossing strictly to the right of
+       * the point, so "inside" is an odd number of crossings above `x`. The
+       * binary search finds the first crossing greater than `x`; everything
+       * from there to the end is what would have toggled.
+       */
+      let lo = 0;
+      let hi = xs.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (x < xs[mid]) hi = mid;
+        else lo = mid + 1;
+      }
+      if ((xs.length - lo) & 1) inside[r * cols + c] = 1;
+    }
+  }
+
+  return { inside, cols, col0, row0 };
+}
+
+function cellCoverage(grid, col, row, ring, lattice = null, samples = 4) {
   const x0 = grid.cornerX(col);
   const y0 = grid.cornerY(row);
   const cs = grid.cellSize;
-  const corners = [
-    pointInPolygon(x0, y0, ring),
-    pointInPolygon(x0 + cs, y0, ring),
-    pointInPolygon(x0, y0 - cs, ring),
-    pointInPolygon(x0 + cs, y0 - cs, ring),
-  ];
+  /*
+   * Four lattice lookups where there were four walks of the whole ring. The
+   * lattice is built once per polygon by `cornerLattice` and answers the
+   * identical question; without one, the original path still works, so a
+   * caller with a single cell to test need not build a lattice for it.
+   */
+  const corners = lattice
+    ? (() => {
+        const c = col - lattice.col0;
+        const r = row - lattice.row0;
+        const at = (dc, dr) => lattice.inside[(r + dr) * lattice.cols + (c + dc)] === 1;
+        // Same order as below: NW, NE, SW, SE. Row increases southwards, so
+        // the cell's south corners are the next lattice row down.
+        return [at(0, 0), at(1, 0), at(0, 1), at(1, 1)];
+      })()
+    : [
+        pointInPolygon(x0, y0, ring),
+        pointInPolygon(x0 + cs, y0, ring),
+        pointInPolygon(x0, y0 - cs, ring),
+        pointInPolygon(x0 + cs, y0 - cs, ring),
+      ];
   if (corners.every(Boolean)) return 1;
   if (!corners.some(Boolean)) {
     // A small polygon can sit entirely inside one cell with every corner outside.
@@ -170,9 +258,10 @@ export function polygonStats(grid, ring) {
   let weight = 0;
   let nodataWeight = 0;
 
+  const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
   for (let row = row0; row <= row1; row += 1) {
     for (let col = col0; col <= col1; col += 1) {
-      const f = cellCoverage(grid, col, row, ring);
+      const f = cellCoverage(grid, col, row, ring, lattice);
       if (f === 0) continue;
       const v = grid.get(col, row);
       if (grid.isNoData(v)) { nodataWeight += f; continue; }
@@ -436,9 +525,10 @@ export function cutFill(grid, ring, reference, { rmseZ = null } = {}) {
   let maxCut = 0;
   let maxFill = 0;
 
+  const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
   for (let row = row0; row <= row1; row += 1) {
     for (let col = col0; col <= col1; col += 1) {
-      const f = cellCoverage(grid, col, row, ring);
+      const f = cellCoverage(grid, col, row, ring, lattice);
       if (f === 0) continue;
       const z = grid.get(col, row);
       if (grid.isNoData(z)) { nodataWeight += f; continue; }
@@ -536,11 +626,12 @@ export function compareSurfaces(grid, ring, reference, { tolerance = null, rmseZ
   let worstAbove = 0;
   let worstBelow = 0;
 
+  const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
   for (let row = row0; row <= row1; row += 1) {
     for (let col = col0; col <= col1; col += 1) {
       // Partial coverage at the rim, the same as cut and fill: a polygon edge
       // cutting a cell in half must not count that cell as wholly inside.
-      const f = cellCoverage(grid, col, row, ring);
+      const f = cellCoverage(grid, col, row, ring, lattice);
       if (f === 0) continue;
       const z = grid.get(col, row);
       if (grid.isNoData(z)) { nodataWeight += f; continue; }

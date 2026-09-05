@@ -15,6 +15,8 @@
 
 import { Grid } from "../src/lib/geo/raster.mjs";
 import {
+  cornerLattice,
+  pointInPolygon,
   spotLevel,
   profile,
   gridLevels,
@@ -359,6 +361,94 @@ console.log("\nExports, where the coordinate order and the CRS are the traps");
   const sectionCsv = profileToCsv(profile(plane, [[10, 50], [20, 50]]), { epsg: 32643 });
   check("a profile exports chainage first", sectionCsv.includes("chainage,easting,northing"));
   check("and states its CRS too", sectionCsv.includes("EPSG:32643"));
+}
+
+// ---------------------------------------------------------------------------
+console.log("\nThe corner lattice, which must agree with the ray cast it replaces");
+{
+  /*
+   * `cornerLattice` exists because asking `pointInPolygon` about all four
+   * corners of every cell made a polygon's statistics cost vertices x cells:
+   * 6.8 seconds for a 256-vertex ring over a 1.9 million cell window. It
+   * replaces that with one scanline per corner row.
+   *
+   * The whole claim is that it is not an approximation — a corner is inside
+   * here if and only if the ray cast says it is. That is checked directly,
+   * corner by corner, because an "optimisation" that quietly moves a boundary
+   * changes every area and volume the portal has ever reported.
+   */
+  const W = 40, H = 30, cs = 0.5;
+  const grid = makeGrid(() => 100, { width: W, height: H, cellSize: cs });
+  const cx = (W / 2) * cs, cy = (H / 2) * cs;
+
+  const rings = [];
+  // A circle at several vertex counts, including one coarse enough to have
+  // long edges spanning many rows.
+  for (const n of [3, 5, 16, 64]) {
+    const ring = [];
+    for (let i = 0; i < n; i += 1) {
+      const a = (2 * Math.PI * i) / n;
+      ring.push([cx + (W / 4) * cs * Math.cos(a), cy + (H / 4) * cs * Math.sin(a)]);
+    }
+    ring.push(ring[0]);
+    rings.push(ring);
+  }
+  // A star, so edges cross the same row repeatedly and the crossing list has
+  // more than two entries per row — the case a naive "first and last crossing"
+  // implementation gets wrong.
+  {
+    const star = [];
+    for (let i = 0; i < 16; i += 1) {
+      const a = (2 * Math.PI * i) / 16;
+      const rad = (i % 2 === 0 ? W / 4 : W / 10) * cs;
+      star.push([cx + rad * Math.cos(a), cy + rad * Math.sin(a)]);
+    }
+    star.push(star[0]);
+    rings.push(star);
+  }
+  // A concave L, whose rows have spans that start and stop mid-row.
+  rings.push([
+    [2, 2], [16, 2], [16, 8], [8, 8], [8, 14], [2, 14], [2, 2],
+  ]);
+
+  let disagreed = 0;
+  let corners = 0;
+  for (const ring of rings) {
+    const col0 = 0, col1 = W - 1, row0 = 0, row1 = H - 1;
+    const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
+    for (let r = 0; r <= row1 - row0 + 1; r += 1) {
+      for (let c = 0; c <= col1 - col0 + 1; c += 1) {
+        const truth = pointInPolygon(grid.cornerX(col0 + c), grid.cornerY(row0 + r), ring);
+        const got = lattice.inside[r * lattice.cols + c] === 1;
+        corners += 1;
+        if (truth !== got) disagreed += 1;
+      }
+    }
+  }
+  check(`the lattice matches pointInPolygon at every corner — ${rings.length} rings, ${corners.toLocaleString()} corners`,
+    disagreed === 0, `${disagreed} disagreed`);
+
+  /*
+   * A polygon drawn entirely off the survey. `ringWindow` clamps to the grid,
+   * so this comes back with col1 < col0 — a negative span — and the walkers
+   * cope by never entering their loops. The lattice has to cope too: building
+   * one for a negative span threw `Invalid typed array length` and took down
+   * every measurement of an off-survey polygon, which the contract suite
+   * caught and the unit tests had not.
+   */
+  const offSurvey = [[-500, -500], [-490, -500], [-490, -490], [-500, -490], [-500, -500]];
+  let threw = null;
+  let stats = null;
+  try {
+    stats = polygonStats(grid, offSurvey);
+  } catch (error) {
+    threw = error;
+  }
+  check("a polygon entirely off the survey is measured, not a crash",
+    threw === null, threw ? `${threw.constructor.name}: ${threw.message}` : "");
+  check("and it reports no covered ground rather than a confident number",
+    stats !== null && stats.coveredArea === 0 && stats.min === null,
+    stats ? `covered ${stats.coveredArea}, min ${stats.min}` : "");
 }
 
 console.log(`\n${fail === 0 ? `all ${pass} checks passed` : `${pass} passed, ${fail} FAILED`}`);
