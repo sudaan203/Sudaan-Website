@@ -27,10 +27,17 @@ import { readFileSync } from "node:fs";
 import { readGeoTiff } from "../src/lib/geo/raster.mjs";
 import { polygonStats, spotLevel } from "../src/lib/geo/terrain-analysis.mjs";
 import { lonLatToUtm, utmToLonLat } from "../src/lib/geo/projection.mjs";
+import { describeSurvey, openSurvey } from "./lib/survey.mjs";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const SITE = process.env.SITE ?? "kotba-survey";
 const DTM = process.env.DTM ?? `portal-data/terrain/${SITE}/dtm.tif`;
+
+/**
+ * The flood route's cell budget, quoted here so the checks below can tell which
+ * side of it this survey falls on. See the `flood` case in the analysis route.
+ */
+const FLOOD_CELL_BUDGET = 4_000_000;
 
 const ENV = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
 const val = (k) => ENV.split("\n").find((l) => l.startsWith(`${k}=`))?.slice(k.length + 1).trim();
@@ -56,27 +63,53 @@ function near(label, actual, expected, tolerance, unit = "") {
 
 // ---- ground truth, computed here rather than quoted ------------------------
 
-const grid = readGeoTiff(DTM);
-const width = grid.width ?? grid.ncols;
-const height = grid.height ?? grid.nrows;
-const centreE = grid.originX + (width / 2) * grid.cellSize;
-const centreN = grid.originY - (height / 2) * grid.cellSize;
-const [centreLon, centreLat] = utmToLonLat(centreE, centreN, 43, true);
+const survey = await openSurvey(SITE, "dtm");
+const { zone, northern, centreE, centreN, centreLon, centreLat } = survey;
+const width = survey.width;
+const height = survey.height;
+
+/*
+ * `zone` and `northern` come off the raster because every `utmToLonLat` call
+ * below used to pass a literal `43, true`.
+ *
+ * All three published surveys happen to be in zone 43N, so it worked — which is
+ * precisely why it would have gone on working right up until the first survey
+ * that is not, and then placed every request several hundred kilometres from
+ * the survey, where the route would answer with a plausible-looking 400 and
+ * nobody would suspect the test.
+ */
+
+/**
+ * Ground truth, read whole where that is possible and windowed where it is not.
+ *
+ * The whole-raster read is kept for surveys that fit the flood budget, because
+ * one check below is anchored to a walk of *every cell* and has to compare
+ * against a request covering every cell. Past that budget the route refuses the
+ * whole-survey flood anyway, so there is nothing for a whole read to be truth
+ * for — and on Kiru there could not be one regardless: a 2.3 GB file makes
+ * `readFileSync` throw `ERR_FS_FILE_TOO_LARGE` before this project's decoder is
+ * reached, whatever `--max-old-space-size` says.
+ *
+ * A window is a real Grid with its own origin, so `spotLevel` and
+ * `polygonStats` over the centre give identical answers either way. Only the
+ * whole-survey flood knows the difference, and it asks.
+ */
+const wholeSurveyFits = survey.cells <= FLOOD_CELL_BUDGET && survey.readableWhole;
+const grid = wholeSurveyFits
+  ? readGeoTiff(DTM)
+  // 300 m of half-width: comfortably more than the 1 ha polygon, the 200 m
+  // profile and the ±137 m cross-check line all need.
+  : await survey.centreWindowMetres(300);
 
 const truthSpot = spotLevel(grid, centreE, centreN);
 const HALF = 50; // a 100 m square, exactly one hectare
-const truthRingUtm = [
-  [centreE - HALF, centreN - HALF],
-  [centreE + HALF, centreN - HALF],
-  [centreE + HALF, centreN + HALF],
-  [centreE - HALF, centreN + HALF],
-  [centreE - HALF, centreN - HALF],
-];
+const truthRingUtm = survey.ringOfMetres(HALF);
 const truthStats = polygonStats(grid, truthRingUtm);
 
 console.log(`\nGround truth from ${DTM}`);
-console.log(`  grid          ${width} x ${height} at ${grid.cellSize.toFixed(4)} m, EPSG:${grid.epsg}`);
-console.log(`  centre        ${centreE.toFixed(3)} E ${centreN.toFixed(3)} N`);
+console.log(`  ${describeSurvey(survey)}`);
+console.log(`  truth grid    ${grid.width} x ${grid.height} (${wholeSurveyFits ? "whole raster" : "windowed on the centre"})`);
+console.log(`  centre        ${centreE.toFixed(3)} E ${centreN.toFixed(3)} N, zone ${zone}${northern ? "N" : "S"}`);
 console.log(`  spot level    ${truthSpot.toFixed(4)} m`);
 console.log(`  1 ha mean     ${truthStats.mean.toFixed(4)} m`);
 
@@ -179,7 +212,7 @@ console.log("\nTool 1, spot level");
 
 console.log("\nTool 2 companion, polygon statistics");
 {
-  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, 43, true));
+  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, zone, northern));
   const { status, payload } = await post({ op: "polygon-stats", polygon: ring, crs: "lonlat" });
   check("a lon/lat ring is accepted", status === 200, `status ${status}`);
   if (status === 200) {
@@ -205,8 +238,8 @@ console.log("\nTool 2 companion, polygon statistics");
 
 console.log("\nTool 3, profile");
 {
-  const a = utmToLonLat(centreE - 100, centreN, 43, true);
-  const b = utmToLonLat(centreE + 100, centreN, 43, true);
+  const a = utmToLonLat(centreE - 100, centreN, zone, northern);
+  const b = utmToLonLat(centreE + 100, centreN, zone, northern);
   const { status, payload } = await post({ op: "profile", line: [a, b], crs: "lonlat" });
   check("a two point line is accepted", status === 200, `status ${status}`);
   if (status === 200) {
@@ -235,8 +268,8 @@ console.log("\nTool 3, profile");
 {
   // The client caps very long profiles rather than asking for tens of thousands
   // of samples. The server must honour an explicit spacing.
-  const a = utmToLonLat(centreE - 100, centreN, 43, true);
-  const b = utmToLonLat(centreE + 100, centreN, 43, true);
+  const a = utmToLonLat(centreE - 100, centreN, zone, northern);
+  const b = utmToLonLat(centreE + 100, centreN, zone, northern);
   const { status, payload } = await post({ op: "profile", line: [a, b], crs: "lonlat", spacing: 5 });
   check("an explicit sample spacing is honoured", status === 200 && Math.abs(payload.result.sampleSpacing - 5) < 1e-9);
   if (status === 200) {
@@ -250,7 +283,7 @@ console.log("\nTool 3, profile");
 
 console.log("\nTool 4, cut and fill");
 {
-  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, 43, true));
+  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, zone, northern));
   const { status } = await post({ op: "volume", polygon: ring, crs: "lonlat" });
   check(
     "a volume with no reference surface is refused, not defaulted",
@@ -260,7 +293,7 @@ console.log("\nTool 4, cut and fill");
 }
 
 {
-  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, 43, true));
+  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, zone, northern));
   const level = Math.round(truthStats.mean * 100) / 100;
   const { status, payload } = await post({
     op: "volume",
@@ -291,7 +324,7 @@ console.log("\nTool 4, cut and fill");
 }
 
 {
-  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, 43, true));
+  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, zone, northern));
   const { status, payload } = await post({
     op: "volume",
     polygon: ring,
@@ -305,9 +338,27 @@ console.log("\nTool 4, cut and fill");
 }
 
 {
-  // DSM minus DTM is the canopy and structure height, and it must be positive:
-  // the surface model cannot sit below bare earth.
-  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, 43, true));
+  /*
+   * DSM minus DTM is the canopy and structure height, and the failure worth
+   * catching here is the route opening the pair the wrong way round.
+   *
+   * This asserted `fill < cut * 0.05` — essentially no ground anywhere under
+   * the hectare may have the surface model below bare earth. That holds on
+   * Kotba (2.1%) and Aektanagar (0.005%) and is false on Kiru, where 10.3% of
+   * the volume has the DSM below the DTM by up to 10 m. Kiru is a dam site in a
+   * gorge: its walls run past 200% gradient, its two models are at different
+   * resolutions (25.4 cm DTM against a 19.8 cm DSM), and a DTM is an
+   * interpolated ground classification that carries "ground" out over a cliff
+   * lip while the first return has already dropped away beneath it. That is the
+   * landscape, not the route.
+   *
+   * So what is asserted is what a swapped pair would actually break — the sign
+   * of the mean and the fact that reversing the request reverses it — plus a
+   * bound loose enough to be true on a cliff and tight enough that a swap, which
+   * lands near 100%, still fails it. `analysis-contract-test.mjs` reaches the
+   * same conclusion offline and the reasoning is written out there in full.
+   */
+  const ring = truthRingUtm.map(([e, n]) => utmToLonLat(e, n, zone, northern));
   const { status, payload } = await post({
     op: "volume",
     polygon: ring,
@@ -316,10 +367,27 @@ console.log("\nTool 4, cut and fill");
     reference: "dtm",
   });
   if (status === 200) {
+    const r = payload.result;
+    const meanCanopy = r.net / r.measuredArea;
     check(
-      "the surface model stands above the terrain model, never below",
-      payload.result.fill < payload.result.cut * 0.05,
-      `cut ${payload.result.cut.toFixed(0)} m³ vs fill ${payload.result.fill.toFixed(0)} m³`,
+      "the surface model stands above the terrain model on average",
+      meanCanopy > 0.1,
+      `mean canopy height ${meanCanopy.toFixed(3)} m ` +
+        `(cut ${r.cut.toFixed(0)} m³ vs fill ${r.fill.toFixed(0)} m³)`,
+    );
+    check(
+      "ground standing above the surface model stays a minority of the volume",
+      r.fill < r.cut * 0.5,
+      `fill ${r.fill.toFixed(0)} m³ against cut ${r.cut.toFixed(0)} m³`,
+    );
+
+    const back = await post({
+      op: "volume", polygon: ring, crs: "lonlat", surface: "dtm", reference: "dsm",
+    });
+    check(
+      "and asking for the pair the other way round inverts the answer",
+      back.status === 200 && Math.abs(back.payload.result.net + r.net) < Math.abs(r.net) * 0.02,
+      `${r.net.toFixed(0)} m³ one way, ${back.payload?.result?.net?.toFixed(0)} m³ the other`,
     );
   } else {
     check("DSM against DTM is available", false, `status ${status}`);
@@ -368,8 +436,8 @@ console.log("\nRefusals and isolation");
 function boxOfCells(cells) {
   const half = (Math.sqrt(cells) / 2) * grid.cellSize;
   return [
-    utmToLonLat(centreE - half, centreN - half, 43, true),
-    utmToLonLat(centreE + half, centreN + half, 43, true),
+    utmToLonLat(centreE - half, centreN - half, zone, northern),
+    utmToLonLat(centreE + half, centreN + half, zone, northern),
   ];
 }
 
@@ -397,7 +465,6 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
    * cell budget. On a survey too big for that, the refusal is the correct
    * answer and is asserted further down instead.
    */
-  const wholeSurveyFits = width * height <= 4_000_000;
   const { status, payload } = await post({ op: "flood", levels: [level], crs: "lonlat" });
   if (!wholeSurveyFits) {
     check("a whole-survey flood is refused on a survey past the budget", status === 400, `status ${status}`);
@@ -578,15 +645,13 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
    */
   const d = 20000; // a 40 km box: past any survey here
   const huge = [
-    utmToLonLat(centreE - d, centreN - d, 43, true),
-    utmToLonLat(centreE + d, centreN + d, 43, true),
+    utmToLonLat(centreE - d, centreN - d, zone, northern),
+    utmToLonLat(centreE + d, centreN + d, zone, northern),
   ];
   const { status, payload } = await post({
     op: "flood", levels: [truthSpot + 5], bounds: huge, crs: "lonlat",
   });
-  const surveyFitsWhole = width * height <= 4_000_000;
-
-  if (surveyFitsWhole) {
+  if (wholeSurveyFits) {
     check(
       "a survey smaller than the budget answers whole rather than refusing",
       status === 200,
@@ -618,8 +683,8 @@ console.log("\nFlood simulation, Malhar's water-level-rise tool");
     if (Number.isFinite(suggested)) {
       const h = suggested / 2;
       const drawn = [
-        utmToLonLat(centreE - h, centreN - h, 43, true),
-        utmToLonLat(centreE + h, centreN + h, 43, true),
+        utmToLonLat(centreE - h, centreN - h, zone, northern),
+        utmToLonLat(centreE + h, centreN + h, zone, northern),
       ];
       const retry = await post({ op: "flood", levels: [truthSpot + 5], bounds: drawn, crs: "lonlat" });
       check("and drawing exactly that size is accepted, not refused again",
@@ -653,12 +718,12 @@ console.log("\nGeometry cross check: the browser and the server must agree");
   // implementations of the same projection. The panel prints the browser's
   // length next to heights the server computed, so if they ever disagree the
   // client is reading a profile of a line that is not the one on screen.
-  const a = utmToLonLat(centreE - 137.5, centreN - 62.25, 43, true);
-  const b = utmToLonLat(centreE + 89.25, centreN + 41.5, 43, true);
+  const a = utmToLonLat(centreE - 137.5, centreN - 62.25, zone, northern);
+  const b = utmToLonLat(centreE + 89.25, centreN + 41.5, zone, northern);
   const { status, payload } = await post({ op: "profile", line: [a, b], crs: "lonlat" });
   if (status === 200) {
-    const [ax, ay] = lonLatToUtm(a[0], a[1], 43, true);
-    const [bx, by] = lonLatToUtm(b[0], b[1], 43, true);
+    const [ax, ay] = lonLatToUtm(a[0], a[1], zone, northern);
+    const [bx, by] = lonLatToUtm(b[0], b[1], zone, northern);
     const independent = Math.hypot(bx - ax, by - ay);
     near("an independently projected length agrees with the server's", payload.result.length, independent, 0.01, " m");
   } else {
