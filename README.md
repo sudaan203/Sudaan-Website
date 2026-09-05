@@ -211,6 +211,33 @@ to run before a release; CI covers the ones to run before a merge.
 
 ---
 
+## 👀 Preview deployments
+
+Vercel builds a preview of every pull request and posts the link as a PR comment
+— `https://sudaan-website-git-<branch>-sudaan203s-projects.vercel.app`. It is
+also on the PR's **Checks** tab and in the Vercel dashboard under **Deployments**.
+
+**Open it and look at anything client-facing before merging.** Every
+client-visible bug of the last few weeks — an unsupportable accuracy claim,
+ungraded elevation tiles, a flood tool refusing a real view, a shapefile export
+failing on one survey — was found by the client, in production, during a
+demonstration. Each of them was visible on a page. The preview is already built
+and costs nothing, and it turns most of that class of bug from an incident into
+a ticket.
+
+What a preview does and does not share with production. Verified against this
+repository, not against the Vercel dashboard, so check the first row before
+relying on it:
+
+| | |
+| --- | --- |
+| **Database** | **Assume it is the production one.** Vercel applies each variable to the environments that were ticked when it was added, and nothing here scopes `DATABASE_URL` to Production only. So treat writes as real: the owner console creates clients, publishes sites and grants access, and sign in bootstraps owner rows. Confirm under **Vercel → Settings → Environment Variables** before using it for anything but reading. |
+| **R2 bucket** | The same one, and read only from anywhere. There is a single bucket (`sga-survey-data`) and a single Worker (`workers/tile-gateway/wrangler.toml`, no per-environment config), the Worker allows `GET`, `HEAD` and `OPTIONS` only, and the portal never writes to R2 — uploads go through `scripts/upload-site.mjs` from a laptop. A preview cannot alter survey data. |
+| **Portal sign in** | Does not work on a preview. `redirectUri()` uses `AUTH_URL`, and a preview hostname is not a registered Google redirect URI, so sign in either bounces to production or fails with `redirect_uri_mismatch` (`docs/client-portal-plan.md`). Previews cover the marketing site and anything reachable without a session. |
+| **Map tiles** | Depend on how Preview is configured. With `NEXT_PUBLIC_TILE_BASE_URL` pointing at the Worker, the tile grant cookie is scoped to `PORTAL_TILE_COOKIE_DOMAIN` (`.sudaangeo.in`) and a browser will not store it on a `.vercel.app` host, so the map gets nothing. Left empty, tiles come through the Next route as they do locally. |
+
+---
+
 ## ☁️ Deploying to Vercel
 
 1. Push this repository to GitHub/GitLab/Bitbucket.
