@@ -2,6 +2,7 @@
  * Tools 2, 5 and 13 over HTTP: grid levels, surface comparison, tolerance.
  *
  *   PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/surface-api-test.mjs
+ *   SITE=kiru-hydroelectric-survey node scripts/surface-api-test.mjs
  *
  * `terrain-test.mjs` checks the arithmetic against analytic surfaces. This
  * checks the route: that a polygon is projected and windowed correctly, that a
@@ -11,11 +12,26 @@
  * Written as relationships between independently computed values. A surface
  * comparison that quietly compares the wrong pair of rasters still returns
  * plausible metres.
+ *
+ * ## Which survey it runs against
+ *
+ * Nothing below is anchored to a place. It used to be: a five-point ring around
+ * 73.730 E 20.842 N, a design level of 366 m, and a slippy tile at zoom 17
+ * computed from those same degrees. All three are Kotba and nothing else — on
+ * Aektanagar and Kiru the polygon is kilometres off the surveyed ground, so the
+ * route answers "that area does not overlap this survey" and eighteen checks
+ * fail for a reason that says nothing about the product.
+ *
+ * The geometry now comes from `scripts/lib/survey.mjs`, which derives it from
+ * the raster's own header, and the three numbers that were survey constants —
+ * the design level, the tolerances, the tile's zoom — are derived from what the
+ * route itself reports about this survey.
  */
 
 import { SignJWT } from "jose";
 import postgres from "postgres";
 import { readFileSync } from "node:fs";
+import { describeSurvey, openSurvey } from "./lib/survey.mjs";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const SITE = process.env.SITE ?? "kotba-survey";
@@ -41,13 +57,82 @@ const token = await new SignJWT({
 }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("8h")
   .sign(new TextEncoder().encode(val("PORTAL_AUTH_SECRET")));
 
+/**
+ * The survey's own header, which is all the geometry below is built from.
+ *
+ * Only the directory is parsed — a few tens of kilobytes whatever the file
+ * weighs — so this costs the same on Kiru's 2.3 GB DTM as on Kotba's 7 MB one.
+ * No pixels are read here at all: every number this suite checks comes back
+ * from the route, and the route reads the raster from R2 rather than from disk.
+ */
+const survey = await openSurvey(SITE, "dtm");
+
+/**
+ * Half-width of the box the test polygon is inscribed in, in **metres** rather
+ * than cells.
+ *
+ * The deliberate exception to the rule in `scripts/lib/survey.mjs`, for the
+ * same reason `analysis-contract-test.mjs` makes it: what these checks are
+ * about is *area*. The number of grid levels is the polygon's area over the
+ * square of the spacing; the tolerance bands partition an area in m²; the
+ * comparison is a volume over an area. Five thousand square metres is five
+ * thousand square metres on every survey, so this says the same thing on all
+ * three, and a polygon sized in cells would make the level count mean something
+ * different on each.
+ *
+ * The cost is bounded anyway: the 100 m window behind it is 172k cells on
+ * Kotba, 1.7M on Aektanagar's 7.7 cm grid and 155k on Kiru — the same window
+ * `analysis-contract-test.mjs` already reads.
+ */
+const HALF = 50;
+
+/**
+ * A diamond, not a square, and the shape is the point.
+ *
+ * `compare` reads its cells from a rectangular window and then weights each one
+ * by how much of it the ring covers, and the check below says it measures the
+ * polygon rather than the window. Against a square that claim cannot fail: the
+ * polygon *is* its own bounding box, so a route that skipped `cellCoverage`
+ * entirely would agree to within the rim. A diamond inscribed in the same box
+ * has exactly half its area, so the same mistake comes back 100% high and the
+ * check has something to catch.
+ *
+ * Drawn in the survey's own projected metres and handed to the route as
+ * lon/lat, which is the direction a real click travels.
+ */
 const POLY = [
-  [73.7300, 20.8425],
-  [73.7308, 20.8425],
-  [73.7308, 20.8431],
-  [73.7300, 20.8431],
-  [73.7300, 20.8425],
-];
+  [survey.centreE, survey.centreN - HALF],
+  [survey.centreE + HALF, survey.centreN],
+  [survey.centreE, survey.centreN + HALF],
+  [survey.centreE - HALF, survey.centreN],
+  [survey.centreE, survey.centreN - HALF],
+].map(survey.toLonLat);
+
+/**
+ * The raster's own bounds, so a coordinate can be checked against the ground it
+ * claims to be on rather than against a number somebody remembered.
+ *
+ * This replaces `easting > 100000 && northing > 1000000`. The easting half is
+ * true of every UTM coordinate anywhere and therefore asserts nothing; the
+ * northing half is a statement about being well north of the equator, which is
+ * true of these three surveys and false of any site below about 9 degrees N.
+ * Neither says what the check is for, which is that the route answered in
+ * projected metres and not in the degrees it was sent.
+ */
+const BOUNDS = {
+  minE: survey.originX,
+  maxE: survey.originX + survey.width * survey.cellSize,
+  minN: survey.originY - survey.height * survey.cellSize,
+  maxN: survey.originY,
+};
+const insideSurvey = (e, n) =>
+  e >= BOUNDS.minE && e <= BOUNDS.maxE && n >= BOUNDS.minN && n <= BOUNDS.maxN;
+
+console.log(`\n${describeSurvey(survey)}`);
+console.log(
+  `  test polygon  a ${2 * HALF} m diamond (${2 * HALF * HALF} m²) on the middle of the survey, ` +
+    `read from a window of ${(Math.round((2 * HALF) / survey.cellSize) ** 2 / 1e6).toFixed(2)}M cells`,
+);
 
 async function ask(body) {
   const response = await fetch(`${BASE}/api/portal/sites/${SITE}/analysis`, {
@@ -60,26 +145,71 @@ async function ask(body) {
 
 console.log("\nTool 2: grid spot levels");
 let polygonArea = 0;
+/**
+ * A design level at this survey's own ground, for the checks that need *a*
+ * plane and do not care which.
+ *
+ * This was the literal 366, which is Kotba's plateau: 300 m in the air over
+ * Aektanagar and 1.1 km underground at Kiru. The check it feeds only reads the
+ * reference back, so it survived a wrong plane — but a constant that is a
+ * kilometre out on a published survey is exactly the shape of bug this exercise
+ * is hunting, and the route has already told us the mean of the ground under
+ * the polygon by the time it is needed.
+ */
+let datum = 0;
+/**
+ * The vertical accuracy the route quotes for *this* survey, which is what the
+ * tolerance checks below have to be built from.
+ *
+ * `surveyAccuracy` resolves it per site from the site row, falling back to
+ * `PORTAL_SURVEY_RMSE_Z`, so it is not a constant this suite may assume. The
+ * tolerances are then stated as multiples of it: one finer than the survey can
+ * resolve, one coarser, one coarser still.
+ */
+let rmseZ = null;
 {
   const { status, body } = await ask({ op: "grid-levels", spacing: 2 });
   check("the route answers", status === 200, JSON.stringify(body).slice(0, 160));
   const r = body.result;
-  polygonArea = r.stats.polygonArea ?? r.stats.coveredArea;
+  /*
+   * `stats.area` is the area of the ring itself. This read
+   * `stats.polygonArea ?? stats.coveredArea`, and `polygonStats` has no
+   * `polygonArea` field — only `cutFill` and `compareSurfaces` do — so the
+   * fallback fired every time and every "area" below was really the *covered*
+   * area. That made "it measures the polygon, not its bounding window" compare
+   * a measurement against itself: both sides are the same weighted cell count
+   * over the same ring, so it could not fail whatever the route did.
+   */
+  polygonArea = r.stats.area;
+  datum = Math.round(r.stats.mean);
+  rmseZ = body.rmseZ;
 
   check("it echoes the spacing it used", r.spacing === 2);
-  check("points are in the survey's own projected metres, not lon/lat",
-    r.points.every((p) => p.easting > 100000 && p.northing > 1000000),
-    `first ${r.points[0].easting.toFixed(1)}, ${r.points[0].northing.toFixed(1)}`);
+  check("points are in the survey's own projected metres, not the degrees they were sent as",
+    r.points.every((p) => insideSurvey(p.easting, p.northing)),
+    `first ${r.points[0].easting.toFixed(1)}, ${r.points[0].northing.toFixed(1)} in ` +
+      `${BOUNDS.minE.toFixed(0)}..${BOUNDS.maxE.toFixed(0)} E`);
 
   /*
    * The count follows from the area and the spacing, so it is derivable rather
-   * than something to eyeball. Generous tolerance because a grid clipped to a
-   * polygon lands where it lands relative to the rim.
+   * than something to eyeball.
+   *
+   * The slack is derived too, because a flat 10% was a statement about the
+   * *square* this polygon used to be. Counting lattice nodes inside a shape is
+   * the area over the spacing squared plus a boundary term: every node the rim
+   * passes near falls in or out depending on where the lattice happens to land,
+   * and there are about `perimeter / spacing` of them. On a square of a given
+   * area that term is as small as it gets; on the diamond it is larger, and on
+   * a long thin study area larger still, so tying it to the perimeter the route
+   * itself reports says the same thing for any shape. It is nowhere near loose
+   * enough to hide the failure worth catching, which is the grid being laid
+   * over the bounding box rather than the polygon — that is 100% high.
    */
   const expected = polygonArea / 4;
+  const rimNodes = r.stats.perimeter / 2;
   check("the number of levels follows from the area and the spacing",
-    Math.abs(r.points.length - expected) < expected * 0.1,
-    `${r.points.length} points, area/spacing² = ${expected.toFixed(0)}`);
+    Math.abs(r.points.length - expected) < rimNodes,
+    `${r.points.length} points, area/spacing² = ${expected.toFixed(0)} ±${rimNodes.toFixed(0)} on the rim`);
 
   check("every level lies inside the polygon's own bounding box",
     r.points.every((p) => Number.isFinite(p.elevation)));
@@ -105,6 +235,8 @@ let polygonArea = 0;
     refused.body.error?.slice(0, 110));
 }
 
+console.log(`  ...this survey's ground is at ${datum} m and it is quoted to ${rmseZ === null ? "no stated accuracy" : `${(rmseZ * 1000).toFixed(0)} mm`}`);
+
 console.log("\nTool 5: surface comparison");
 let deviation;
 {
@@ -124,11 +256,27 @@ let deviation;
    */
   check("bare earth sits below the surface model, so the mean is negative",
     deviation.meanChange < 0, `${deviation.meanChange.toFixed(3)} m`);
+
+  /*
+   * Reversing the pair reverses the sign — as a *fraction* of the deviation
+   * rather than within a flat 0.15 m.
+   *
+   * The two directions are not the same arithmetic. Asked one way the route
+   * walks the DTM's cells and samples the DSM; asked the other it walks the
+   * DSM's cells and samples the DTM, and on two of these three surveys those
+   * are different grids at different resolutions (Kotba 0.24 m against 0.16 m,
+   * Kiru 0.25 m against 0.20 m). So the two means differ by a little, and how
+   * much depends entirely on how rough the ground is: 0.15 m is 8% of Kotba's
+   * 1.8 m mean canopy and would be a far tighter claim on a survey whose mean
+   * is small, or a far looser one on Kiru's gorge. A share of the quantity says
+   * the same thing on all three, and a genuine swap does not miss by 10%, it
+   * fails outright by not changing sign at all.
+   */
+  const back = (await ask({ op: "compare", reference: "dtm", surface: "dsm" })).body.result;
   check("and reversing the pair reverses the sign",
-    await (async () => {
-      const back = (await ask({ op: "compare", reference: "dtm", surface: "dsm" })).body.result;
-      return back.meanChange > 0 && near(back.meanChange, -deviation.meanChange, 0.15);
-    })(), "measured both ways");
+    back.meanChange > 0 &&
+      Math.abs(back.meanChange + deviation.meanChange) < Math.abs(deviation.meanChange) * 0.1,
+    `${deviation.meanChange.toFixed(3)} m one way, ${back.meanChange.toFixed(3)} m the other`);
 
   check("mean ignoring sign is at least the size of the mean",
     deviation.meanAbsoluteChange >= Math.abs(deviation.meanChange) - 1e-9,
@@ -141,12 +289,28 @@ let deviation;
   check("with no tolerance asked for, nothing is classified",
     deviation.tolerance === null && deviation.withinShare === null && deviation.resolvable === null);
   check("a design level works as a reference too",
-    (await ask({ op: "compare", reference: "plane:366" })).body.result.reference === "plane");
+    (await ask({ op: "compare", reference: `plane:${datum}` })).body.result.reference === "plane");
 }
 
 console.log("\nTool 13: tolerance");
 {
-  const { status, body } = await ask({ op: "compare", reference: "dsm", tolerance: 0.5 });
+  /*
+   * Three tolerances, stated as multiples of the accuracy the route quotes for
+   * this survey rather than as 0.02 / 0.5 / 5 m.
+   *
+   * The fixed numbers were readable and they were also Kotba's: they only mean
+   * "finer than the survey can resolve" and "coarser than it" because Kotba is
+   * quoted at ±40 mm. A survey quoted at ±10 mm would make 0.02 m resolvable
+   * and the unresolvable check would fail on a route that is behaving
+   * correctly; one quoted at ±600 mm would make 0.5 m unresolvable and take the
+   * `note === null` check with it. Multiples of the survey's own figure say the
+   * same thing whatever that figure is.
+   */
+  const unresolvable = rmseZ / 2;
+  const tolerance = rmseZ * 10;
+  const looser = rmseZ * 100;
+
+  const { status, body } = await ask({ op: "compare", reference: "dsm", tolerance });
   check("the route answers", status === 200, JSON.stringify(body).slice(0, 160));
   const r = body.result;
 
@@ -161,18 +325,18 @@ console.log("\nTool 13: tolerance");
     near(r.withinShare, r.withinArea / r.comparedArea, 1e-6),
     `${(r.withinShare * 100).toFixed(1)} %`);
 
-  const loose = (await ask({ op: "compare", reference: "dsm", tolerance: 5 })).body.result;
+  const loose = (await ask({ op: "compare", reference: "dsm", tolerance: looser })).body.result;
   check("a looser tolerance can only include more ground",
     loose.withinArea >= r.withinArea - 1e-6,
-    `${loose.withinArea.toFixed(0)} m² at 5 m vs ${r.withinArea.toFixed(0)} m² at 0.5 m`);
+    `${loose.withinArea.toFixed(0)} m² at ${looser} m vs ${r.withinArea.toFixed(0)} m² at ${tolerance} m`);
 
   /*
-   * The check this tool exists to get right. A ±20 mm tolerance on a survey
-   * stated accurate to ±40 mm cannot be assessed: the map would be survey noise
-   * and would look exactly like a map of defects, which is the reading a
-   * contractor would act on.
+   * The check this tool exists to get right. A tolerance finer than the survey
+   * is stated accurate to cannot be assessed: the map would be survey noise and
+   * would look exactly like a map of defects, which is the reading a contractor
+   * would act on.
    */
-  const fine = (await ask({ op: "compare", reference: "dsm", tolerance: 0.02 })).body.result;
+  const fine = (await ask({ op: "compare", reference: "dsm", tolerance: unresolvable })).body.result;
   check("a tolerance finer than the survey's accuracy is flagged unresolvable",
     fine.resolvable === false, `rmseZ ${fine.rmseZ}, tolerance ${fine.tolerance}`);
   check("and says so in words a client can act on",
@@ -210,17 +374,63 @@ console.log("\nThe difference layer keeps its sign");
       Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n),
     ];
   };
-  const [x, y] = tileOf(73.7305, 20.8425, 17);
+
+  /**
+   * The zoom at which one 256 px tile is about 256 of this survey's own cells,
+   * which is the one place in this suite where sizing in cells is what matters.
+   *
+   * A tile is a fixed number of pixels over a variable amount of ground, so a
+   * fixed zoom is a fixed number of *metres* wearing a tile's clothes. Zoom 17
+   * is roughly 285 m across at these latitudes: 1,180 cells square on Kotba's
+   * 24 cm grid, and 3,700 square — 14 million cells, read twice, once per
+   * surface — on Aektanagar's 7.7 cm one. Nothing about the sign of a ramp
+   * needs fourteen million cells, and pulling them over byte ranges from R2 is
+   * what made this section time out rather than fail.
+   *
+   * One pixel to one cell is also the zoom a client actually inspects a
+   * difference map at, and it puts the same amount of work behind the tile on
+   * every survey.
+   */
+  const equatorMetres = 40075016.686;
+  const zoomForNativeCell = (lat, cellSize) => {
+    const across = equatorMetres * Math.cos((lat * Math.PI) / 180);
+    return Math.min(24, Math.max(8, Math.round(Math.log2(across / (256 * cellSize)))));
+  };
+  const z = zoomForNativeCell(survey.centreLat, survey.cellSize);
+  const [x, y] = tileOf(survey.centreLon, survey.centreLat, z);
   const tile = (q) =>
-    fetch(`${BASE}/api/portal/sites/${SITE}/render/difference/17/${x}/${y}.png?${q}`, {
+    fetch(`${BASE}/api/portal/sites/${SITE}/render/difference/${z}/${x}/${y}.png?${q}`, {
       headers: { Cookie: `sga_portal_session=${token}` },
     });
+
+  console.log(`  ...tile ${z}/${x}/${y}, about ${((equatorMetres * Math.cos((survey.centreLat * Math.PI) / 180)) / 2 ** z).toFixed(0)} m across at ${survey.cellSize.toFixed(3)} m cells`);
 
   const ok = await tile("min=-25&max=25&ramp=difference");
   check("a difference tile renders", ok.status === 200 && ok.headers.get("content-type") === "image/png",
     `status ${ok.status}`);
   const bytes = new Uint8Array(await ok.arrayBuffer());
   check("as a real PNG", bytes[0] === 0x89 && String.fromCharCode(...bytes.subarray(1, 4)) === "PNG");
+
+  /*
+   * That the tile has ground on it, which the refusal below depends on.
+   *
+   * The tiler answers an empty transparent PNG — 200, not an error — for a tile
+   * that misses the survey, and it does so *before* it validates the ramp. So a
+   * tile placed off the surveyed ground would sail through the rainbow check
+   * below by never reaching it, and the guard this section exists to prove
+   * would be untested while reporting a pass. Comparing against a tile
+   * deliberately placed a degree away is the cheapest way to know the
+   * difference.
+   */
+  const far = tileOf(survey.centreLon + 1, survey.centreLat + 1, z);
+  const empty = await fetch(
+    `${BASE}/api/portal/sites/${SITE}/render/difference/${z}/${far[0]}/${far[1]}.png?min=-25&max=25&ramp=difference`,
+    { headers: { Cookie: `sga_portal_session=${token}` } },
+  );
+  const emptyBytes = new Uint8Array(await empty.arrayBuffer());
+  check("and one carrying real ground, not the empty tile returned off the survey",
+    bytes.length !== emptyBytes.length,
+    `${bytes.length} bytes here against ${emptyBytes.length} a degree away`);
 
   /*
    * The guard that matters. A difference coloured with a rainbow loses the one
@@ -234,6 +444,8 @@ console.log("\nThe difference layer keeps its sign");
   check("with a reason that explains what is lost",
     /signed|above or below zero/i.test(why.error ?? ""), why.error?.slice(0, 120));
 }
+
+await survey.close();
 
 console.log(
   `\n${failures === 0 ? `all ${checks} checks passed` : `${failures} of ${checks} checks FAILED`}\n`,
