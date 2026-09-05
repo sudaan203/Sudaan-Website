@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import type { Surface } from "@/lib/portal/analysis-client";
+import type { Surface, SurveyAccuracy } from "@/lib/portal/analysis-client";
 import { formatElevation } from "@/lib/portal/geodesy";
+import { AccuracyNote } from "./AccuracyNote";
 
 /**
  * Tool 1, spot levels.
@@ -16,6 +17,11 @@ import { formatElevation } from "@/lib/portal/geodesy";
  *
  * Every Z on this panel came from the server, read bilinearly from the source
  * raster. Nothing here is derived from a map tile.
+ *
+ * The ± band beside a level is printed only when this survey has its own
+ * checkpoint report. It used to be printed always, from the company's advertised
+ * figure, and a level exported to CAD with a tolerance nobody measured is the
+ * version of this bug that leaves the portal entirely.
  */
 
 export type SpotReading = {
@@ -35,14 +41,15 @@ type Format = "utm" | "lonlat";
 
 export function SpotLevelPanel({
   readings,
-  toleranceM,
+  accuracy,
   busy,
   error,
   onRemove,
   onClear,
 }: {
   readings: SpotReading[];
-  toleranceM: number;
+  /** Null until the first analysis response says what may be claimed. */
+  accuracy: SurveyAccuracy | null;
   busy: boolean;
   error: string | null;
   onRemove: (id: number) => void;
@@ -237,8 +244,9 @@ export function SpotLevelPanel({
               ? `Eastings and northings in ${epsg}, the survey's own grid, which is what the CSV states. `
               : "Latitude and longitude on WGS84. "}
             Levels are read from the {readings[0].surface === "dsm" ? "surface model" : "terrain model"} at
-            full resolution, ±{(toleranceM * 100).toFixed(0)} cm.
+            full resolution.
           </p>
+          <AccuracyNote accuracy={accuracy} />
         </>
       ) : null}
 
@@ -247,7 +255,12 @@ export function SpotLevelPanel({
   );
 }
 
-/** Shared by the panel and by MapViewer's hover readout. */
-export function formatSpot(elevation: number | null, toleranceM: number): string {
-  return elevation === null ? "no data" : formatElevation(elevation, toleranceM);
+/**
+ * Shared by the panel and by MapViewer's hover readout.
+ *
+ * `band` is null on a survey with no checkpoint report, and `formatElevation`
+ * then prints the level without a tolerance rather than inventing one.
+ */
+export function formatSpot(elevation: number | null, band: number | null): string {
+  return elevation === null ? "no data" : formatElevation(elevation, band);
 }

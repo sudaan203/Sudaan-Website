@@ -39,7 +39,7 @@ export default async function SiteOverview({
    * costs three file reads rather than any computation. It fails soft: a site
    * with no map data still renders everything else on this page.
    */
-  const summary = await buildSiteSummary(site.slug, site.id).catch(() => null);
+  const summary = await buildSiteSummary(site.slug, site.id, site).catch(() => null);
   const available = assetCategories.filter((c) => (counts[c.key] ?? 0) > 0);
 
   /*

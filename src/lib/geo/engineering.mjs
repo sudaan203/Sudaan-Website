@@ -198,7 +198,10 @@ export function toleranceAnalysis(surfaceGrid, referenceGrid, tolerance, { rmseZ
     resolvable: rmseZ === null ? null : rmseZ < tolerance,
     note:
       rmseZ !== null && rmseZ >= tolerance
-        ? `The survey's vertical accuracy (${rmseZ} m) is not finer than the tolerance ` +
+        // "a vertical accuracy of", not "the survey's": see the same note in
+        // terrain-analysis.mjs compareSurfaces. The number reaching here may be
+        // the company's typical figure rather than a measurement of this ground.
+        ? `A vertical accuracy of ${rmseZ} m is not finer than the tolerance ` +
           `(${tolerance} m), so this map cannot distinguish a real deviation from survey noise.`
         : null,
   };

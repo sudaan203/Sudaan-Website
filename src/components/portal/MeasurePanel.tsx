@@ -1,7 +1,14 @@
 "use client";
 
-import type { PolygonStatsResult, ProfileResult, Surface } from "@/lib/portal/analysis-client";
+import type {
+  PolygonStatsResult,
+  ProfileResult,
+  Surface,
+  SurveyAccuracy,
+} from "@/lib/portal/analysis-client";
+import { accuracyBand } from "@/lib/portal/accuracy.mjs";
 import { formatArea, formatDistance, formatElevation } from "@/lib/portal/geodesy";
+import { AccuracyNote } from "./AccuracyNote";
 
 /**
  * The readout for a measurement in progress or finished.
@@ -9,8 +16,18 @@ import { formatArea, formatDistance, formatElevation } from "@/lib/portal/geodes
  * Kept apart from MapViewer because it is the part a client actually reads a
  * number off, and it carries the qualifiers that stop that number being
  * misunderstood: which CRS it was computed in, what a volume is measured
- * against, and the survey's own tolerance. A bare "1.23 ha" invites a client to
- * treat it as exact, which over a hectare of ±4 cm terrain it is not.
+ * against, and what is actually known about this survey's vertical accuracy. A
+ * bare "1.23 ha" invites a client to treat it as exact, which over a hectare of
+ * drone-flown terrain it is not.
+ *
+ * ## The ± band is not a decoration
+ *
+ * Heights here used to read "123.45 m ±4 cm" on every survey, and that 4 cm was
+ * Sudaan's advertised figure rather than anything measured on this ground. The
+ * band now appears only where the survey has its own checkpoint report, and
+ * `AccuracyNote` states the position in words either way. A number carrying a
+ * tolerance nobody measured is worse than a number carrying none: it invites
+ * exactly the reliance it cannot support.
  *
  * ## Two kinds of number, deliberately distinguished
  *
@@ -59,15 +76,18 @@ export function MeasurePanel({
   elevation,
   surface,
   onClear,
-  toleranceM,
+  accuracy,
 }: {
   measurement: Measurement;
   elevation: ElevationState;
   surface: Surface;
   onClear: () => void;
-  toleranceM: number;
+  /** Null until the first analysis response says what may be claimed. */
+  accuracy: SurveyAccuracy | null;
 }) {
   const { mode, points, length, area, utmZone } = measurement;
+  // Null unless this survey has been checked against its own control. See accuracy.mjs.
+  const band = accuracyBand(accuracy);
 
   return (
     <div className="space-y-3">
@@ -88,7 +108,7 @@ export function MeasurePanel({
         {mode === "area" ? <Row label="Area" value={formatArea(area)} /> : null}
         <Row label={mode === "area" ? "Perimeter" : "Length"} value={formatDistance(length)} />
         <Row label="Points" value={String(points.length)} />
-        <ElevationRows elevation={elevation} toleranceM={toleranceM} length={length} />
+        <ElevationRows elevation={elevation} band={band} length={length} />
       </dl>
 
       {elevation.state === "profile" && elevation.data.points.length > 2 ? (
@@ -96,6 +116,10 @@ export function MeasurePanel({
       ) : null}
 
       <ElevationFootnote elevation={elevation} surface={surface} />
+
+      {elevation.state === "profile" || elevation.state === "stats" ? (
+        <AccuracyNote accuracy={accuracy} />
+      ) : null}
 
       <p className="border-t border-ink/[0.08] pt-2 text-[11px] leading-snug text-ink/55">
         {mode === "area" ? "Plan area" : "Horizontal distance"} computed in UTM zone{" "}
@@ -118,11 +142,12 @@ export function MeasurePanel({
  */
 function ElevationRows({
   elevation,
-  toleranceM,
+  band,
   length,
 }: {
   elevation: ElevationState;
-  toleranceM: number;
+  /** Metres, or null when this survey has no measured accuracy to quote. */
+  band: number | null;
   length: number;
 }) {
   if (elevation.state === "loading") {
@@ -140,9 +165,9 @@ function ElevationRows({
     }
     return (
       <>
-        <Row label="Lowest" value={formatElevation(min, toleranceM)} />
-        <Row label="Highest" value={formatElevation(max, toleranceM)} />
-        {mean !== null ? <Row label="Mean" value={formatElevation(mean, toleranceM)} /> : null}
+        <Row label="Lowest" value={formatElevation(min, band)} />
+        <Row label="Highest" value={formatElevation(max, band)} />
+        {mean !== null ? <Row label="Mean" value={formatElevation(mean, band)} /> : null}
         <Row label="Fall" value={formatDistance(max - min)} />
       </>
     );
@@ -154,8 +179,8 @@ function ElevationRows({
   }
   return (
     <>
-      <Row label="Lowest" value={formatElevation(min, toleranceM)} />
-      <Row label="Highest" value={formatElevation(max, toleranceM)} />
+      <Row label="Lowest" value={formatElevation(min, band)} />
+      <Row label="Highest" value={formatElevation(max, band)} />
       <Row label="Fall" value={formatDistance(max - min)} />
       {gain > 0 ? <Row label="Total climb" value={formatDistance(gain)} /> : null}
       {loss > 0 ? <Row label="Total descent" value={formatDistance(loss)} /> : null}

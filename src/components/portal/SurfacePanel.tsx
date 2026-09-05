@@ -1,9 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import type { CompareResult, Surface, VolumeReference } from "@/lib/portal/analysis-client";
+import type {
+  CompareResult,
+  Surface,
+  SurveyAccuracy,
+  VolumeReference,
+} from "@/lib/portal/analysis-client";
 import { describeReference } from "@/lib/portal/analysis-client";
+import { centimetres } from "@/lib/portal/accuracy.mjs";
 import { formatArea } from "@/lib/portal/geodesy";
+import { AccuracyNote } from "./AccuracyNote";
 
 /**
  * Tools 5 and 13: surface comparison, and tolerance analysis.
@@ -22,6 +29,12 @@ import { formatArea } from "@/lib/portal/geodesy";
  *    says so instead of colouring it in. A ±20 mm check on a survey good to
  *    ±40 mm produces a map of survey noise that looks exactly like a map of
  *    defects, and that is the failure mode a contractor would act on.
+ *
+ *    That gate is only as good as the accuracy figure behind it, which is why
+ *    the panel now says where the figure came from. Passing the gate against
+ *    Sudaan's typical ±4 cm is not the same as passing it against a measurement
+ *    of this ground, and a contractor signing off to a tolerance needs to know
+ *    which one they have.
  * 3. **Mean and mean absolute are both shown.** A surface half a metre up over
  *    one half of a polygon and half a metre down over the other has a mean
  *    change of zero. Only the second number says the two surfaces disagree.
@@ -40,6 +53,7 @@ export function SurfacePanel({
   ready,
   polygonArea,
   surface,
+  accuracy,
   result,
   tolerance,
   onCompute,
@@ -48,6 +62,11 @@ export function SurfacePanel({
   ready: boolean;
   polygonArea: number;
   surface: Surface;
+  /**
+   * What may be claimed about this survey's vertical accuracy. Null until the
+   * first analysis response says.
+   */
+  accuracy: SurveyAccuracy | null;
   result: SurfaceState;
   /** Tool 13 when true: the deviation is additionally classified. */
   tolerance: boolean;
@@ -206,14 +225,20 @@ export function SurfacePanel({
             {result.state === "loading" ? "Computing…" : tolerance ? "Check" : "Compare"}
           </button>
 
-          <Result result={result} />
+          <Result result={result} accuracy={accuracy} />
         </>
       )}
     </div>
   );
 }
 
-function Result({ result }: { result: SurfaceState }) {
+function Result({
+  result,
+  accuracy,
+}: {
+  result: SurfaceState;
+  accuracy: SurveyAccuracy | null;
+}) {
   if (result.state === "idle") return null;
   if (result.state === "loading") {
     return <p className="text-[11px] text-ink/45">Reading both models…</p>;
@@ -287,13 +312,28 @@ function Result({ result }: { result: SurfaceState }) {
         </p>
       ) : null}
 
+      {/*
+        The resolvability gate above is a comparison against a number, and this
+        is where that number is accounted for. On a survey with no checkpoint
+        report the gate has been judged against the company's typical figure,
+        which is a prediction rather than a measurement — and a contractor
+        signing work off to a stated tolerance is exactly the reader who must not
+        find that out afterwards.
+      */}
+      {data.tolerance !== null && accuracy && !accuracy.measured && data.rmseZ !== null ? (
+        <p className="rounded-md bg-signal/10 px-2 py-1.5 text-[11px] leading-snug text-signal-600">
+          Whether this survey can resolve a ±{(data.tolerance * 1000).toFixed(0)} mm tolerance has
+          been judged against Sudaan&apos;s typical ±{centimetres(data.rmseZ)}, not against a
+          measurement of this ground. Ask us for the checkpoint report before signing anything off
+          to this tolerance.
+        </p>
+      ) : null}
+
       <p className="text-[11px] leading-snug text-ink/55">
         Positive is the {surface === "dsm" ? "surface model" : "terrain model"} standing
-        above {describeReference(reference)}. Measured in {data.computedIn}
-        {data.rmseZ !== null
-          ? `, on a survey stated accurate to ${(data.rmseZ * 1000).toFixed(0)} mm vertically.`
-          : "."}
+        above {describeReference(reference)}. Measured in {data.computedIn}.
       </p>
+      <AccuracyNote accuracy={accuracy} />
     </div>
   );
 }
