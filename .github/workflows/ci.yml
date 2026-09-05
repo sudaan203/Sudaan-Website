@@ -1,0 +1,180 @@
+# Continuous integration.
+#
+# Everything here used to be run by hand, on one laptop, when someone
+# remembered. In the last week of August 2026 that let three things through: a
+# branch that was merged without typechecking (the map page would not have
+# compiled), a crash that was caught only because a suite printed a blank line
+# someone chose to investigate, and a test file whose counter quietly stopped
+# counting the checks added after it. None of those were hard problems. They
+# were "nobody ran it" problems, which is the only kind of problem this file
+# solves.
+#
+# What runs here is the part of the test estate that needs nothing but the
+# repository: no database, no dev server, no survey rasters. That is a real
+# constraint, not a preference — `portal-data/terrain/` is gitignored, so a
+# GitHub checkout has no DTM in it and never will. See the exclusions below.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A force-push or a second push to a PR makes the older run pointless. Cancel it
+# rather than queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Split from `build` so a type error or a broken engine reports in well under a
+  # minute instead of waiting behind a Next production build. The two share no
+  # state, so running them in parallel costs only a duplicated `npm ci`.
+  engine:
+    name: Typecheck and engine suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 exactly. The project breaks on newer Node: Next's launcher hits a
+      # `semver` interop failure and dies before it prints anything useful. Pin
+      # it here as it is pinned on the machines, or CI will disagree with every
+      # developer for a reason nobody will enjoy finding.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci`, not `npm install`: the point of CI is to test the dependency
+      # tree in package-lock.json, not whatever npm would resolve today.
+      - run: npm ci
+
+      # Before the build, because it is five seconds and it fails on things the
+      # build never looks at — `next build` only typechecks what is reachable
+      # from a route, so a broken module nothing imports yet still slips past it.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # One step for all of them, running every suite even after one fails, so a
+      # pull request that breaks two engines shows both instead of hiding the
+      # second behind the first. Each suite prints `ok`/`FAIL` per check and
+      # exits non-zero, so the log names the failing check and the summary at the
+      # end names the failing suite.
+      #
+      # Why each of these is safe here:
+      #   terrain-test, engineering-test, hydro-test, flood-test,
+      #   analysis-core-test, render-test, shapefile-test
+      #     — closed-form known-answer tests on synthetic grids. No inputs at all.
+      #   merge-tree-test
+      #     — synthetic throughout except a Kotba DTM section, which skips when
+      #       the raster is absent. The 31 synthetic checks are the ones that
+      #       prove the structure; the raster section is a cross-check against
+      #       `connectedFlood` on real ground and stays a manual step.
+      #   lzw-test, geo-differential-test
+      #     — both compare against real rasters when present and skip that
+      #       comparison when they are not, by design. What is left (the corners
+      #       of the LZW format; every geo primitive against itself and against a
+      #       one-ULP perturbation) is exactly the part that needs no data.
+      #   db-timeout-test
+      #     — reads `src/lib/portal/db/client.ts` as text and does arithmetic on
+      #       the timeout constants. The name says database; it never opens one.
+      #
+      # The last three are here despite the `portal-` prefix, which elsewhere
+      # marks a suite that needs a server. These do not: portal-map-test is
+      # arithmetic on the shapes of data the map pipeline meets, portal-assets-
+      # test hashes the tracked deliverables under `portal-data/files/` looking
+      # for one client's previews sitting in another client's folder, and
+      # portal-tile-grant-test drives the Worker's `fetch` handler against a fake
+      # R2 binding. All three were verified on a tracked-files-only checkout.
+      # portal-map-test does import `sharp`, which the repo gets transitively
+      # through Next rather than declaring; the lockfile pins the linux-x64
+      # binary, so `npm ci` on a runner has it.
+      - name: Engine suites
+        run: |
+          suites="
+            terrain-test
+            engineering-test
+            hydro-test
+            flood-test
+            merge-tree-test
+            analysis-core-test
+            render-test
+            shapefile-test
+            lzw-test
+            db-timeout-test
+            geo-differential-test
+            portal-map-test
+            portal-assets-test
+            portal-tile-grant-test
+          "
+          failed=""
+          for suite in $suites; do
+            echo "::group::$suite"
+            node "scripts/$suite.mjs" || failed="$failed $suite"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::failing suites:$failed"
+            for suite in $failed; do
+              echo "  see the '$suite' group above for the FAIL lines"
+            done
+            exit 1
+          fi
+          echo "all engine suites passed"
+
+      # Not a benchmark here — the numbers from a shared runner are noise and
+      # nothing compares them to anything. It runs because it imports every geo
+      # primitive and exercises each one on a real grid, so it catches an export
+      # that was renamed or a signature that changed, which the known-answer
+      # suites above would not notice until someone next tried to profile.
+      # `--size=small` keeps it to a couple of seconds.
+      - name: Benchmark harness smoke run
+        run: node scripts/bench-geo.mjs --size=small
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `src/app/layout.tsx` pulls Inter through `next/font/google`, so this step
+      # needs to reach fonts.googleapis.com at build time. Hosted runners have
+      # outbound network, so it works; if this ever starts failing on a DNS or
+      # fetch error rather than on a real compile error, that is why, and the fix
+      # is to self-host the font — not to delete this step.
+      - run: npm run build
+
+# ---------------------------------------------------------------------------
+# What deliberately does not run here.
+#
+#   scripts/*-api-test.mjs  (alignment, analysis, cloud, hydrology, render,
+#                            shapefile, surface)
+#     These drive the real HTTP routes. They need `next dev` listening, a
+#     Supabase database with the portal schema and seeded users, and the survey
+#     rasters the routes read windows out of. Standing all three up on a runner
+#     would be most of a deployment, and the database is a free-tier instance
+#     that idles out on its own.
+#
+#   scripts/portal-*-browser-test.mjs
+#     Same, plus a real browser driving the map page.
+#
+#   scripts/raster-window-test.mjs
+#     Every check in it compares a windowed read against a whole-file read of
+#     `portal-data/terrain/<site>/dtm.tif` — one BigTIFF tiled survey and one
+#     stripped one, because the reader has a separate code path for each. The
+#     rasters are gitignored and a synthetic fixture would not help: the file
+#     exists to prove the reader against the exact files the portal serves, and a
+#     GeoTIFF written by this repo to test this repo's reader proves nothing
+#     about either layout.
+#
+# Those stay manual, on a machine that has the surveys and a database. They are
+# the suites to run before a release; the ones above are the ones to run before
+# a merge.
