@@ -4,6 +4,7 @@ import { getSite } from "@/lib/portal/store";
 import { queryDb } from "@/lib/portal/db/client";
 import { logPortalEvent } from "@/lib/portal/log";
 import { readMapManifest } from "@/lib/portal/map-data";
+import { openTerrain } from "@/lib/portal/terrain-source";
 import { lonLatToUtm, utmToLonLat } from "@/lib/geo/projection.mjs";
 import {
   writeShapefileGeometry,
@@ -65,14 +66,46 @@ type GeometryKind = keyof typeof GEOMETRY_KIND;
 async function siteUtmZone(siteSlug: string): Promise<{ zone: number; northern: boolean; epsg: number }> {
   const manifest = await readMapManifest(siteSlug);
   const dem = manifest?.layers.find((l) => l.utmZone);
-  if (!dem?.utmZone) {
-    throw new BadRequest("This site has no recorded UTM zone to export in.");
+  let zone = dem?.utmZone;
+  let northern = dem?.utmNorthern !== false;
+
+  /*
+   * The manifest is a convenience, not the authority. The zone is a property of
+   * the raster, and the raster says so in its own GeoTIFF keys — so when the
+   * manifest does not carry it, ask the file rather than refuse.
+   *
+   * This was not hypothetical. Kiru's manifest carries no `utmZone` on any
+   * layer, so every shapefile export from that survey answered "This site has
+   * no recorded UTM zone to export in", while every other tool on the same site
+   * worked perfectly — because they all read the zone from the raster. The tool
+   * built specifically so a client could check our coordinates against his own
+   * software was the one tool that could not run on the survey he was checking.
+   *
+   * Opening the raster costs a directory parse, tens of kilobytes whatever the
+   * file weighs, and it is already cached per process.
+   */
+  if (!zone) {
+    try {
+      const raster = await openTerrain(siteSlug, "dtm");
+      if (raster.utmZone) {
+        zone = raster.utmZone.zone;
+        northern = raster.utmZone.northern;
+      }
+    } catch {
+      // No readable DTM either. The refusal below is then the honest answer.
+    }
   }
-  const northern = dem.utmNorthern !== false;
+
+  if (!zone) {
+    throw new BadRequest(
+      "This site has no recorded UTM zone to export in, and its terrain model " +
+        "could not be read to recover one.",
+    );
+  }
   return {
-    zone: dem.utmZone,
+    zone,
     northern,
-    epsg: (northern ? 32600 : 32700) + dem.utmZone,
+    epsg: (northern ? 32600 : 32700) + zone,
   };
 }
 
