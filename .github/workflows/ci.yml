@@ -71,7 +71,7 @@ jobs:
       #       the raster is absent. The 31 synthetic checks are the ones that
       #       prove the structure; the raster section is a cross-check against
       #       `connectedFlood` on real ground and stays a manual step.
-      #   lzw-test, geo-differential-test
+      #   lzw-test, geo-differential-test, accuracy-test
       #     — both compare against real rasters when present and skip that
       #       comparison when they are not, by design. What is left (the corners
       #       of the LZW format; every geo primitive against itself and against a
@@ -104,6 +104,7 @@ jobs:
             lzw-test
             db-timeout-test
             geo-differential-test
+            accuracy-test
             portal-map-test
             portal-assets-test
             portal-tile-grant-test
