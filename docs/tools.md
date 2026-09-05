@@ -1227,7 +1227,7 @@ itself.
 | 24 | **The flood API tests sized their boxes in metres**, so every bounded check meant something different on every survey: a 600 m box is 6 M cells on Kotba's 24 cm grid and 60 M on Aektanagar's 7.7 cm one. Five checks failed on Aektanagar by *correctly* refusing an area the test thought was small | Running the suite against a second survey. Boxes are now sized in cells, via `boxOfCells()`, and the whole-survey check is guarded to surveys that fit the budget |
 | 25 | **The merge tree was used from two levels upward when it only pays from sixteen** — a regression introduced by the wiring in #69, which made the common case, a short ladder, up to **four times slower** than the traversal it replaced | Measuring after shipping, not before. §3.15 |
 | 26 | **The refusal named a size that did not work.** It suggested the arithmetic maximum, and a drawn area lands just over it every time — the window is padded so edge interpolation has neighbours, it rounds outward to whole cells, and a box drawn on a lon/lat map is not square once projected. Asking for exactly the suggested 266 m came back refused at 12.2 M cells | Drawing the size the message named. The suggestion is now four fifths of the budget, and a check draws the suggested size and asserts it is accepted — telling a client a size and then refusing it is worse than refusing plainly |
-| 27 | **`readWindow`'s window origin drifts on a cell size with a long mantissa.** The origin is `originX + col0 * cellSize`; on Aektanagar (0.07686839999999892) at `col0 = 2812` the window sits 2811.9999999999786 cells from the raster origin, so **a point near a cell boundary resolves one cell differently through the windowed reader than through the whole-file one** — 7.7 cm of ground, 3 mm of elevation there. It affects every windowed read. **Still unfixed**: §7.13 | Making the flood tests portable across surveys, which put the two readers side by side on a survey whose cell size is not a round number |
+| 27 | **`readWindow`'s window origin drifts on a cell size with a long mantissa.** The origin is `originX + col0 * cellSize`; on Aektanagar (0.07686839999999892) at `col0 = 2812` the window sits 2811.9999999999786 cells from the raster origin, so **a point near a cell boundary resolves one cell differently through the windowed reader than through the whole-file one** — 7.7 cm of ground, 3 mm of elevation there. It affects every windowed read. **Fixed in #79**: `Grid.cellAt` snaps a coordinate within arithmetic noise of a boundary before flooring, with a tolerance set by the origin's magnitude rather than the cell index — keying it off the index made things worse first, 258 disagreements becoming 348, because the whole-file frame got a tolerance large enough to snap and the window frame did not | Making the flood tests portable across surveys, which put the two readers side by side on a survey whose cell size is not a round number |
 
 Number 22 is the one to learn from, and the lesson is not about types. The
 branch had been interrupted mid-change, and the half that had been written was
@@ -1294,6 +1294,37 @@ not a record, and the numbers are how anyone finds the reasoning later.
 - The shapefile tool is verified against **software this project did not
   write** — `pyshp` and Python's own `zipfile` — not only against itself. See
   §3.12.
+
+### Reading survey data from R2 rather than from a laptop
+
+`PORTAL_TERRAIN_URL` and `PORTAL_HYDROLOGY_URL` now point at the tile Worker in
+`.env.local`, joining `PORTAL_CLOUD_URL`, which had been set all along. The
+rasters, the hydrology grids and the point cloud are read from the private R2
+bucket, authorised by the same short-lived grant a browser gets, so a
+development machine holds no copy of any of them. Kiru's DTM alone is 2.3 GB and
+the raw survey folders total about 18 GB.
+
+Verified by moving `portal-data/terrain` and `portal-data/hydrology` out of the
+way entirely, so no local file could answer, and asking each survey for a spot
+level: Kotba came back **364.864 m**, identical to the value the same point
+returns from the local file. Then, with the local files restored — where the URL
+takes precedence and the suites still compute their ground truth from disk —
+`analysis-api-test` passed 77 checks on Kotba and 74 on Aektanagar, which is the
+stronger statement: the bytes R2 serves produce the same measurements as the
+originals.
+
+Warm, a spot level costs about 1.3–1.6 s against roughly 0.3 s locally. Only the
+first request per survey pays the network; the raster is cached per process
+afterwards, which is why later requests report `io 0.0 ms`.
+
+**This is only practical because of the coalescing in #73.** A one-megacell
+window is 12 fetches and 5.18 MB, 690 ms end to end from a laptop in India. Sent
+as one range request per strip, as the reader did before, the same window would
+have been 1,575 sequential round trips at about a second each.
+
+The map tiles and manifests are *not* served this way: they are committed to the
+repository because the portal draws the map from them and they have to reach
+Vercel. Kiru has no tiles in R2 at all, only its rasters and hydrology.
 
 ### Tests: 610 verified here, and 683 more that need something running
 
