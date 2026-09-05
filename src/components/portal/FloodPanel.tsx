@@ -18,6 +18,17 @@ import type { FloodLevel, FloodResult } from "@/lib/portal/analysis-client";
  * never hides which one it is showing — the mode is a visible choice, the
  * result restates it, and choosing a source on the map is what switches it.
  *
+ * ## The study area is the client's to draw, and the resolution is never traded
+ *
+ * A flood is computed over the ground the client draws a study area around, at
+ * the survey's own native resolution. It used to be computed over whatever the
+ * map happened to be showing, and large views were quietly resampled coarser to
+ * keep that affordable — which is the one thing Malhar explicitly refused, and
+ * it was invisible in the picture. So the panel asks for a study area, says what
+ * was simulated once it has an answer, and an area too large to run at full
+ * resolution comes back as a refusal naming the size rather than as a coarser
+ * answer that looks identical.
+ *
  * ## Levels are simulated ahead, then animated locally
  *
  * "The 2 m, 5 m and 10 m interval buttons must work automatically" is his most
@@ -46,6 +57,21 @@ export type FloodState =
   | { state: "done"; data: FloodResult }
   | { state: "error"; message: string };
 
+/** The two shapes a study area can be drawn as. */
+export type FloodAreaKind = "rectangle" | "polygon";
+
+/**
+ * A drawn study area, measured in the survey's own metres rather than in
+ * degrees: a box that reads "0.004° by 0.005°" tells a client nothing about
+ * whether it will run, and the thing that governs whether it will run is
+ * metres against the survey's cell size.
+ */
+export type FloodArea = {
+  kind: FloodAreaKind;
+  width_m: number;
+  height_m: number;
+};
+
 /** The three intervals Malhar's spec names, and no others. */
 const INTERVALS = [2, 5, 10];
 
@@ -58,6 +84,10 @@ const SPEEDS: { value: FloodControls["speed"]; label: string }[] = [
 export function FloodPanel({
   controls,
   setControls,
+  area,
+  drawingArea,
+  onDrawArea,
+  onClearArea,
   source,
   onPickSource,
   onClearSource,
@@ -77,6 +107,13 @@ export function FloodPanel({
 }: {
   controls: FloodControls;
   setControls: (fn: (c: FloodControls) => FloodControls) => void;
+  /** The drawn study area, once the map has one, in metres. */
+  area: FloodArea | null;
+  /** Which shape the map is currently armed to draw, if any. */
+  drawingArea: FloodAreaKind | null;
+  /** Arm the map to draw a study area of that shape. */
+  onDrawArea: (kind: FloodAreaKind) => void;
+  onClearArea: () => void;
   /** The chosen water source: its ground elevation, once the map has one. */
   source: { lon: number; lat: number; ground: number | null } | null;
   /** Arm the map to take the next click as the water source. */
@@ -107,7 +144,7 @@ export function FloodPanel({
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink/50">
           Water level rise
         </h3>
-        {result.state === "done" || source ? (
+        {result.state === "done" || source || area ? (
           <button
             type="button"
             onClick={onClear}
@@ -117,6 +154,70 @@ export function FloodPanel({
           </button>
         ) : null}
       </div>
+
+      {/* ----------------------------------------------------- study area --- */}
+      {/*
+        First, above the water source, because it is the first decision: it
+        decides which ground the answer is about, and every number below it is
+        a number about that ground.
+      */}
+      <fieldset className="space-y-1.5">
+        <legend className="text-[11px] font-semibold text-ink/60">Study area</legend>
+        {area ? (
+          <div className="flex items-baseline justify-between gap-2 rounded-md bg-ink/[0.04] px-2 py-1.5">
+            <p className="text-[11px] text-ink/70">
+              {area.kind === "rectangle" ? "Rectangle" : "Polygon"}:{" "}
+              <span className="font-mono text-ink-900">
+                {Math.round(area.width_m)} × {Math.round(area.height_m)} m
+              </span>
+            </p>
+            <button
+              type="button"
+              onClick={onClearArea}
+              className="text-[11px] font-semibold text-accent-600 hover:text-accent-700"
+            >
+              Clear area
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-1.5">
+              {(
+                [
+                  ["rectangle", "Draw rectangle"],
+                  ["polygon", "Draw polygon"],
+                ] as const
+              ).map(([kind, label]) => (
+                <button
+                  key={kind}
+                  type="button"
+                  aria-pressed={drawingArea === kind}
+                  onClick={() => onDrawArea(kind)}
+                  className={`flex-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                    drawingArea === kind
+                      ? "bg-accent-600 text-white"
+                      : "border border-ink/15 text-ink/70 hover:border-accent-600"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] leading-snug text-ink/50">
+              {/*
+                Said before they press start, not after a refusal. Without a
+                study area the tool falls back to the view, which changes the
+                answer every time the map is panned — and a client reading an
+                area figure without knowing that would take a windowed number
+                for a whole-survey one.
+              */}
+              Without one, the flood is computed over whatever is on screen, so
+              panning changes the answer. Draw the area you want flooded and it
+              stays fixed while you work.
+            </p>
+          </>
+        )}
+      </fieldset>
 
       {/* ---------------------------------------------------- water source -- */}
       <fieldset className="space-y-1.5">
@@ -315,10 +416,35 @@ export function FloodPanel({
 
               {current.truncated ? (
                 <p className="rounded-md bg-signal/10 px-2 py-1.5 text-[11px] leading-snug text-signal-600">
-                  This flood reaches the edge of the surveyed ground, so it continues
-                  past what the survey can see. The area above is a lower bound.
+                  {/*
+                    Which edge it reached, because the two mean different things
+                    to the client: one is a limit of the survey and nothing can
+                    be done about it, the other is a limit they drew themselves
+                    and can redraw wider.
+                  */}
+                  {result.data.studyArea.source === "area"
+                    ? "This flood reaches the edge of your study area, so it continues past it. The area above is a lower bound — draw a wider study area to see how much further it goes."
+                    : "This flood reaches the edge of the surveyed ground, so it continues past what the survey can see. The area above is a lower bound."}
                 </p>
               ) : null}
+
+              {/*
+                What was actually simulated, in the survey's own metres and at
+                the survey's own cell size. The cell size is stated because it
+                is the promise this tool makes — full resolution, never
+                coarsened — and a promise nobody can check is not one.
+              */}
+              <p className="text-[10px] leading-snug text-ink/50">
+                Simulated over {Math.round(result.data.studyArea.width_m)} ×{" "}
+                {Math.round(result.data.studyArea.height_m)} m of{" "}
+                {result.data.studyArea.source === "area"
+                  ? "the study area you drew"
+                  : result.data.studyArea.source === "view"
+                    ? "the view at the time you pressed start"
+                    : "this survey"}
+                , at {result.data.computedAtCellSize_m.toFixed(3)} m — the survey&apos;s own
+                resolution, {(result.data.studyArea.cells / 1_000_000).toFixed(1)} million cells.
+              </p>
             </>
           ) : null}
 
@@ -392,13 +518,17 @@ export function FloodPanel({
         Read from the terrain model, not the surface model — water runs over bare
         earth, not over canopy.{" "}
         {/*
-          Said before they press start, not only after. The simulation covers
-          the ground on screen, so what is in view changes the answer — and a
-          client who reads an area figure without knowing that would take a
-          windowed number for a whole-survey one.
+          The two facts a client needs before pressing start: which ground this
+          is about, and that the resolution is not negotiable. The second is
+          here rather than only in a refusal because it is the reassurance —
+          nothing in this tool trades accuracy for speed, and an area too large
+          to run at full resolution is refused rather than answered coarsely.
         */}
-        Computed over the area currently on screen: pan or zoom to change what is
-        simulated, then run it again.
+        {area
+          ? "Computed over the study area you drew, at the survey's full resolution."
+          : "No study area drawn, so it is computed over whatever is on screen when you press start, at the survey's full resolution."}{" "}
+        The DTM is never coarsened to make this faster: an area too large to
+        simulate at full resolution is refused, with the size that would fit.
       </p>
     </div>
   );

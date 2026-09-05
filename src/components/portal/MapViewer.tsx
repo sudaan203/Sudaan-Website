@@ -79,7 +79,13 @@ import {
   type DrawnFeature,
   type GeometryKind,
 } from "@/lib/portal/shapefile-client";
-import { FloodPanel, type FloodControls, type FloodState } from "./FloodPanel";
+import {
+  FloodPanel,
+  type FloodArea,
+  type FloodAreaKind,
+  type FloodControls,
+  type FloodState,
+} from "./FloodPanel";
 import { ToolRail, type RailAction } from "./ToolRail";
 import {
   ContourPanel,
@@ -261,6 +267,27 @@ type ShapeResponse = AnalysisEnvelope & {
 function messageFor(error: unknown): string {
   if (error instanceof AnalysisError) return error.message;
   return "The measurement could not be computed.";
+}
+
+/**
+ * The four corners of a rectangle from two opposite ones, in lon/lat.
+ *
+ * Sent to the server as four corners rather than two, because a rectangle in
+ * lon/lat is not a rectangle in the survey's UTM: grid convergence turns it by
+ * up to half a degree here, so a box rebuilt from two opposite corners covers
+ * ground the drawn one does not. The server projects all four and uses the
+ * shape they make, which is the shape the client saw.
+ */
+function rectangleRing(
+  [ax, ay]: [number, number],
+  [bx, by]: [number, number],
+): [number, number][] {
+  return [
+    [ax, ay],
+    [bx, ay],
+    [bx, by],
+    [ax, by],
+  ];
 }
 
 export default function MapViewer({ siteSlug, siteName, layers }: Props) {
@@ -541,6 +568,30 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [floodPicking, setFloodPicking] = useState(false);
   const floodPickingRef = useRef(false);
   floodPickingRef.current = floodPicking;
+
+  /**
+   * The study area: which ground the simulation is about.
+   *
+   * Part of the same axis as the water-source pick rather than a fourth one,
+   * because they are two steps of setting up one tool and are never wanted at
+   * the same instant — arming either disarms the other, exactly as arming
+   * either disarms the numbered tools. What it adds over the source pick is
+   * that it accumulates geometry: a rectangle takes two clicks and a polygon
+   * takes a double click to finish, so the vertices in progress live in a ref
+   * for the same reason `shapefileDraw` does — the map's handlers are
+   * registered once and would close over the first render's empty array.
+   *
+   * The finished ring is kept in the map's own lon/lat and projected only to
+   * measure it, so nothing here can drift from what is drawn on screen.
+   */
+  const [floodAreaDrawing, setFloodAreaDrawing] = useState<FloodAreaKind | null>(null);
+  const floodAreaDrawingRef = useRef<FloodAreaKind | null>(null);
+  floodAreaDrawingRef.current = floodAreaDrawing;
+  const [floodArea, setFloodArea] = useState<FloodArea | null>(null);
+  const floodAreaRing = useRef<[number, number][] | null>(null);
+  const floodAreaDraft = useRef<[number, number][]>([]);
+  /** The corner the pointer is dragging a rectangle out to, while it has one. */
+  const floodAreaHover = useRef<[number, number] | null>(null);
   const [floodStep, setFloodStep] = useState(0);
   const [floodPlaying, setFloodPlaying] = useState(false);
   const [floodOpacity, setFloodOpacity] = useState(0.55);
@@ -679,8 +730,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         levels: number[],
         source: { at?: Pair },
         interval: number,
-        bounds: [Pair, Pair] | undefined,
-      ) => client.current.flood(levels, source, { interval, bounds }, signal),
+        where: { area?: Pair[]; bounds?: [Pair, Pair] },
+      ) => client.current.flood(levels, source, { interval, ...where }, signal),
     ),
   );
 
@@ -715,15 +766,189 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     );
   }, []);
 
+  /**
+   * Draw the study area as it stands: the committed ring, and whatever is
+   * being clicked out on top of it.
+   *
+   * One source for both, filtered by a property rather than split into two
+   * sources, because they are never both interesting at once — a draft becomes
+   * the ring the moment it is finished — and one source is one `setData` per
+   * pointer move while a rectangle is being dragged out.
+   */
+  const redrawFloodArea = useCallback(() => {
+    const source = map.current?.getSource("flood-area");
+    if (!source || !("setData" in source)) return;
+    const features: GeoJSON.Feature[] = [];
+
+    const ring = floodAreaRing.current;
+    if (ring) {
+      features.push({
+        type: "Feature",
+        properties: { draft: false },
+        geometry: { type: "Polygon", coordinates: [[...ring, ring[0]]] },
+      });
+    }
+
+    const draft = floodAreaDraft.current;
+    const hover = floodAreaHover.current;
+    if (draft.length) {
+      const preview =
+        floodAreaDrawingRef.current === "rectangle" && draft.length === 1 && hover
+          ? rectangleRing(draft[0], hover)
+          : null;
+      if (preview) {
+        features.push({
+          type: "Feature",
+          properties: { draft: true },
+          geometry: { type: "Polygon", coordinates: [[...preview, preview[0]]] },
+        });
+      } else if (draft.length >= 2) {
+        features.push({
+          type: "Feature",
+          properties: { draft: true },
+          geometry: { type: "LineString", coordinates: draft },
+        });
+      }
+      for (const point of draft) {
+        features.push({
+          type: "Feature",
+          properties: { draft: true },
+          geometry: { type: "Point", coordinates: point },
+        });
+      }
+    }
+
+    (source as { setData: (d: unknown) => void }).setData({
+      type: "FeatureCollection",
+      features,
+    });
+  }, []);
+
+  /**
+   * Accept a finished ring, measured in the survey's own metres.
+   *
+   * Measured rather than reported in degrees because metres are what decides
+   * whether the server can run it: the refusal is a cell count, a cell count is
+   * metres over the cell size, and "0.005° across" tells a client nothing about
+   * either. Projected through the same `geodesy.ts` the measure tools use, so
+   * the size shown here and the size the server names in a refusal are the same
+   * quantity computed two ways rather than two different quantities.
+   */
+  const commitFloodArea = useCallback(
+    (kind: FloodAreaKind, ring: [number, number][]) => {
+      const projected = ring.map(([lon, lat]) => lonLatToUtm(lon, lat, utmZone, utmNorthern));
+      const xs = projected.map(([x]) => x);
+      const ys = projected.map(([, y]) => y);
+      floodAreaRing.current = ring;
+      floodAreaDraft.current = [];
+      floodAreaHover.current = null;
+      setFloodAreaDrawing(null);
+      setFloodArea({
+        kind,
+        width_m: Math.max(...xs) - Math.min(...xs),
+        height_m: Math.max(...ys) - Math.min(...ys),
+      });
+      redrawFloodArea();
+    },
+    [redrawFloodArea, utmZone, utmNorthern],
+  );
+
+  /** Arm the map to draw a study area, replacing whatever was drawn before. */
+  const startFloodAreaDraw = useCallback(
+    (kind: FloodAreaKind) => {
+      floodAreaDraft.current = [];
+      floodAreaHover.current = null;
+      floodAreaRing.current = null;
+      setFloodArea(null);
+      setFloodAreaDrawing(kind);
+      // The same exclusivity every other axis enforces, including against the
+      // water-source pick: two armed tools would both read the next click, and
+      // one click would place a source *and* a corner.
+      setFloodPicking(false);
+      setMode("off");
+      setHydroMode("off");
+      setShapefileActive(null);
+      redrawFloodArea();
+    },
+    [redrawFloodArea],
+  );
+
+  const clearFloodArea = useCallback(() => {
+    floodAreaRing.current = null;
+    floodAreaDraft.current = [];
+    floodAreaHover.current = null;
+    setFloodArea(null);
+    setFloodAreaDrawing(null);
+    redrawFloodArea();
+  }, [redrawFloodArea]);
+
+  /** One click while a study area is being drawn. */
+  const handleFloodAreaClick = useCallback(
+    (lon: number, lat: number) => {
+      const kind = floodAreaDrawingRef.current;
+      if (!kind) return;
+      const draft = floodAreaDraft.current;
+      if (kind === "rectangle") {
+        // Two clicks, not a drag: the map's own drag is pan, and stealing it
+        // for one tool would mean a client who mis-clicks cannot move the map
+        // without first turning the tool off.
+        if (draft.length === 0) {
+          floodAreaDraft.current = [[lon, lat]];
+          redrawFloodArea();
+          return;
+        }
+        commitFloodArea("rectangle", rectangleRing(draft[0], [lon, lat]));
+        return;
+      }
+      floodAreaDraft.current = [...draft, [lon, lat]];
+      redrawFloodArea();
+    },
+    [commitFloodArea, redrawFloodArea],
+  );
+  const floodAreaClickRef = useRef<(lon: number, lat: number) => void>(() => {});
+  floodAreaClickRef.current = handleFloodAreaClick;
+  const redrawFloodAreaRef = useRef<() => void>(() => {});
+  redrawFloodAreaRef.current = redrawFloodArea;
+
+  /** A double click finishes a study-area polygon. */
+  const finishFloodAreaDraw = useCallback(() => {
+    if (floodAreaDrawingRef.current !== "polygon") return;
+    let points = floodAreaDraft.current;
+    // A double click is two clicks first, so the click handler has already
+    // added the same vertex twice — dropped here exactly as the measure and
+    // shapefile tools drop it, so the ring never carries a zero-length side.
+    if (points.length >= 2) {
+      const [ax, ay] = points[points.length - 1];
+      const [bx, by] = points[points.length - 2];
+      if (Math.abs(ax - bx) < 1e-9 && Math.abs(ay - by) < 1e-9) points = points.slice(0, -1);
+    }
+    if (points.length < 3) {
+      // Not enough for an area. Left armed rather than cancelled, because a
+      // stray double click while placing the second corner should not throw
+      // away the work or silently stop listening.
+      floodAreaDraft.current = points;
+      redrawFloodArea();
+      return;
+    }
+    commitFloodArea("polygon", points);
+  }, [commitFloodArea, redrawFloodArea]);
+  const floodAreaDblClickRef = useRef(() => {});
+  floodAreaDblClickRef.current = finishFloodAreaDraw;
+
   /** Arm the map to take the next click as the water source. */
   const pickFloodSource = useCallback(() => {
     setFloodPicking(true);
     // The same exclusivity every other axis enforces: while this is armed for
-    // its one click, no numbered tool and no shapefile draw owns the map.
+    // its one click, no numbered tool, no shapefile draw and no study-area
+    // draw owns the map.
+    setFloodAreaDrawing(null);
+    floodAreaDraft.current = [];
+    floodAreaHover.current = null;
+    redrawFloodArea();
     setMode("off");
     setHydroMode("off");
     setShapefileActive(null);
-  }, []);
+  }, [redrawFloodArea]);
 
   /**
    * The water source, from a click.
@@ -766,7 +991,11 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     setFloodPlaying(false);
     setFloodStep(0);
     drawFlood(null);
-  }, [drawFlood]);
+    // The study area goes with it. One "Clear" that left a rectangle drawn on
+    // the map would leave the next run silently bounded by ground the client
+    // believes they have cleared.
+    clearFloodArea();
+  }, [drawFlood, clearFloodArea]);
 
   /**
    * Build the ladder and run the whole thing in one request.
@@ -821,20 +1050,31 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           ? { at: [floodSource.lon, floodSource.lat] as Pair }
           : {};
       /*
-       * The ground on screen is the ground simulated. Kiru's DTM is 2.5 billion
-       * cells and no request reads that whole — without this the tool answered
-       * "measurements are not available for this survey", which was both wrong
-       * and unactionable. Water reaching the edge of the view comes back
-       * flagged `truncated`, the same as water reaching the edge of the survey.
+       * The drawn study area if there is one, and the view if there is not.
+       *
+       * Something has to bound this: Kiru's DTM is 2.5 billion cells and no
+       * request reads that whole — before it was bounded at all the tool
+       * answered "measurements are not available for this survey", which was
+       * both wrong and unactionable. But the view is a guess at what the client
+       * meant, and it changes under them every time they pan, so a drawn area
+       * takes precedence and the panel says which one it used. Either way the
+       * server refuses more ground than it can simulate at full resolution
+       * rather than coarsening the DTM, and that refusal arrives here as an
+       * ordinary error with the size that would fit in it.
        */
+      const ring = floodAreaRing.current;
       const view = map.current?.getBounds();
-      const bounds: [Pair, Pair] | undefined = view
-        ? [
-            [view.getWest(), view.getSouth()],
-            [view.getEast(), view.getNorth()],
-          ]
-        : undefined;
-      const response = await floodLane.current.call(levels, source, interval, bounds);
+      const where: { area?: Pair[]; bounds?: [Pair, Pair] } = ring
+        ? { area: ring as Pair[] }
+        : view
+          ? {
+              bounds: [
+                [view.getWest(), view.getSouth()],
+                [view.getEast(), view.getNorth()],
+              ],
+            }
+          : {};
+      const response = await floodLane.current.call(levels, source, interval, where);
       if (response === null) return; // superseded by a newer run
       noteEnvelope(response);
       setFloodResult({ state: "done", data: response.result });
@@ -1508,6 +1748,15 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         requestAnimationFrame(refreshReadout);
       }
 
+      // A rectangle in progress follows the pointer. Without the rubber band a
+      // client places two corners blind and only learns how big the study area
+      // is after the second click, which on a survey this size is the
+      // difference between a two-second answer and a refusal.
+      if (floodAreaDrawingRef.current === "rectangle" && floodAreaDraft.current.length === 1) {
+        floodAreaHover.current = [event.lngLat.lng, event.lngLat.lat];
+        redrawFloodAreaRef.current();
+      }
+
       // Reading a contour's height by pointing at it, in place of baked labels.
       const vectors = vectorIds.filter((id) => instance.getLayer(id));
       const hit = vectors.length
@@ -1521,7 +1770,11 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         : undefined;
 
       instance.getCanvas().style.cursor =
-        modeRef.current !== "off" ? "crosshair" : hit ? "help" : "";
+        modeRef.current !== "off" || floodAreaDrawingRef.current
+          ? "crosshair"
+          : hit
+            ? "help"
+            : "";
     });
     instance.on("mouseout", () => {
       lastLngLat = null;
@@ -1531,9 +1784,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
     // ---- measure: click to add a vertex, double click to finish ------------
     instance.on("click", (event) => {
+      // The flood tool's study area, while it is being drawn, owns the click
+      // before anything else does — including the flood tool's own water-source
+      // pick, which cannot be armed at the same time but is checked after it
+      // anyway so the order of these two is never load bearing.
+      if (floodAreaDrawingRef.current) {
+        floodAreaClickRef.current(event.lngLat.lng, event.lngLat.lat);
+        return;
+      }
       // The flood tool, while it is armed for its one water-source click, takes
-      // precedence over everything: it is a third independent mode axis (see
-      // the comment where its state is declared) and it disarms itself the
+      // precedence over everything else: it is a third independent mode axis
+      // (see the comment where its state is declared) and it disarms itself the
       // moment it has what it asked for.
       if (floodPickingRef.current) {
         floodClickRef.current(event.lngLat.lng, event.lngLat.lat);
@@ -1563,6 +1824,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       void recompute(instance, false);
     });
     instance.on("dblclick", (event) => {
+      // Finishing a study-area polygon, and never zooming instead: the gesture
+      // that closes the ring is the same gesture MapLibre zooms on.
+      if (floodAreaDrawingRef.current) {
+        event.preventDefault();
+        floodAreaDblClickRef.current();
+        return;
+      }
       if (shapefileActiveRef.current) {
         event.preventDefault();
         shapefileDblClickRef.current();
@@ -1821,6 +2089,56 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         type: "line",
         source: "flood",
         paint: { "line-color": "#0369a1", "line-width": 1.4 },
+      });
+
+      /*
+       * The flood study area: the boundary of the simulation, drawn above the
+       * water it bounds.
+       *
+       * Indigo, which nothing else on this map uses — the measure tools are
+       * accent orange, the shapefile tool teal, an imported shapefile violet,
+       * the alignment tools slate, hydrology and the flood itself blue. A study
+       * area that could be mistaken for a drawn polygon would be worse than no
+       * outline at all, because the one thing it has to communicate is that
+       * everything outside it was not simulated.
+       *
+       * No fill: it is a boundary, not a feature, and a tint over the water
+       * inside it would change the colour of the answer. Dashed while it is
+       * being clicked out, solid once it is committed, so the two states are
+       * distinguishable at a glance rather than by counting clicks — as two
+       * layers rather than one expression, because `line-dasharray` is a paint
+       * property MapLibre does not evaluate per feature and a `["case", …]` in
+       * it fails the whole style rather than that one line.
+       */
+      instance.addSource("flood-area", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "flood-area-draft",
+        type: "line",
+        source: "flood-area",
+        filter: ["all", ["!=", ["geometry-type"], "Point"], ["get", "draft"]],
+        paint: { "line-color": "#4338ca", "line-width": 2, "line-dasharray": [2, 1.5] },
+      });
+      instance.addLayer({
+        id: "flood-area-outline",
+        type: "line",
+        source: "flood-area",
+        filter: ["all", ["!=", ["geometry-type"], "Point"], ["!", ["get", "draft"]]],
+        paint: { "line-color": "#4338ca", "line-width": 2 },
+      });
+      instance.addLayer({
+        id: "flood-area-points",
+        type: "circle",
+        source: "flood-area",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 3.5,
+          "circle-color": "#4338ca",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+        },
       });
 
       /*
@@ -2941,11 +3259,17 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       setShapefileActive(null);
       shapefileDraw.current = [];
       redrawShapefileDraw();
-      // Only the *arming* is cleared, not the simulation. A finished flood is a
-      // result the client can still read and export while they measure
-      // something else on top of it, exactly as a finished measurement stays in
-      // its own panel.
+      // Only the *arming* is cleared, not the simulation and not a finished
+      // study area. A finished flood is a result the client can still read and
+      // export while they measure something else on top of it, exactly as a
+      // finished measurement stays in its own panel, and the area it was
+      // computed over is part of reading it. A half-drawn one goes, because
+      // nothing is left able to finish it.
       setFloodPicking(false);
+      setFloodAreaDrawing(null);
+      floodAreaDraft.current = [];
+      floodAreaHover.current = null;
+      redrawFloodArea();
 
       const already =
         railAction !== null &&
@@ -3421,6 +3745,10 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 <FloodPanel
                   controls={floodControls}
                   setControls={setFloodControls}
+                  area={floodArea}
+                  drawingArea={floodAreaDrawing}
+                  onDrawArea={startFloodAreaDraw}
+                  onClearArea={clearFloodArea}
                   source={floodSource}
                   onPickSource={pickFloodSource}
                   onClearSource={pickFloodSource}
