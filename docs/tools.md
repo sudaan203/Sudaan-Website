@@ -1,6 +1,11 @@
 # Dashboard tools: what was asked for, what was built, and where it stands
 
-Written 23 Aug 2026, covering the work merged as PRs #40 to #45 on 22 Aug 2026.
+Written 23 Aug 2026 for PRs #40 to #45, and kept current since. This revision
+covers everything merged up to PR #73 on 5 Sep 2026, and corrects the entries
+that had gone stale rather than leaving them to be believed: the profile overlay
+was reversed a week after it shipped, the flood no longer coarsens anything, two
+rows of the merged table carried the wrong pull-request numbers, and the test
+counts were a fortnight out of date.
 
 Companion to two existing documents rather than a replacement for either.
 `portal-map-architecture.md` says what the architecture should be.
@@ -402,7 +407,7 @@ Three decisions worth keeping:
   half of a polygon and half a metre down over the other has a mean change of
   zero, and only the second number says the surfaces disagree.
 
-### 3.10 Tool 40, and a design pass (#52)
+### 3.10 Tool 40, and a design pass (#53)
 
 **Tool 40, the project summary**, turned out to be a panel over figures three
 pipelines had already computed and nobody had ever read together: the area from
@@ -563,7 +568,7 @@ that is what QGIS, ArcGIS and Global Mapper write by default, and only Node's
 zlib decodes that here. A reader that only accepts the one compression method
 its own writer happens to use is not an interchange tool.
 
-### 3.13 The profile chart overlays DTM against DSM (#57)
+### 3.13 The profile chart overlays DTM against DSM (#57, reversed by #62)
 
 Another of Malhar's own prompts: while drawing a cross-section profile, show
 both surfaces on the one graph, so the gap between them — canopy, a
@@ -601,7 +606,18 @@ asserts two `profile` requests go out — one per surface, over the same
 line — that the legend names both, and that a dashed line is actually present
 in the rendered SVG, not merely that the request was made.
 
-### 3.14 Simulation Water Level Rise (#58)
+**And it was reversed a week later, on Malhar's own instruction (#62).** He
+asked for exactly one surface at a time with a clear way to switch between them,
+which the Terrain/Surface toggle already was. The overlay fetch, the dashed
+second line, its legend and the `other` field are gone from both `MapViewer` and
+`MeasurePanel`; switching the toggle now re-runs the same profile against the
+other model. Nothing above is wrong about how the overlay worked, and it is left
+standing because the reasoning still holds and because anyone finding the dashed
+line in the history should know it was removed by request rather than by defect.
+The browser suite asserts the new behaviour — exactly one profile request per
+click — rather than the old.
+
+### 3.14 Simulation Water Level Rise (#63, bounded by #64)
 
 Malhar's third self-directed prompt, and by far his longest — nine pages
 specifying a flood-inundation tool "similar in concept to the terrain-based
@@ -652,13 +668,279 @@ missing:
   above the rasters and below the measure tools, which is the order that
   question has one right answer to.
 
-**Bounded to the view, after a whole-grid read proved untenable.** This
+**Bounded to a study area, after a whole-grid read proved untenable.** This
 shipped reading the DTM whole, like tool 14, on the reasoning that a flood's
 extent is not known before the read so there is nothing to window to. That is
 true of the *flood* and false of the *study area*, and it broke in two ways at
-once — see §5, "From the flood simulation". It now computes over the ground on
-screen, coarsening the grid when the view is large, and reports the cell size
-it actually used.
+once — see §5, "From the flood simulation". It was bounded first to the map's
+own view (#64), coarsening the grid when the view was large and reporting the
+cell size it had actually used. That coarsening is now gone entirely and the
+bound is an area the client draws: §3.15, "The resolution is not ours to
+trade".
+
+### 3.15 A performance round, and twice being wrong about where the time went (#65–#73)
+
+A client watching the flood simulation on Kiru waited fifteen seconds for twelve
+levels, and said so. The answer was a four-phase plan: measure first, then
+rewrite the LZW decoder in Rust, then move raster compute to the edge beside the
+data, then precompute a merge tree so a flood stops being a computation. **Two
+of those four projections were wrong**, and in both cases what corrected them
+was a measurement that took an afternoon rather than an argument that would have
+taken a week.
+
+*Its phases are numbered 0 to 4 and are **not** the phases of
+`dashboard-tools-plan.md`, whose phase 0 is the shared foundation of §3.1. Where
+this section says "phase", it means the performance plan.*
+
+**Phase 0: a harness, and a seam that can fail (#65).** `scripts/bench-geo.mjs`
+times thirteen primitives against the real Kotba raster — the raster read split
+into I/O and LZW, `readWindow`, `resample`, `hillshade`, `renderGrid`, both
+floods, `polygonize`, `polygonStats` at four and at sixty-four vertices, and a
+twelve-level `simulateFlood` — as the median of seven runs after a discarded
+warmup, and **skips four of them honestly** when no raster is present rather
+than reporting a zero. `scripts/geo-differential-test.mjs` is the seam an
+optimisation is checked through: it holds a new implementation against the one
+it replaces and compares field for field. Its eighteen checks include **negative
+controls that inject a one-ULP change and assert the comparison catches it** —
+because a differential test that passes whatever you feed it is worse than no
+test at all, and the only way to know the difference is to hand it something
+that must fail.
+
+Everything below was found with those two scripts. None of it was found by
+reading code.
+
+**Phase 1: LZW in Rust and WebAssembly, and it underdelivered (#66).**
+`native/lzw/` compiles to a **2.2 KB `.wasm`**, base64-embedded in
+`src/lib/geo/lzw-wasm.mjs` so there is no second artefact to deploy, no fetch at
+startup, and nothing to go missing from a serverless bundle. It is
+**byte-for-byte identical to the JavaScript decoder on every chunk of all three
+surveys**, 650 chunks each, and handles the format's corners the same way: the
+shortest legal stream, a repeated clear code, and truncated input that must not
+read past the buffer.
+
+The measured speedup is **2.53× on Kotba, 2.14× on Aektanagar and 2.40× on
+Kiru**. The plan projected **5–10×**. That gap is the most useful number in this
+round. The kernel is a real win and a general one — LZW sits under every raster
+read in the product — but on a 15.1 s native flood over Kiru it saves about
+600 ms, which is not a headline, and the plan had to be re-read the moment the
+figure came in. Recording 2.4× rather than "a Rust kernel, as planned" is the
+reason the rest of this section went the way it did.
+
+**The resolution is not ours to trade (#67).** The flood shipped bounded to the
+map's view and coarsening the grid to fit a four-million-cell budget, reporting
+the cell size it had used beside the answer (§3.14). The client rejected that,
+and the reasoning is worth keeping: the point of a 25 cm survey is that it is a
+25 cm survey; a shoreline computed on 81 cm cells is a different shoreline, and
+it cannot be checked against Global Mapper or HEC-RAS reading the same file —
+which is what this tool is *for*. Worse, the degradation was invisible in the
+picture.
+
+So **all resampling is gone from the flood path**, and the bound became a study
+area the client draws, a rectangle or a polygon, rather than whatever happened
+to be on screen — because panning should not change an answer. Ground past the
+budget is **refused**, in a message naming the size asked for, the size that
+fits, and what to do next. A refusal a client can act on beats a number they
+cannot trust.
+
+**Phase 4: a merge tree, and it over-delivered (#68).** `connectedFlood(dem, L,
+[s])` returns the component of `{z ≤ L}` containing `s`, and two cells are in
+the same component exactly when the minimax path between them is at or below
+`L`. Bottleneck distances are carried entirely by a minimum spanning tree, and
+Kruskal's algorithm builds that tree in ascending edge order — so the hierarchy
+of components as the water rises *is* Kruskal's merge history. Precompute it and
+a flood stops being a computation: it is a lookup of one node plus a subtree
+aggregate that was summed at build time.
+
+Two things make it practical. No edge list is ever materialised: since
+`w(a,b) = max(z(a), z(b))`, sorting *cells* by elevation and unioning each with
+its already-processed neighbours visits the edges in Kruskal order for free —
+and that sort is an exact two-pass radix sort on the IEEE-754 bit pattern, so
+ties agree with `connectedFlood` rather than nearly agreeing. And a node is
+created only where the topology changes, with every cell that merely grows a
+component appended to that node's run, which is what stops the tree being one
+node per cell.
+
+Measured: the **whole Kotba survey**, 1.73 M data cells, builds into 97,112
+nodes in **232 ms** — 263 ms re-measured for this document — at 39.8 bytes per
+cell, and a **twelve-level ladder answers in 16 µs**, 18 µs re-measured. Exact
+against `connectedFlood` on every fixture and on the survey itself.
+
+**The finding that keeps it honest is the memory.** The resident structure is
+about 40 bytes per cell, which is fine for a 40-million-cell study area and is
+**40 GB for the whole Kiru survey**. So it is a structure built per window and
+kept for the next question about the same ground, never a precomputed asset for
+a site.
+
+**Wiring it in, and the regression that came with it (#69, fixed in #71).** With
+one water source and more than one level, a ladder is now answered from the tree
+— `topAncestor` plus two contiguous reads of the run layout — instead of running
+`connectedFlood` once per level, and `describeFlood` assembles the result in one
+place so the traversal path and the tree path cannot drift in units, rounding or
+attribute names. Verified identical to the traversal on every field including
+the GeoJSON, twelve of twelve levels on the Kotba DTM. It is a speed change and
+never an accuracy one: nothing samples the terrain more coarsely.
+
+Measured on Kiru over a ~400 m study area, warm: twelve levels 2964 → 2401 ms,
+twenty-four levels ~5 s → 2711 ms, and **a single level, which builds no tree,
+1634 ms**. The last figure is the one that matters. The tree makes level count
+nearly free — twenty-four levels cost 300 ms more than twelve — and it cannot
+touch a fixed read. That is what turned attention to the read path.
+
+It also shipped with a defect. The tree was used **from two levels upward**, and
+it only pays from about sixteen, because the build sorts every cell in the
+window:
+
+| cells | levels | traversal | build + query |
+|---|---|---|---|
+| 4M | 2 | 176 ms | 693 ms |
+| 4M | 8 | 693 ms | 1019 ms |
+| 4M | 16 | 2302 ms | 1543 ms |
+| 10M | 8 | 1812 ms | 2333 ms |
+| 10M | 16 | 5185 ms | 3697 ms |
+
+A client checking a handful of levels — the common case — was made **up to four
+times slower by an optimisation**, and nothing noticed until it was measured
+afterwards. The rule is now asymmetric, and the asymmetry is the point: **a tree
+already built for this exact ground is always worth using**, because the query
+beats a traversal at every level count, while **building a new one is only worth
+it for a long ladder**. The tree pays off across a session, not within one
+request. One is cached, keyed by the ground itself — site, surface and the exact
+window read — so it can only ever be reused for the raster it was built from.
+
+**A negative result, recorded so nobody retries it expecting a win.**
+`polygonize` was handed the flood's own cell list so it could skip its grid
+scan. It was **slower**, not faster — run-layout order destroys cache locality
+once a flood covers much of the grid — and it reordered the emitted rings, so
+the GeoJSON changed textually for identical geometry. Reverted. It is the
+obvious optimisation and it does not work.
+
+**The worst latency in the product was not the flood (#70).** Every cell in a
+polygon's window asked `pointInPolygon` about its four corners, and
+`pointInPolygon` walks the whole ring — so the cost of an area, a volume, a cut
+and fill or a surface comparison was vertices × cells, when only the cells the
+boundary actually crosses have any business looking at the boundary. On a
+1.9 million cell window:
+
+| vertices | before | after | |
+|---|---|---|---|
+| 4 | 205 ms | 54 ms | 3.8× |
+| 16 | 547 ms | 62 ms | 8.8× |
+| 64 | 1823 ms | 144 ms | 12.7× |
+| 256 | **6809 ms** | **784 ms** | 8.7× |
+
+A 256-vertex ring is an ordinary traced stockpile, not a pathological case, and
+**6.8 seconds for one measurement was worse than the flood simulation the client
+complained about, on a tool used far more often**. Nothing had noticed, because
+nothing measured it until the phase 0 harness existed.
+
+`cornerLattice` computes one scanline per corner row instead of one ray cast per
+corner: the ring's crossings with a horizontal line are found once, sorted, and
+every corner on that row is then a binary search. The ray-casting rule is
+reproduced exactly rather than approximated — same crossing arithmetic, same
+strict comparison — so a corner is inside the lattice **if and only if**
+`pointInPolygon` says it is, and boundary cells still subsample exactly as
+before, so coverage semantics are untouched. It is permanently guarded by a
+check that walks 7,626 corners across six ring shapes, including a star, whose
+rows have more than two crossings and which a naive "first and last crossing"
+version gets wrong, and a concave L whose spans start and stop mid-row. Three
+call sites benefit: `polygonStats`, `cutFill` and `compareSurfaces`.
+
+**The budget was calibrated before the last two optimisations (#71).** From a
+client screenshot: the tool refused a 493 × 513 m view on Aektanagar and told
+him to draw 154 m square or less. The refusal was behaving as designed and the
+design was wrong for that survey — four million cells predates both the WASM
+kernel and the merge tree, and on a 7.7 cm survey it comes out as a 154 m
+square, smaller than anything a client would call a reservoir. Measured end to
+end over eight levels:
+
+| budget | Aektanagar, 7.7 cm | Kiru, 25 cm |
+|---|---|---|
+| 4M | 154 m, 1.0 s | 509 m, 0.5 s |
+| 8M | 217 m, 2.2 s | 719 m, 1.1 s |
+| **12M** | **266 m, 3.3 s** | **881 m, 1.5 s** |
+| 16M | 307 m, 4.3 s | 1017 m, 1.9 s |
+
+Twelve million keeps the worst case near three seconds and nearly doubles the
+usable side length on both surveys. Still no coarsening: past the budget the
+request is refused, never resampled. Malhar's own settings — start 40 m, maximum
+55 m, 2 m interval, eight levels — now answer in 3.2 s at the full 0.0769 m
+grid.
+
+**Phase 2 was measured instead of built (#72).** Moving raster compute into the
+Worker beside R2 is weeks of work and a monthly bill, and it rested entirely on
+a number nobody had: what a windowed read costs *in production*. Every timing
+this project holds was taken on a laptop off a warm local disk, where a
+full-window read of Kotba is 1 ms of I/O against 57 ms of LZW — CPU-bound, which
+is exactly the reading that justified phase 1.
+
+Three things landed, none of which change an answer. `raster-window` counts, per
+read, how many chunk fetches were issued, how many bytes they moved and how long
+went to I/O against decode. The analysis route returns that as **`Server-Timing`**
+— `io`, `decode`, `compute`, the range-request count and the bytes fetched;
+durations only, behind the same session check as the measurement itself — so
+every production request now measures itself, in the header browsers already
+chart and `curl` already prints. And `scripts/bench-read-path.mjs` reads the
+path three ways: a local file, an HTTP tile gateway, or a deployed portal
+reporting its own `Server-Timing`. The third is the honest one, because the read
+happens where it really happens.
+
+**The finding was not what phase 2 assumed.** A full-window read of Kotba issued
+**1,575 range requests of about 4 KB each, sequentially, one per strip**.
+Locally each costs 0.01 ms and the whole thing hides. Over a network it is 1,575
+round trips: at 10 ms each, fifteen seconds to move 7 MB. Sorting the chunks a
+read touches by file offset shows they need not be separate requests at all:
+
+| survey | layout | chunks | contiguous runs | gap |
+|---|---|---|---|---|
+| kotba | strips | 1575 | 1 | 0 MB |
+| aektanagar | tiled | 702 | 1 | 0 MB |
+| kiru, windowed | tiled | 2000 | 21 | 49 MB |
+
+The bytes are physically adjacent. `cached()` stored spans and never coalesced
+them, so the reader asked for one contiguous region in 1,575 pieces.
+
+**Asking for the bytes in one go (#73).** `readWindow` now works out every chunk
+it is about to decode, sorts them by file offset, joins neighbours, and pulls
+each run in a single fetch; the reads below are unchanged and simply hit the
+cache.
+
+| survey | before | after |
+|---|---|---|
+| kotba, stripped | 1465 | **13** |
+| aektanagar, tiled | 63 | **17** |
+
+Bytes moved are essentially unchanged; only the number of requests falls. The
+counts move a little with the window — 1,575 for a full-window read, 1,465 for
+the one the test uses — and the order of magnitude is the point.
+
+Two bounds keep it honest. Gaps up to 512 KB are bridged, because one round trip
+costs more than half a megabyte of unwanted bytes and a tiled window would
+otherwise split at every tile row; and no single fetch exceeds 16 MB, so a large
+window cannot ask for the file in one go. `cached()` gained `prefetch()` and
+`readWindow` only calls it when the source has one: a bare file source would
+read the bytes here and read them again below, which is slower rather than
+faster, so it stays on the old path — which is also what the new test exercises
+as the "before" case. **The data must not change, and is asserted not to**: both
+paths read square, wide-and-flat and tall-and-narrow windows on both a stripped
+and a tiled raster — shapes that straddle tile rows differently and so coalesce
+differently — compared cell for cell across 5.7 M cells, byte identical.
+
+**What this round is evidence for.** Twice, an expensive plan was corrected by a
+cheap measurement:
+
+- The portal was assumed to be **I/O-bound**. It was **CPU-bound in our own
+  LZW** — which is what phase 1 was for, and phase 1 then returned 2.4× against
+  a projected 5–10×.
+- The fix for that was assumed to be **moving compute to the edge**, next to the
+  data. It was that **we asked for the data in 4 KB pieces**. Coalescing is a
+  contained change to one function: no new infrastructure, no Worker deployment,
+  no monthly cost.
+
+**Phase 2 should not be started** until the read path has been measured again
+from production, with `bench-read-path --portal`, against the coalesced reader.
+On this evidence the phase 0 harness — two scripts, no product change, nothing a
+client can see — was worth more than any kernel in the plan, and it is the piece
+to keep if only one of them survives.
 
 ---
 
@@ -830,14 +1112,18 @@ Two things came out of fixing that, both worth keeping:
   the same check that flags water reaching the edge of the survey, because for
   that read they are the same edge. A flood across 21 km of gorge was never a
   question anyone was going to ask.
-- **Large views are coarsened, not refused.** Measured on Kiru: a 1.6 km view
-  is 39.7 M cells and costs **~1.1 s per level**, so a ten-step ladder is
-  twelve seconds of compute. Resampled to a four-million-cell budget the same
-  ladder is about a second, and the areas agree with the full-resolution run to
-  within 0.01 ha (93.45 → 93.45, 98.81 → 98.82, 104.21 → 104.22). A flood
-  extent is a shoreline on a hillside, not a feature the size of a cell. The
-  response reports `computedAtCellSize_m`, so the figure is never quietly finer
-  than the work that produced it.
+- **Large views were coarsened rather than refused — and that was the wrong
+  trade.** Measured on Kiru: a 1.6 km view is 39.7 M cells and costs **~1.1 s
+  per level**, so a ten-step ladder is twelve seconds of compute. Resampled to a
+  four-million-cell budget the same ladder is about a second, and the areas
+  agreed with the full-resolution run to within 0.01 ha (93.45 → 93.45,
+  98.81 → 98.82, 104.21 → 104.22). The response reported `computedAtCellSize_m`,
+  so the figure was never quietly finer than the work behind it. **The client
+  rejected it anyway, and was right to**: the whole reasoning, and what replaced
+  it, is §3.15, "The resolution is not ours to trade". The argument recorded
+  here — a flood extent is a shoreline on a hillside, not a feature the size of
+  a cell — is true about the *picture* and beside the point about the *number*,
+  which is what a client checks against Global Mapper.
 
 The reason the ring-grouping one matters more than its one-line fix suggests:
 **MapLibre silently dropping the layer was the best possible outcome.** An export would
@@ -869,10 +1155,11 @@ one silent no-op producing two failures that look unrelated until traced back
 to the same missing click — is the kind of thing that costs real time again if
 forgotten.
 
-### From tools 2, 5 and 13
+### Traps in the browser suites themselves
 
-
-These cost real time and will recur:
+These are not product defects, and none of them was. They are ways a browser
+suite reports a pass it has not earned, they cost real time, and they will
+recur:
 
 - `page.mouse.click(x, y, { clickCount: 2 })` does **not** produce a `dblclick`,
   and nor do two fast `mouse.click` calls. Only `mouse.down/up({clickCount:1})`
@@ -926,6 +1213,27 @@ Two more, both specific to drawing:
   labels survived a sweep meant to hide overlays, then differed against the
   canvas beneath them and were counted as points 14 px west of the survey.
 
+### From the performance round
+
+Optimising a thing that already works has a failure mode of its own: every
+defect below was introduced by a change that made something faster, and three of
+the five were caught by measuring or testing afterwards rather than by the work
+itself.
+
+| # | Defect | How it was caught |
+|---|---|---|
+| 22 | **`FloodPanel` was changed to require four props `MapViewer` never passed.** The whole state machine — `floodArea`, `floodAreaDrawing`, `startFloodAreaDraw`, `clearFloodArea` and the draw handlers — was built in `MapViewer` and never handed down. **The map page would not have compiled.** `tsc` had not been run on that branch; the API tests do not touch the UI and the browser suite had not been run either, so nothing else could have found it | Running `tsc --noEmit` |
+| 23 | **The corner lattice crashed on a polygon drawn entirely off the survey.** `ringWindow` clamps to the grid, so such a polygon comes back with `col1 < col0`. The old walkers coped by never entering their loops; building a lattice for a negative span threw "Invalid typed array length" and took down every measurement of an off-survey polygon. The unit tests missed it entirely | `analysis-contract-test` printing a blank line where a pass belonged. Two checks now assert such a polygon is *measured* — zero covered ground, null minimum — rather than throwing |
+| 24 | **The flood API tests sized their boxes in metres**, so every bounded check meant something different on every survey: a 600 m box is 6 M cells on Kotba's 24 cm grid and 60 M on Aektanagar's 7.7 cm one. Five checks failed on Aektanagar by *correctly* refusing an area the test thought was small | Running the suite against a second survey. Boxes are now sized in cells, via `boxOfCells()`, and the whole-survey check is guarded to surveys that fit the budget |
+| 25 | **The merge tree was used from two levels upward when it only pays from sixteen** — a regression introduced by the wiring in #69, which made the common case, a short ladder, up to **four times slower** than the traversal it replaced | Measuring after shipping, not before. §3.15 |
+| 26 | **The refusal named a size that did not work.** It suggested the arithmetic maximum, and a drawn area lands just over it every time — the window is padded so edge interpolation has neighbours, it rounds outward to whole cells, and a box drawn on a lon/lat map is not square once projected. Asking for exactly the suggested 266 m came back refused at 12.2 M cells | Drawing the size the message named. The suggestion is now four fifths of the budget, and a check draws the suggested size and asserts it is accepted — telling a client a size and then refusing it is worse than refusing plainly |
+| 27 | **`readWindow`'s window origin drifts on a cell size with a long mantissa.** The origin is `originX + col0 * cellSize`; on Aektanagar (0.07686839999999892) at `col0 = 2812` the window sits 2811.9999999999786 cells from the raster origin, so **a point near a cell boundary resolves one cell differently through the windowed reader than through the whole-file one** — 7.7 cm of ground, 3 mm of elevation there. It affects every windowed read. **Still unfixed**: §7.13 | Making the flood tests portable across surveys, which put the two readers side by side on a survey whose cell size is not a round number |
+
+Number 22 is the one to learn from, and the lesson is not about types. The
+branch had been interrupted mid-change, and the half that had been written was
+the half that compiles on its own. A test suite that never loads the page cannot
+tell you the page is broken, and `tsc --noEmit` costs seconds.
+
 ---
 
 ## 6. Where it stands
@@ -950,14 +1258,35 @@ Two more, both specific to drawing:
 | #54 | 23 Aug 2026 | The database timeout ladder, proved live and fixed |
 | #55 | 24 Aug 2026 | DSM/DTM colour grading, shared with the dynamic tiler |
 | #56 | 24 Aug 2026 | The shapefile tool: draw, download, upload, compare |
-| #57 | 25 Aug 2026 | The profile chart overlays DTM against DSM |
-| #58 | 25 Aug 2026 | Simulation Water Level Rise, and a ring-grouping defect it exposed |
-| #59 | 1 Sep 2026 | Flood bounded to the view, so it works on Kiru and in production |
+| #57 | 25 Aug 2026 | The profile chart overlays DTM against DSM — reversed by #62 |
+| #58 | 27 Aug 2026 | Kiru Hydroelectric added as a third site, contours only at first |
+| #59 | 27 Aug 2026 | Kiru: native-resolution DSM/DTM, no downsampling |
+| #60 | 27 Aug 2026 | Topology-safe contour simplification; tools-unavailable diagnosed |
+| #61 | 28 Aug 2026 | `upload-site.mjs`: symlinks, files over 2 GiB, multipart |
+| #62 | 28 Aug 2026 | Profile shows one surface at a time again; satellite/hybrid basemap |
+| #63 | 31 Aug 2026 | Simulation Water Level Rise, and a ring-grouping defect it exposed |
+| #64 | 1 Sep 2026 | Flood bounded to the view, so it works on Kiru and in production |
+| #65 | 5 Sep 2026 | Phase 0: the benchmark harness and the differential-test seam |
+| #66 | 5 Sep 2026 | Phase 1: LZW decode in Rust/WASM — 2.4×, not the 5–10× projected |
+| #67 | 5 Sep 2026 | Flood: a drawn study area, and no downsampling anywhere |
+| #68 | 5 Sep 2026 | Phase 4: the merge tree, engine only |
+| #69 | 5 Sep 2026 | Flood ladders answered from the merge tree |
+| #70 | 5 Sep 2026 | `polygonStats`: a corner lattice — 6.8 s to 0.78 s |
+| #71 | 5 Sep 2026 | Flood cell budget 4M → 12M; the merge tree only when it pays |
+| #72 | 5 Sep 2026 | Read-path instrumentation, `Server-Timing`, `bench-read-path.mjs` |
+| #73 | 5 Sep 2026 | A window's chunks fetched in contiguous runs — 1,465 to 13 |
+
+Two rows of that table were wrong until this revision, and the correction is
+recorded rather than quietly applied: what this document called #58 and #59 were
+merged as **#63 and #64**, and **#58 to #62 were missing entirely** — the whole
+of the Kiru site's arrival. A table of pull requests that skips five of them is
+not a record, and the numbers are how anyone finds the reasoning later.
 
 ### Infrastructure
 
-- **Cloudflare R2 + Worker** live, serving both surveys' terrain *and* hydrology
-  by byte range, authorised by the same short-lived grant a browser gets
+- **Cloudflare R2 + Worker** live, serving Kotba's and Aektanagar's terrain
+  *and* hydrology by byte range, authorised by the same short-lived grant a
+  browser gets
 - Verified against a server with **no local data files of any kind**
 - The point cloud is in R2 too, under `sites/<slug>/cloud/`: 990 objects,
   127.0 MB. Verified with `portal-data/cloud/` moved aside, so nothing local
@@ -966,53 +1295,89 @@ Two more, both specific to drawing:
   write** — `pyshp` and Python's own `zipfile` — not only against itself. See
   §3.12.
 
-### Tests: 1,191 checks
+### Tests: 610 verified here, and 683 more that need something running
+
+The previous revision of this document headlined **1,191 checks**, which had
+been true a fortnight earlier and was never re-counted. Counts are now split by
+whether they were actually run for this revision, because a number nobody has
+re-run is a claim, not a measurement.
+
+**Run on 5 Sep 2026, every count read off the suite's own last line. 610
+checks.** These need no server, no database and no browser — only the source
+rasters under `portal-data/terrain/`:
 
 | Suite | Checks | Covers |
 |---|---|---|
-| `terrain-test` | 74 | measurement arithmetic against analytic surfaces |
+| `terrain-test` | 77 | measurement arithmetic against analytic surfaces, and the corner lattice against `pointInPolygon` |
+| `render-test` | 60 | PNG, colour, lighting, tile maths |
+| `raster-window-test` | 59 | windowed reads vs whole-file reads, cell for cell, coalesced and not |
 | `engineering-test` | 58 | contractor, mining and road tools |
 | `hydro-test` | 55 | routing against known answers |
-| `portal-tile-grant-test` | 48 | the Worker's authorisation, written as attacks |
-| `analysis-core-test` | 38 | request sequencing, written as races |
 | `analysis-contract-test` | 49 | the pipeline against real Kotba rasters |
-| `raster-window-test` | 55 | windowed reads vs whole-file reads, cell for cell |
-| `render-test` | 60 | PNG, colour, lighting, tile maths |
-| `analysis-api-test` | 70 | measurement over HTTP, flood simulation included |
-| `hydrology-api-test` | 61 | hydrology over HTTP |
-| `render-api-test` | 26 | tiles over HTTP, decoded |
-| `cloud-api-test` | 43 | the cloud route, and the quadtree's own invariants |
-| `alignment-api-test` | 47 | the four alignment tools, as relationships |
-| `surface-api-test` | 35 | grid levels, deviation, tolerance, and the signed ramp |
-| `flood-test` | 30 | the flood engine: ladders, patches, holes, survey edges |
+| `portal-tile-grant-test` | 48 | the Worker's authorisation, written as attacks |
 | `shapefile-test` | 40 | SHP/SHX/DBF/PRJ/ZIP, round-tripped, byte for byte |
-| `shapefile-api-test` | 30 | the shapefile route: projection, refusals, round trip |
-| `portal-map-browser-test` | 39 | measure tools in a real browser, including the DTM/DSM overlay |
-| `portal-hydrology-browser-test` | 34 | hydrology panel in a real browser |
-| `portal-render-browser-test` | 29 | rendered layers in a real browser |
-| `portal-tool-rail-test` | 34 | the tool groups, and that one tool is armed at a time |
-| `portal-contours-browser-test` | 27 | contour labels, bands, index lines, colour |
-| `portal-cloud-browser-test` | 16 | the cloud draws, and draws where the survey is |
-| `portal-alignment-browser-test` | 42 | drawing a centreline and asking it four questions |
-| `portal-surface-browser-test` | 40 | polygon tools, and the contents of the files they write |
-| `portal-shapefile-browser-test` | 26 | draw, download, upload the same file, and see it redrawn |
-| `portal-flood-browser-test` | 59 | the water rises, animates, exports, and yields the click |
-| `portal-map-no-terrain-test` | 18 | the production case: tiles without rasters |
-| `portal-assets-test` | 7 | asset serving |
+| `analysis-core-test` | 38 | request sequencing, written as races |
+| `merge-tree-test` | 34 | the merge tree against `connectedFlood`, fixture by fixture and on the whole survey |
+| `flood-test` | 30 | the flood engine: ladders, patches, holes, survey edges |
 | `portal-map-test` | 19 | manifest handling |
+| `geo-differential-test` | 18 | an optimisation against the code it replaces, including one-ULP negative controls |
 | `db-timeout-test` | 11 | the timeout ladder, as arithmetic on the constants |
-| `portal-ux-test` | n/a | navigation feedback (no count reported) |
-| `portal-smoke-test` | n/a | every route, every site (no count reported) |
+| `lzw-test` | 7 | the WASM decoder against the JavaScript one, all three surveys, and the format's corners |
+| `portal-assets-test` | 7 | asset serving |
+
+**Not run here, so the counts below are unverified.** Each is the figure
+reported by the pull request that last touched the suite; every one of them
+needs a development server, a database or Puppeteer, and this document was
+written on a machine already busy with other work. Treat them as the last known
+good, not as today's:
+
+| Suite | Checks | Last measured | Covers |
+|---|---|---|---|
+| `analysis-api-test` | 75 Kotba / 72 Aektanagar | #71 | measurement over HTTP, flood simulation included |
+| `hydrology-api-test` | 61 | #73 | hydrology over HTTP |
+| `portal-flood-browser-test` | 59 | #63 | the water rises, animates, exports, and yields the click |
+| `alignment-api-test` | 47 | #70 | the four alignment tools, as relationships |
+| `cloud-api-test` | 43 | #48 | the cloud route, and the quadtree's own invariants |
+| `portal-alignment-browser-test` | 42 | #50 | drawing a centreline and asking it four questions |
+| `portal-map-browser-test` | 41 | #70 | measure tools in a real browser |
+| `portal-surface-browser-test` | 40 | #70 | polygon tools, and the contents of the files they write |
+| `surface-api-test` | 35 | #70 | grid levels, deviation, tolerance, and the signed ramp |
+| `portal-hydrology-browser-test` | 34 | #42 | hydrology panel in a real browser |
+| `portal-tool-rail-test` | 34 | #47 | the tool groups, and that one tool is armed at a time |
+| `shapefile-api-test` | 30 | #56 | the shapefile route: projection, refusals, round trip |
+| `portal-render-browser-test` | 29 | #45 | rendered layers in a real browser |
+| `portal-contours-browser-test` | 27 | #47 | contour labels, bands, index lines, colour |
+| `render-api-test` | 26 | #73 | tiles over HTTP, decoded |
+| `portal-shapefile-browser-test` | 26 | #56 | draw, download, upload the same file, and see it redrawn |
+| `portal-map-no-terrain-test` | 18 | #49 | the production case: tiles without rasters |
+| `portal-cloud-browser-test` | 16 | #48 | the cloud draws, and draws where the survey is |
+| `portal-ux-test` | n/a | — | navigation feedback (no count reported) |
+| `portal-smoke-test` | n/a | — | every route, every site (no count reported) |
+
+Three of those are stale in a way worth naming rather than carrying forward.
+`portal-map-browser-test` was 39 when this document last counted it, then 41
+after #62 removed the DSM/DTM overlay it used to assert and #70 added to it;
+`portal-flood-browser-test`'s 59 predates the study area entirely and will have
+moved; `analysis-api-test` now reports a different number per survey by design,
+which is the point of `boxOfCells()` (§5, defect 24).
 
 `portal-map-no-terrain-test` needs its own server, started with the terrain
-pointed nowhere; the rest run against an ordinary `npm run dev`.
+pointed nowhere; the rest of the unverified list runs against an ordinary
+`npm run dev`. The nine browser suites additionally need
+`npm install --no-save puppeteer` (§7.3).
 
 Two suites fail against a development server and are expected to:
 `portal-security-test`'s "no `unsafe-eval` in a production build" check, and
 `portal-tracing-test`, which reads a production build's trace files. Both pass
 against `npm run build`.
 
+Not a test suite but run for this revision: `bench-geo` measures 13 primitives
+and skips 4 for want of a raster, and `bench-read-path` still reports 1,575
+range requests for a full-window local read — correctly, because a bare file
+source is deliberately left off the coalescing path (§3.15).
+
 Also: `hydro-validate` still agrees with SAGA at 98.1% / 98.3% catchment IoU.
+Not re-run here; it needs the Kherwada dataset, which is not on this machine.
 
 ### Tool coverage against the specification
 
@@ -1134,7 +1499,7 @@ levels rather than from a window.
 
 ### 7.3 Puppeteer is undeclared
 
-The four browser suites need `npm install --no-save puppeteer`. It is deliberately
+The nine browser suites need `npm install --no-save puppeteer`. It is deliberately
 not in `package.json`, to keep it out of the deployment bundle, but that means
 those suites cannot run in CI as things stand. If they should, it needs a real
 `devDependency` entry and a CI step.
@@ -1231,30 +1596,71 @@ The quadtree is built to 13.6 cm spacing, which keeps 26% of the flown points.
 four times the storage and a build that holds about a gigabyte. Worth doing if
 anyone asks to see the cloud at full density; not worth doing on spec.
 
+### 7.13 A windowed read can resolve a point one cell differently — open
+
+`readWindow` gives its window an origin of `originX + col0 * cellSize`. That is
+exact when the cell size is a round number and it is not when the cell size has
+a long mantissa. On Aektanagar, whose cell size is 0.07686839999999892, a window
+starting at `col0 = 2812` sits **2811.9999999999786 cells** from the raster
+origin rather than 2812 — so a point lying near a cell boundary resolves to one
+cell through the windowed reader and to its neighbour through the whole-file
+one.
+
+Here that is 7.7 cm of ground and about 3 mm of elevation, which is well inside
+the survey's stated accuracy, so nothing a client sees is wrong today. It is
+recorded as open rather than closed because **it affects every windowed read**,
+not only the flood, and because the size of the error is a property of the cell
+size rather than of anything we control: a coarser survey with an equally awkward
+mantissa moves the boundary further.
+
+The fix is to carry the window's origin as an integer column and row against the
+raster's own origin and derive world coordinates from that, rather than
+accumulating a float offset. It wants its own change and its own check —
+windowed against whole-file, on a survey whose cell size is deliberately not
+round — and `raster-window-test` is where that check belongs.
+
+Found while making the flood tests portable across surveys (§5, defect 27),
+which put the two readers side by side on a survey nothing had previously
+compared them on.
+
 ---
 
 ## 8. What to do next
 
 1. ~~**Draw an alignment.**~~ Done, PR #50. It moved four tools as predicted.
 2. ~~**Wire the three engine-only tools that needed a panel.**~~ Done, PR #51.
-3. ~~**Tool 40, the dashboard summary.**~~ Done, PR #52, along with a design pass
+3. ~~**Tool 40, the dashboard summary.**~~ Done, PR #53, along with a design pass
    over the map workspace.
+
+4. ~~**Make the flood tool fast enough to use.**~~ Done, PRs #65 to #73, and it
+   is §3.15 rather than a line here because two of the four phases planned for
+   it were corrected by measurement.
 
 What is left, in order:
 
-1. **Finish the export centre (tools 10 and 37).** Grid levels already export as
+1. **Re-measure the read path from production**, with
+   `node scripts/bench-read-path.mjs --portal=<origin> --site=<slug>`, now that
+   a window's chunks are fetched in contiguous runs. Everything the plan says
+   about phase 2 — moving raster compute into the Worker beside R2 — turns on
+   that one number, and the only honest place to take it is the machine that
+   really does the read. **Phase 2 should not be started before this is done**:
+   the last two times a plan was made without it, the plan was wrong (§3.15).
+2. **Fix the windowed origin drift**, §7.13. It is small, it is open, and it is
+   the only known way this codebase can answer two different elevations for one
+   point.
+3. **Finish the export centre (tools 10 and 37).** Grid levels already export as
    CSV, TXT, DXF and LandXML from the map. Missing: a single download centre,
    PDF, SHP, LAS/LAZ, and raster export. **GeoTIFF matters more than it looks** —
    it lets a client open the exact grid we computed against in their own software
    and check our numbers, and none of Propeller, PIX4Dcloud or DroneDeploy offers
    it.
-2. **Tools 8 and 9**, bookmarks and share view: the only two left that are small
+4. **Tools 8 and 9**, bookmarks and share view: the only two left that are small
    and unblocked. Share links need signing, expiry, revocation, site scoping and
    an owner kill switch, and belong in `portal-security-test.mjs` before they
    ship.
-3. **Slope from overviews**, closing 7.2 — the one operation that still reads
+5. **Slope from overviews**, closing 7.2 — the one operation that still reads
    whole rasters and so does not work from object storage.
-4. **The weighted overlay engine** for B4, with weights in configuration, ready
+6. **The weighted overlay engine** for B4, with weights in configuration, ready
    for the day Malhar's suitability model arrives.
 
 Everything else is blocked on somebody else, and §7.8 says on whom: tools 6 and
@@ -1262,9 +1668,17 @@ Everything else is blocked on somebody else, and §7.8 says on whom: tools 6 and
 geotechnical limit, 7 needs Malhar to resolve his own contradiction, and twelve
 of the forty numbers were never described at all.
 
-The thing worth preserving from this round is the testing habit rather than any
-particular tool: **assert relationships between independently computed values**,
-not shapes. Watershed cells against accumulation. Mean depth against maximum
-depth. Lighting against the closed-form equation. Windowed reads against
-whole-file reads, cell for cell. Every defect above was found that way, and none
-of them looked like an error.
+The thing worth preserving is the testing habit rather than any particular tool:
+**assert relationships between independently computed values**, not shapes.
+Watershed cells against accumulation. Mean depth against maximum depth. Lighting
+against the closed-form equation. Windowed reads against whole-file reads, cell
+for cell. A merge tree against the traversal it replaces. Every defect above was
+found that way, and none of them looked like an error.
+
+The performance round adds one habit to it, and the two are the same idea
+pointed at speed instead of correctness: **measure before planning, and measure
+again after shipping**. The plan's projected 5–10× kernel returned 2.4×; its
+edge-compute phase turned out to be a four-kilobyte read size; and an
+optimisation that was right for long ladders shipped making short ones four
+times slower. None of those was visible by reasoning about the code, and all
+three were visible within an afternoon of running `bench-geo`.
