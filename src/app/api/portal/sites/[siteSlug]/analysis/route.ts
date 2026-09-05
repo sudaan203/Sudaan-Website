@@ -53,24 +53,47 @@ const MAX_FLOOD_LEVELS = 200;
  * Cells one flood simulation may walk. Past this the request is **refused**,
  * never quietly coarsened.
  *
- * Measured on Kiru, whose DTM is 25 cm: a 500 m square is 3.9 million cells and
- * a twelve-level ladder over it takes 2.1 seconds end to end, read included. A
- * 1.6 km square is 39.7 million cells and the same ladder takes fifteen
- * seconds, which is past what a serverless function should be asked for and
- * well past interactive. Four million is that 500 m square — about 2,000 cells
- * a side, whatever the survey's resolution makes that in metres.
+ * Measured end to end, eight levels, on the two surveys that bracket the
+ * range — Aektanagar at 7.7 cm and Kiru at 25 cm:
  *
- * This used to resample instead, averaging the grid down to fit the budget. It
- * was the wrong trade and the client said so: the whole point of a 25 cm survey
- * is that it is a 25 cm survey, and a shoreline computed on 81 cm cells is a
+ *     budget   Aektanagar        Kiru
+ *        4M    154 m, 1.0 s    509 m, 0.5 s
+ *        8M    217 m, 2.2 s    719 m, 1.1 s
+ *       12M    266 m, 3.3 s    881 m, 1.5 s
+ *       16M    307 m, 4.3 s   1017 m, 1.9 s
+ *
+ * Twelve million is the point where the worst case is still about three
+ * seconds. It started at four million, which was calibrated before the LZW
+ * kernel and the merge tree, and on a 7.7 cm survey that came out as a 154 m
+ * square — small enough that a client looking at a real reservoir was simply
+ * told no. Nearly doubling the side length is the difference between a tool
+ * that refuses and a tool that answers.
+ *
+ * The budget is in cells rather than metres because that is what the work is.
+ * The same four million cells is a 154 m square on Aektanagar and a 509 m
+ * square on Kiru, and both cost the same to simulate.
+ *
+ * This used to resample instead, averaging the grid down to fit. It was the
+ * wrong trade and the client said so: the whole point of a 25 cm survey is
+ * that it is a 25 cm survey, and a shoreline computed on 81 cm cells is a
  * different shoreline — one that cannot be checked against Global Mapper or
  * HEC-RAS reading the same file, which is what this tool is *for*. Worse, the
  * degradation was invisible in the picture. So the resampling is gone and the
- * answer to "too much ground" is now a sentence telling the client to draw a
+ * answer to "too much ground" is a sentence telling the client to draw a
  * smaller study area, with the size they asked for and the size that fits both
  * named in it. A refusal a client can act on beats a number they cannot trust.
  */
-const MAX_FLOOD_CELLS = 4_000_000;
+const MAX_FLOOD_CELLS = 12_000_000;
+
+/**
+ * Ladder length from which building a merge tree is worth it.
+ *
+ * The tree turns each level into a lookup, but building it sorts every cell in
+ * the window, and that sort is not free. Sixteen is where the two cross on the
+ * measurements in the flood case below — under it the traversal wins outright,
+ * over it the tree pulls away and keeps pulling away as the ladder grows.
+ */
+const TREE_PAYS_FROM_LEVELS = 16;
 
 /**
  * The last merge tree built, kept for the next request against the same ground.
@@ -108,9 +131,19 @@ function floodTooLarge(
 ): BadRequest {
   const million = (n: number) => `${(n / 1_000_000).toFixed(1)} million`;
   const metres = (n: number) => `${Math.round(n).toLocaleString("en-GB")} m`;
-  // The square that does fit, in this survey's own metres, because "4 million
-  // cells" is not a size anyone can draw and "about 500 m across" is.
-  const fits = metres(Math.sqrt(MAX_FLOOD_CELLS) * cellSize);
+  /*
+   * The square that does fit, in this survey's own metres, because "12 million
+   * cells" is not a size anyone can draw and "about 800 m across" is.
+   *
+   * Deliberately under the true maximum. A window is padded by a margin so
+   * edge interpolation has neighbours, it rounds outward to whole cells, and a
+   * box drawn on a lon/lat map is not exactly square once projected — so an
+   * area drawn at the arithmetic limit lands just over it. Suggesting the exact
+   * maximum meant telling a client a size and then refusing it when they drew
+   * it, which is worse than refusing plainly. Four fifths of the budget leaves
+   * room for all three effects.
+   */
+  const fits = metres(Math.sqrt(MAX_FLOOD_CELLS * 0.8) * cellSize);
   const size =
     `${metres(cols * cellSize)} by ${metres(rows * cellSize)} — ` +
     `${million(cols * rows)} cells at this survey's ${cellSize.toFixed(3)} m resolution`;
@@ -694,15 +727,37 @@ export async function POST(
           seeds = [cell];
         }
 
-        /*
-         * Only for a single source cell, which is the only shape `simulateFlood`
-         * can use a tree for, and only when there is more than one level to
-         * answer — below that the build costs more than the traversal it saves.
+        /**
+         * Use the merge tree only where it actually wins, which is not
+         * everywhere.
+         *
+         * Measured on Aektanagar, whose 7.7 cm cells make it the worst case
+         * here — traversal against build-plus-query, per level count:
+         *
+         *      cells  levels   traversal   build + query
+         *         4M       2      176 ms          693 ms
+         *         4M       8      693 ms         1019 ms
+         *         4M      16     2302 ms         1543 ms
+         *        10M       8     1812 ms         2333 ms
+         *        10M      16     5185 ms         3697 ms
+         *
+         * The build is a sort over every cell and it dominates: below about
+         * sixteen levels it costs more than the traversals it replaces. An
+         * earlier version used the tree from two levels upward and made the
+         * common case — a client checking a handful of levels — up to four
+         * times slower.
+         *
+         * A tree already built for this exact ground is a different matter.
+         * The query is far cheaper than a traversal at every level count, so
+         * once the build is paid for it is always worth using, which is what
+         * makes a session of adjusting the interval and scrubbing the slider
+         * fast even though the first run is not.
          */
         const floodTree = (() => {
-          if (!seeds || seeds.length !== 1 || levels.length < 2) return null;
+          if (!seeds || seeds.length !== 1) return null;
           const key = `${siteSlug}:dtm:${window.col0},${window.row0},${window.cols},${window.rows}`;
           if (floodTreeCache?.key === key) return floodTreeCache.tree;
+          if (levels.length < TREE_PAYS_FROM_LEVELS) return null;
           const tree = buildMergeTree(dtm);
           floodTreeCache = { key, tree };
           return tree;
