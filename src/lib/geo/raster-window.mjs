@@ -247,6 +247,67 @@ export async function openRaster(source) {
     return { bytes: Buffer.from(decoded.buffer, decoded.byteOffset, decoded.length), base: 0 };
   }
 
+  /**
+   * Bytes that may be pulled in one fetch even though nothing wants the middle.
+   *
+   * Bridging a small gap is cheaper than a second round trip. Half a megabyte
+   * is well under the cost of one network latency and bounds how much of a
+   * tiled file's unwanted columns can be dragged in per row.
+   */
+  const COALESCE_GAP = 512 * 1024;
+
+  /** Ceiling on one fetch, so a large window cannot ask for the file in one go. */
+  const COALESCE_MAX = 16 * 1024 * 1024;
+
+  /**
+   * Fetch every chunk a window is about to decode, in as few requests as the
+   * file's own layout allows.
+   *
+   * Without this, `chunk()` asks for each strip or tile the moment it needs it
+   * — 1,575 sequential range requests for a full read of Kotba, whose strips
+   * are one contiguous run with no gap between them. That is invisible on a
+   * warm local disk and ruinous over a network.
+   *
+   * Sorting by file offset and joining neighbours turns that into one request
+   * per contiguous run: one for Kotba, one for Aektanagar, about one per tile
+   * row for a window into a large tiled file. The reads afterwards are
+   * unchanged and simply hit the cache.
+   *
+   * Skipped entirely when the source cannot cache — a bare file source would
+   * read the bytes here and read them again below, which is slower, not
+   * faster.
+   */
+  async function prefetchChunks(indices) {
+    if (typeof source.prefetch !== "function" || indices.length === 0) return;
+
+    const wanted = [];
+    for (const index of indices) {
+      if (index < 0 || index >= offsets.length) continue;
+      const length = counts[index];
+      if (length > 0) wanted.push({ start: offsets[index], end: offsets[index] + length });
+    }
+    if (wanted.length === 0) return;
+    wanted.sort((a, b) => a.start - b.start);
+
+    let runStart = wanted[0].start;
+    let runEnd = wanted[0].end;
+    const runs = [];
+    for (let i = 1; i < wanted.length; i += 1) {
+      const w = wanted[i];
+      const joinable = w.start - runEnd <= COALESCE_GAP && w.end - runStart <= COALESCE_MAX;
+      if (joinable) {
+        if (w.end > runEnd) runEnd = w.end;
+      } else {
+        runs.push([runStart, runEnd]);
+        runStart = w.start;
+        runEnd = w.end;
+      }
+    }
+    runs.push([runStart, runEnd]);
+
+    for (const [start, end] of runs) await source.prefetch(start, end - start);
+  }
+
   return {
     label,
     width,
@@ -313,6 +374,26 @@ export async function openRaster(source) {
       const { col0, row0, cols, rows } = window;
       const data = new Float32Array(cols * rows);
       data.fill(Number.isNaN(nodata) ? NaN : nodata);
+
+      // Everything this window will decode, fetched in as few requests as the
+      // file's layout allows. See `prefetchChunks`.
+      {
+        const needed = [];
+        if (tiled) {
+          const across0 = Math.ceil(width / tileWidth);
+          for (let ty = Math.floor(row0 / tileHeight); ty <= Math.floor((row0 + rows - 1) / tileHeight); ty += 1) {
+            for (let tx = Math.floor(col0 / tileWidth); tx <= Math.floor((col0 + cols - 1) / tileWidth); tx += 1) {
+              needed.push(ty * across0 + tx);
+            }
+          }
+        } else {
+          const rowsPerStrip = tileHeight;
+          for (let s = Math.floor(row0 / rowsPerStrip); s <= Math.floor((row0 + rows - 1) / rowsPerStrip); s += 1) {
+            needed.push(s);
+          }
+        }
+        await prefetchChunks(needed);
+      }
 
       if (tiled) {
         const tx0 = Math.floor(col0 / tileWidth);
