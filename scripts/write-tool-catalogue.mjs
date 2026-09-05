@@ -2,14 +2,19 @@
  * Write docs/tool-catalogue.md from src/lib/portal/tool-catalogue.ts.
  *
  *   PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/write-tool-catalogue.mjs
+ *   PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/write-tool-catalogue.mjs --check
  *
  * Generated rather than written, because the same list drives the tool rail on
  * the map. A document that says a tool is live while the dashboard shows it
  * disabled is worse than no document: it is the kind of thing a client notices
  * in a meeting.
  *
- * Run this after changing the catalogue. It is checked by
- * `--check`, which fails if the file on disk has drifted.
+ * Run this after changing the catalogue. `--check` compares the file on disk
+ * against what this script would write and fails if they differ, **without
+ * writing anything** — it used to write the file first and then compare it with
+ * the lines it had just written, so it could not fail however far the document
+ * had drifted. A check that cannot fail is worse than no check, because it is
+ * quoted as evidence.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -179,11 +184,14 @@ w("> run an interactive flood/water-level rise simulation over the existing");
 w("> DTM, similar in concept to the terrain-based water-level analysis");
 w("> available in tools such as Global Mapper and HEC-RAS.");
 w();
-w("- **Simulation Water Level Rise.** Pick a water source on the map or type a");
-w("  starting elevation, choose a 2, 5 or 10 m rise interval, and watch the");
-w("  flood spread step by step with the inundated area in m², hectares and km²");
-w("  beside it. Two modes, never conflated: a **connected** flood from a chosen");
-w("  source, and a plain **elevation threshold**. Every level exports as a");
+w("- **Simulation Water Level Rise.** Draw a study area, pick a water source on");
+w("  the map or type a starting elevation, choose a 2, 5 or 10 m rise interval,");
+w("  and watch the flood spread step by step with the inundated area in m²,");
+w("  hectares and km² beside it. Two modes, never conflated: a **connected**");
+w("  flood from a chosen source, and a plain **elevation threshold**. It is");
+w("  computed at the survey's own native resolution and never coarsened to go");
+w("  faster: an area too large to simulate at full resolution is refused, with");
+w("  the size that would work named in the refusal. Every level exports as a");
 w("  polygon carrying its water level, interval and area, as GeoJSON or as a");
 w("  real shapefile. See `docs/tools.md`.");
 w();
@@ -203,15 +211,16 @@ w("- A second flight of any site. Tools 6 and 11 cannot be built without one, an
 w("  no amount of code substitutes for it.");
 w();
 
-writeFileSync("docs/tool-catalogue.md", lines.join("\n"));
+const document = lines.join("\n");
 
 if (process.argv.includes("--check")) {
   const onDisk = readFileSync("docs/tool-catalogue.md", "utf8");
-  if (onDisk !== lines.join("\n")) {
+  if (onDisk !== document) {
     console.error("docs/tool-catalogue.md is out of date; regenerate it");
     process.exit(1);
   }
   console.log("docs/tool-catalogue.md is up to date");
 } else {
+  writeFileSync("docs/tool-catalogue.md", document);
   console.log(`wrote docs/tool-catalogue.md (${lines.length} lines)`);
 }
