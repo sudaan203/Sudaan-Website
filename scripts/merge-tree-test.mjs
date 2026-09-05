@@ -26,6 +26,8 @@
  *   PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/merge-tree-test.mjs
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Grid } from "../src/lib/geo/raster.mjs";
 import { connectedFlood } from "../src/lib/geo/hydrology.mjs";
 import { fileSource, cached } from "../src/lib/geo/raster-source.mjs";
@@ -382,8 +384,24 @@ console.log("\nA ladder of levels, which is what the tool actually asks for");
 
 // ---------------------------------------------------------------------------
 console.log("\nReal terrain: the Kotba DTM at native resolution");
-{
-  const path = "portal-data/terrain/kotba-survey/dtm.tif";
+/*
+ * `portal-data/terrain/` is gitignored, so a fresh checkout — a new machine, or
+ * CI — has no DTM to open. Reading it unconditionally made this file crash with
+ * an ENOENT stack trace after 26 checks had already printed `ok`, which reads
+ * like a broken engine rather than a missing input. Guarded, so the synthetic
+ * sections above and below still run and still count, and the absence is stated
+ * rather than inferred from a stack trace. Every check in this block is a
+ * comparison against `connectedFlood` on real ground; none of it can be
+ * synthesised, so skipping is the honest option and the block stays a manual
+ * step on a machine that has the surveys.
+ */
+const terrainDir = process.env.PORTAL_TERRAIN_DIR ??
+  join(process.cwd(), "portal-data", "terrain");
+const kotbaDtm = join(terrainDir, "kotba-survey", "dtm.tif");
+if (!existsSync(kotbaDtm)) {
+  console.log(`  .... no raster at ${kotbaDtm}, skipped — set PORTAL_TERRAIN_DIR to run it`);
+} else {
+  const path = kotbaDtm;
   const raster = await openRaster(cached(await fileSource(path)));
   const dem = await raster.readWindow({ col0: 0, row0: 0, cols: raster.width, rows: raster.height });
   await raster.close();

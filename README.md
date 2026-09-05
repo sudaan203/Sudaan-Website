@@ -149,8 +149,10 @@ npm run lint         # eslint
 node scripts/generate-reports.mjs   # regenerate sample PDF reports
 ```
 
-The site builds on Node 18.18+, but **the portal's scripts and test suites are
-run on Node 22** and this machine keeps it in a keg:
+Requires **Node 22**. Newer Node breaks Next's launcher with a `semver` interop
+failure before it prints anything useful, so the version is pinned rather than
+merely recommended. This machine keeps it in a keg, so scripts and suites are run
+through it explicitly:
 
 ```bash
 PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/terrain-test.mjs
@@ -158,6 +160,54 @@ PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/terrain-test.mjs
 
 The browser suites additionally need `npm install --no-save puppeteer`, which is
 deliberately not a declared dependency (`docs/tools.md` §7.3).
+
+---
+
+## ✅ Continuous Integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request
+and on every push to `main`, in two parallel jobs:
+
+| Job | What it runs |
+| --- | --- |
+| **Typecheck and engine suites** | `npx tsc --noEmit`, then the fourteen engine suites, then `bench-geo --size=small` as a smoke run |
+| **Build** | `npm run build` |
+
+The engine suites are `terrain`, `engineering`, `hydro`, `flood`, `merge-tree`,
+`analysis-core`, `render`, `shapefile`, `lzw`, `db-timeout`, `geo-differential`,
+`portal-map`, `portal-assets` and `portal-tile-grant` — 494 checks in a couple of
+seconds. They qualify because they need nothing but the repository: their
+fixtures are synthetic grids with closed-form answers or files that are tracked
+in git, and the few that can compare against real survey data skip that
+comparison when it is absent rather than failing.
+
+The last three carry the `portal-` prefix that elsewhere marks a suite needing a
+server, but none of them do — one is arithmetic on data shapes, one hashes the
+tracked deliverables looking for one client's previews in another client's
+folder, and one drives the tile Worker's `fetch` handler against a fake R2
+binding.
+
+Typecheck runs separately from the build because `next build` only typechecks
+what is reachable from a route; a broken module that nothing imports yet gets
+past it.
+
+### What stays manual, and why
+
+Roughly two thirds of the test estate cannot run on a hosted runner:
+
+- **`scripts/*-api-test.mjs`** need `next dev` listening, a Supabase database
+  with the portal schema and seeded users, and the survey rasters the routes read
+  windows out of.
+- **`scripts/portal-*-browser-test.mjs`** need all of that plus a browser driving
+  the map page.
+- **`scripts/raster-window-test.mjs`** compares windowed reads against whole-file
+  reads of the real DTMs — one BigTIFF tiled survey and one stripped one, because
+  the reader has a separate code path for each. `portal-data/terrain/` is
+  gitignored, and a GeoTIFF written by this repo to test this repo's reader would
+  prove nothing about either layout.
+
+Run those on a machine that has the surveys and a database. They are the suites
+to run before a release; CI covers the ones to run before a merge.
 
 ---
 
