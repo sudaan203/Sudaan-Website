@@ -20,9 +20,29 @@
  *
  * It deliberately does **not** cover authorisation or the HTTP layer. That is
  * `analysis-api-test.mjs`, which needs the portal database.
+ *
+ * ## Which survey it runs against
+ *
+ *   SITE=aektanagar-survey node scripts/analysis-contract-test.mjs
+ *
+ * Nothing below is anchored to a place. It used to be: a latitude range that
+ * said "Gujarat" and an elevation range of 300-450 m, both true of Kotba and of
+ * nothing else. Aektanagar sits at 60 m and Kiru at 1,491 m in Jammu, so those
+ * two checks failed on two thirds of the published surveys while asserting
+ * nothing about the product. They are now derived from the raster.
+ *
+ * ## Why the grid is a window
+ *
+ * Ground truth here is a **windowed** read of the middle of the survey rather
+ * than the whole file, and that is what lets this suite run on Kiru at all: its
+ * DTM is 2.3 GB and `readGeoTiff` cannot open it — `readFileSync` throws
+ * `ERR_FS_FILE_TOO_LARGE` past 2 GiB, before any of this project's code is
+ * reached. A window is a real Grid carrying its own origin, so every function
+ * in `terrain-analysis.mjs` treats it as a complete raster and every assertion
+ * below means exactly what it meant before. On Kotba the window clamps to the
+ * whole survey and nothing changes at all.
  */
 
-import { readGeoTiff } from "../src/lib/geo/raster.mjs";
 import {
   REFERENCE,
   cutFill,
@@ -32,9 +52,24 @@ import {
   spotLevel,
 } from "../src/lib/geo/terrain-analysis.mjs";
 import { lonLatToUtm, utmToLonLat } from "../src/lib/geo/projection.mjs";
+import { describeSurvey, openSurvey } from "./lib/survey.mjs";
 
-const DTM = process.env.DTM ?? "portal-data/terrain/kotba-survey/dtm.tif";
-const DSM = process.env.DSM ?? "portal-data/terrain/kotba-survey/dsm.tif";
+const SITE = process.env.SITE ?? "kotba-survey";
+
+/**
+ * Half-width of the ground truth window, in metres rather than cells.
+ *
+ * The exception that proves the rule. Everywhere a *cost* or a *cell budget* is
+ * under test, size in cells — see `boxOfCells` in `analysis-api-test.mjs`. Here
+ * the quantities under test are metric by construction: a 100 m square is one
+ * hectare, and the cut-and-fill identity below is "raising a plane one metre
+ * over one hectare moves 10,000 m³". Those are the same statements on every
+ * survey only if the polygon is the same size in metres.
+ *
+ * 200 m leaves room for the 100 m square, the 200 m profile, and the checks
+ * that deliberately run 75 m off the edge of the grid.
+ */
+const WINDOW_HALF_M = 200;
 
 let failures = 0;
 let checks = 0;
@@ -62,15 +97,36 @@ function toProjected(geometry, crs, zone, northern) {
   return geometry.map(([lon, lat]) => lonLatToUtm(lon, lat, zone, northern));
 }
 
-const grid = readGeoTiff(DTM);
-const { zone, northern } = grid.utmZone;
+const survey = await openSurvey(SITE, "dtm");
+const { zone, northern, centreE, centreN } = survey;
+
+/*
+ * The ground truth grid. A window, not the file — see the header comment.
+ *
+ * Everything below reads `grid.width` and `grid.originX` rather than the
+ * survey's, so "the edge of the grid" means the edge of this window. That is
+ * the same assertion about the same code, made over less ground.
+ */
+const grid = await survey.centreWindowMetres(WINDOW_HALF_M);
 const width = grid.width ?? grid.ncols;
 const height = grid.height ?? grid.nrows;
-const centreE = grid.originX + (width / 2) * grid.cellSize;
-const centreN = grid.originY - (height / 2) * grid.cellSize;
 
-console.log(`\nSurvey: ${DTM}`);
-console.log(`  ${width} x ${height} at ${grid.cellSize.toFixed(4)} m, EPSG:${grid.epsg}, UTM ${zone}${northern ? "N" : "S"}`);
+/**
+ * A design level roughly at this survey's own ground, for the checks that need
+ * *a* plane and do not care which.
+ *
+ * This was the literal 360, which is Kotba's plateau. On Aektanagar it sits
+ * 300 m in the air and on Kiru 1,100 m underground. The assertions it feeds are
+ * about area rather than volume, so they survived — but a constant that is
+ * silently 1.1 km wrong on a published survey is the exact shape of the bug
+ * this exercise is hunting, and it costs nothing to derive.
+ */
+const gridStats = grid.stats();
+const datum = Math.round(gridStats.mean);
+
+console.log(`\n${describeSurvey(survey)}`);
+console.log(`  ground truth window ${width} x ${height} cells (${2 * WINDOW_HALF_M} m square, clamped to the survey)`);
+console.log(`  design level for the reference checks: ${datum} m`);
 
 console.log("\nThe projection round trip, which everything else rests on");
 {
@@ -80,10 +136,33 @@ console.log("\nThe projection round trip, which everything else rests on");
   const [backE, backN] = lonLatToUtm(lon, lat, zone, northern);
   near("easting survives a round trip", backE, centreE, 0.001, " m");
   near("northing survives a round trip", backN, centreN, 0.001, " m");
+
+  /*
+   * What a transposed axis or the wrong zone actually looks like, stated
+   * without naming a place.
+   *
+   * This read "the survey lands in Gujarat" against a hardcoded latitude band,
+   * which was true of Kotba and of no other published survey: Aektanagar is
+   * just north of the band and Kiru is 12 degrees away in Jammu. It failed on
+   * both while asserting nothing about the projection.
+   *
+   * A UTM zone is a 6 degree band of longitude with a known centre, and the
+   * raster declares which one it is in its own header. So the survey must land
+   * inside the band its EPSG code claims, and within half a degree of latitude
+   * of where the northing says it is. Swap the axes, or read zone 43 as zone 44,
+   * and the point leaves the band. That catches the real failure on every
+   * survey rather than on one.
+   */
+  const centralMeridian = 6 * zone - 183;
   check(
-    "the survey lands in Gujarat, not somewhere a transposed axis would put it",
-    lat > 20 && lat < 21.5 && lon > 73 && lon < 74.5,
-    `${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+    "the survey lands inside the UTM band its own header declares",
+    Math.abs(lon - centralMeridian) < 3.1,
+    `${lon.toFixed(4)} E, zone ${zone} runs ${(centralMeridian - 3).toFixed(0)}..${(centralMeridian + 3).toFixed(0)}`,
+  );
+  check(
+    "and on the hemisphere the northing says it is on",
+    northern === (lat > 0),
+    `${lat.toFixed(4)} N, header says ${northern ? "northern" : "southern"}`,
   );
 }
 
@@ -98,7 +177,39 @@ console.log("\nTool 1, spot level: a click in degrees, an answer in metres");
   // arithmetic noise rather than a projection error. Tightening this to 1e-9
   // would only ever fail for reasons nobody should act on.
   near("a lon/lat click reads the same cell as the UTM coordinate", spotLevel(grid, x, y), truth, 1e-5, " m");
-  check("the level is a real elevation for this site", truth > 300 && truth < 450, `${truth.toFixed(3)} m`);
+
+  /*
+   * "A real elevation", without quoting one survey's range.
+   *
+   * This was `truth > 300 && truth < 450`, which is Kotba's plateau and nowhere
+   * else: Aektanagar reads about 60 m and Kiru about 1,491 m, so the check
+   * failed on both without saying anything true about either.
+   *
+   * The failure actually worth catching is a nodata sentinel being read as
+   * ground — -32767 here, or -9999, or -3.4e38 — which is what turns a hole in
+   * the survey into a crater in a volume. Bounding by what an elevation on this
+   * planet can be catches every sentinel in one rule and is true of every
+   * survey; `scripts/lib/geo.mjs` draws the same line for the same reason. The
+   * second half is the sharper one: a spot level has to lie inside the range of
+   * the ground it was read from.
+   */
+  check(
+    "the level is an elevation rather than a nodata sentinel read as ground",
+    truth > -500 && truth < 9000,
+    `${truth.toFixed(3)} m`,
+  );
+  const around = polygonStats(grid, [
+    [centreE - 5, centreN - 5],
+    [centreE + 5, centreN - 5],
+    [centreE + 5, centreN + 5],
+    [centreE - 5, centreN + 5],
+    [centreE - 5, centreN - 5],
+  ]);
+  check(
+    "and sits inside the range of the ground immediately around it",
+    truth >= around.min - 1e-6 && truth <= around.max + 1e-6,
+    `${truth.toFixed(3)} m in ${around.min.toFixed(3)}..${around.max.toFixed(3)}`,
+  );
 
   // Bilinear, not nearest neighbour. Half a cell off centre must move the answer
   // continuously; a nearest-neighbour read would return an identical value
@@ -151,7 +262,25 @@ console.log("\nArea, where degrees would be catastrophic and plausible");
     stats.min < stats.mean && stats.mean < stats.max,
     `${stats.min.toFixed(2)} / ${stats.mean.toFixed(2)} / ${stats.max.toFixed(2)}`,
   );
-  near("covered area matches the polygon area", stats.coveredArea, stats.area, 5, " m²");
+  /*
+   * The tolerance is derived from the sampler, because a flat 5 m² was a
+   * cell-count assertion dressed up as an area.
+   *
+   * `cellCoverage` decides a boundary cell's share by testing a 4x4 lattice
+   * inside it, so every cell the rim passes through carries a quantisation
+   * error of up to a sixteenth of a cell. The rim crosses `perimeter / cellSize`
+   * cells, so the total is proportional to `perimeter * cellSize` — which means
+   * the honest tolerance is different on every survey and 5 m² was only ever
+   * Kotba's. It is 20 cells there and 846 on Aektanagar's 7.7 cm grid, and on
+   * Kiru the real discretisation gap is 10.5 m² and the check simply failed.
+   *
+   * A quarter of the boundary band leaves room for the quantisation to
+   * accumulate one way without ever approaching the failure this is here to
+   * catch: the same hectare measured in Web Mercator is about 1,500 m² out,
+   * sixty times this bound on the coarsest survey.
+   */
+  const rimBand = (stats.perimeter * grid.cellSize) / 4;
+  near("covered area matches the polygon area", stats.coveredArea, stats.area, rimBand, " m²");
 }
 
 console.log("\nTool 3, profile: chainage, sampling and gaps");
@@ -162,7 +291,18 @@ console.log("\nTool 3, profile: chainage, sampling and gaps");
   const result = profile(grid, line, { spacing: grid.cellSize });
 
   near("a 200 m line measures 200 m", result.length, 200, 0.05, " m");
-  check("it samples at about one cell", result.points.length > 700, `${result.points.length} samples`);
+  /*
+   * Derived, because "more than 700 samples" is a statement about Kotba's cell
+   * size wearing the clothes of a statement about sampling. A 200 m line at one
+   * sample per cell is 829 samples on Kotba, 2,602 on Aektanagar and 786 on
+   * Kiru; a fixed floor either passes vacuously or fails for no reason.
+   */
+  const expectedSamples = 200 / grid.cellSize;
+  check(
+    "it samples at about one cell",
+    Math.abs(result.points.length - expectedSamples) < expectedSamples * 0.02,
+    `${result.points.length} samples, one per ${grid.cellSize.toFixed(4)} m cell is ~${expectedSamples.toFixed(0)}`,
+  );
   check("chainage starts at zero", Math.abs(result.points[0].chainage) < 1e-9);
   near("chainage ends at the length", result.points.at(-1).chainage, result.length, 1e-6, " m");
   check(
@@ -261,11 +401,21 @@ console.log("\nTool 4, cut and fill: the one most likely to be quietly wrong");
 
 console.log("\nDSM against DTM: the surface model cannot sit below bare earth");
 {
+  /*
+   * The DSM is opened and windowed separately, and it is not the same grid
+   * shape as the DTM on two of the three surveys: Kotba's DSM is 15.7 cm
+   * against a 24 cm DTM, Kiru's is 19.8 cm against 25 cm. `REFERENCE.surface`
+   * samples the reference rather than assuming a shared index, which is the
+   * only reason a comparison between them means anything — and is worth
+   * knowing before someone "optimises" it into an array subtraction.
+   */
   let dsm;
   try {
-    dsm = readGeoTiff(DSM);
-  } catch {
-    check("a surface model is available to compare", false, "could not read the DSM");
+    const dsmSurvey = await openSurvey(SITE, "dsm");
+    dsm = await dsmSurvey.centreWindowMetres(WINDOW_HALF_M);
+    await dsmSurvey.close();
+  } catch (error) {
+    check("a surface model is available to compare", false, error.message.slice(0, 100));
   }
   if (dsm) {
     const HALF = 50;
@@ -277,11 +427,68 @@ console.log("\nDSM against DTM: the surface model cannot sit below bare earth");
       [centreE - HALF, centreN - HALF],
     ];
     const chm = cutFill(dsm, ring, REFERENCE.surface(grid), { rmseZ: 0.04 });
-    check(
-      "canopy and structures stand above the ground, essentially never below",
-      chm.fill < chm.cut * 0.05,
-      `above ${chm.cut.toFixed(0)} m³, below ${chm.fill.toFixed(0)} m³`,
+
+    const meanCanopy = chm.net / chm.measuredArea;
+    console.log(
+      `  ...canopy above ${chm.cut.toFixed(0)} m³, below ${chm.fill.toFixed(0)} m³ ` +
+        `(${((chm.fill / chm.cut) * 100).toFixed(1)}%), mean height ${meanCanopy.toFixed(2)} m`,
     );
+
+    /*
+     * What this section can honestly assert, and why it is no longer a 5% tail.
+     *
+     * The check used to be `fill < cut * 0.05`: essentially no ground anywhere
+     * under the hectare may have the DSM below the DTM. That is true on Kotba
+     * (2.1%) and all but exactly true on Aektanagar (0.005%), and it is false on
+     * Kiru, where 10.3% of the volume has the surface model *below* bare earth,
+     * by up to 10 m.
+     *
+     * Kiru is not wrong and neither is the code. The centre of that survey is a
+     * dam site in a gorge whose walls run past 200% gradient, the two models are
+     * at different resolutions (25.4 cm DTM against a 19.8 cm DSM), and a DTM is
+     * an interpolated ground classification: across a cliff lip the
+     * interpolation carries "ground" out over the drop while the first return
+     * has already fallen away below it. A quarter metre of horizontal
+     * disagreement on a 67 degree face is two thirds of a metre vertically, and
+     * a cliff lip supplies far more than a quarter metre. A third of the lattice
+     * points over that hectare are affected.
+     *
+     * A slope threshold to excuse it would just be Kotba's number again wearing
+     * a different hat — Kotba's own median gradient is 46%, close enough to any
+     * such cutoff to be luck. So the assertions here are the ones that are true
+     * of every survey and still catch the failure this section exists for, which
+     * is the two rasters being swapped:
+     *
+     *   - the mean canopy height over the hectare is positive and real;
+     *   - measuring the pair the other way round inverts it;
+     *   - ground below the surface model stays a minority of the volume.
+     *
+     * A swap makes the first two fail outright and drives the third to about
+     * 100%. Steep terrain moves the third from 2% to 10% and leaves the first
+     * two untouched, which is the distinction that matters.
+     */
+    check(
+      "canopy and structures stand above the ground on average",
+      meanCanopy > 0.1,
+      `mean canopy height ${meanCanopy.toFixed(3)} m`,
+    );
+    const swapped = cutFill(grid, ring, REFERENCE.surface(dsm), { rmseZ: 0.04 });
+    check(
+      "and measuring the pair the other way round inverts the answer",
+      Math.abs(swapped.net + chm.net) < Math.abs(chm.net) * 0.02,
+      `${chm.net.toFixed(0)} m³ one way, ${swapped.net.toFixed(0)} m³ the other`,
+    );
+    check(
+      "ground standing above the surface model stays a minority of the volume",
+      chm.fill < chm.cut * 0.5,
+      `below ${chm.fill.toFixed(0)} m³ against above ${chm.cut.toFixed(0)} m³`,
+    );
+
+    /*
+     * This one holds on any terrain and is the blunder check: a DSM read with
+     * the wrong scale, or against the wrong DTM, gives a canopy hundreds of
+     * metres tall rather than tens.
+     */
     check(
       "and the tallest thing standing is a plausible height, not a blunder",
       chm.maxCutDepth > 0.5 && chm.maxCutDepth < 80,
@@ -327,7 +534,7 @@ console.log("\nPolygons that leave the survey are reported, not silently trimmed
     `${(stats.area - stats.coveredArea).toFixed(0)} m² vs nodata's ${stats.nodataArea.toFixed(0)} m²`,
   );
 
-  const volume = cutFill(grid, ring, REFERENCE.plane(360), { rmseZ: 0.04 });
+  const volume = cutFill(grid, ring, REFERENCE.plane(datum), { rmseZ: 0.04 });
   check(
     "a volume over the same polygon measures less than was drawn",
     volume.measuredArea < volume.polygonArea,
@@ -361,7 +568,7 @@ console.log("\nOff the survey entirely: no answer, rather than a confident zero"
     `complete ${stats.complete}, covered ${stats.coveredArea} m²`,
   );
 
-  const volume = cutFill(grid, ring, REFERENCE.plane(360), { rmseZ: 0.04 });
+  const volume = cutFill(grid, ring, REFERENCE.plane(datum), { rmseZ: 0.04 });
   check(
     "a volume off the survey measures nothing, and says so by area",
     volume.measuredArea === 0 && volume.polygonArea > 0,
