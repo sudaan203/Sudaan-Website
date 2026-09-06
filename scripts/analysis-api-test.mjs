@@ -106,9 +106,65 @@ const HALF = 50; // a 100 m square, exactly one hectare
 const truthRingUtm = survey.ringOfMetres(HALF);
 const truthStats = polygonStats(grid, truthRingUtm);
 
+/**
+ * Mean gradient between horizontally neighbouring cells: the sample area's
+ * texture, as a slope, so it does not depend on the cell size.
+ *
+ * This exists to tell *ground* from *water*, which matters because the geometry
+ * in this suite is placed at the centre of the survey's bounding box, and there
+ * is no rule that says the middle of a survey is land. On Ektanagar 2 it is a
+ * reservoir, and photogrammetry cannot see through water: the returns there are
+ * interpolated flat, and the DSM can sit below the DTM. The canopy check further
+ * down then fails while reporting nothing whatsoever about the route.
+ *
+ * Measured, mean |difference| to the next cell over, divided by the cell size:
+ *
+ *   Aektanagar 1, land        0.201
+ *   Ektanagar 2, NW/NE/SW     0.16 - 0.23
+ *   Ektanagar 2, bbox centre  0.0068     <- the reservoir
+ *
+ * Thirty-fold apart, so the threshold is not delicate. 0.02 sits an order of
+ * magnitude below the quietest real ground and three times above the water.
+ */
+function meanGradient(g, [minE, minN, maxE, maxN]) {
+  const col0 = Math.max(0, Math.floor((minE - g.originX) / g.cellSize));
+  const col1 = Math.min(g.width - 1, Math.ceil((maxE - g.originX) / g.cellSize));
+  const row0 = Math.max(0, Math.floor((g.originY - maxN) / g.cellSize));
+  const row1 = Math.min(g.height - 1, Math.ceil((g.originY - minN) / g.cellSize));
+  let sum = 0;
+  let n = 0;
+  for (let row = row0; row <= row1; row += 1) {
+    for (let col = col0; col < col1; col += 1) {
+      const a = g.data[row * g.width + col];
+      const b = g.data[row * g.width + col + 1];
+      if (g.isNoData(a) || g.isNoData(b)) continue;
+      sum += Math.abs(a - b);
+      n += 1;
+    }
+  }
+  return n ? sum / n / g.cellSize : NaN;
+}
+const FEATURELESS_GRADIENT = 0.02;
+/*
+ * Measured over the *ring's* extent, not the whole truth window, because the
+ * ring is what the canopy check measures and the two have to be the same
+ * ground.
+ *
+ * Getting this wrong is subtle and it did happen: taken over the 600 m truth
+ * window, Ektanagar 2 reads 0.0498, because the window reaches past the
+ * reservoir onto the land around it and the average is of both. That is above
+ * the threshold, so the guard stayed silent while the check underneath it went
+ * on measuring nothing but water. Over the hectare the check actually uses it
+ * reads an order of magnitude lower.
+ */
+const truthBbox = [centreE - HALF, centreN - HALF, centreE + HALF, centreN + HALF];
+const sampleGradient = meanGradient(grid, truthBbox);
+const sampleIsFeatureless = Number.isFinite(sampleGradient) && sampleGradient < FEATURELESS_GRADIENT;
+
 console.log(`\nGround truth from ${DTM}`);
 console.log(`  ${describeSurvey(survey)}`);
 console.log(`  truth grid    ${grid.width} x ${grid.height} (${wholeSurveyFits ? "whole raster" : "windowed on the centre"})`);
+console.log(`  sample texture mean gradient ${sampleGradient.toFixed(4)}${sampleIsFeatureless ? " — featureless, likely water" : ""}`);
 console.log(`  centre        ${centreE.toFixed(3)} E ${centreN.toFixed(3)} N, zone ${zone}${northern ? "N" : "S"}`);
 console.log(`  spot level    ${truthSpot.toFixed(4)} m`);
 console.log(`  1 ha mean     ${truthStats.mean.toFixed(4)} m`);
@@ -366,7 +422,20 @@ console.log("\nTool 4, cut and fill");
     surface: "dsm",
     reference: "dtm",
   });
-  if (status === 200) {
+  if (status === 200 && sampleIsFeatureless) {
+    /*
+     * Not a pass and not a failure: over water there is no canopy to have a
+     * sign, so asserting one would be asserting something untrue about the
+     * ground rather than something true about the route. Named, so the gap is
+     * visible rather than quietly absent — the same treatment a missing
+     * hydrology layer gets in render-api-test.
+     */
+    console.log(
+      `  SKIPPED: the sample area is featureless (mean gradient ` +
+        `${sampleGradient.toFixed(4)}, under ${FEATURELESS_GRADIENT}), which is water or a ` +
+        `void rather than ground; DSM against DTM says nothing here.`,
+    );
+  } else if (status === 200) {
     const r = payload.result;
     const meanCanopy = r.net / r.measuredArea;
     check(
