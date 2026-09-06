@@ -90,7 +90,14 @@ export const sites = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    unique("sites_client_id_slug_key").on(table.clientId, table.slug),
+    /*
+     * Globally unique, not unique per client. A slug names the site everywhere
+     * outside this database — R2 objects at `sites/<slug>/`, `openTerrain`,
+     * and the tile Worker's grant prefix — and none of those carry a client, so
+     * two clients sharing a slug would share one set of rasters and one grant
+     * would authorise the other's prefix. See drizzle/0004_site_slug_global.sql.
+     */
+    unique("sites_slug_key").on(table.slug),
     index("sites_client_idx").on(table.clientId),
   ],
 );

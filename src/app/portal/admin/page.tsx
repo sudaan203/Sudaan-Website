@@ -9,6 +9,9 @@ import {
 import {
   createClientAction,
   createSiteAction,
+  assignSiteAction,
+  renameClientAction,
+  renameSiteAction,
   inviteUserAction,
   setSitePublishedAction,
   setUserActiveAction,
@@ -83,6 +86,108 @@ export default async function OwnerConsole() {
         </p>
       </header>
 
+      {/* ---------------- Who can see what ---------------- */}
+      {/*
+        Read only, and deliberately so. Every control that changes access lives
+        further down beside the thing it changes; this is the one place that
+        answers "who can currently see this survey" without anyone having to
+        reconstruct it from three separate lists and the grant rule.
+
+        Built from the same `clients`, `users` and `sites` already loaded above,
+        so it costs no extra query.
+      */}
+      <section className="surface overflow-hidden">
+        <h2 className="border-b border-ink/[0.08] px-5 py-3 text-sm font-semibold text-ink-900">
+          Who can see what
+        </h2>
+        <p className="border-b border-ink/[0.08] px-5 py-3 text-xs leading-relaxed text-ink/60">
+          A client only ever sees <strong>published</strong> sites belonging to their own
+          organisation. Within that, a person with no per-site restriction sees all of
+          them; ticking any site narrows that person to exactly what is ticked. Owners
+          ({session.email} among them) see everything regardless.
+        </p>
+        {clients.length === 0 ? (
+          <p className="px-5 py-6 text-sm text-ink/60">No clients yet.</p>
+        ) : (
+          <ul className="divide-y divide-ink/[0.08]">
+            {clients.map((client) => {
+              const theirSites = sites.filter((s) => s.clientId === client.id);
+              const published = theirSites.filter((s) => s.isPublished);
+              const people = users.filter(
+                (u) => u.clientId === client.id && u.role === "client",
+              );
+              return (
+                <li key={client.id} className="px-5 py-4">
+                  <p className="text-sm font-semibold text-ink-900">
+                    {client.name}{" "}
+                    <span className="font-normal text-ink/45">{client.slug}</span>
+                  </p>
+
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {theirSites.length === 0 ? (
+                      <span className="text-xs text-ink/55">
+                        No sites assigned. Use “Move” on a site below to give them one.
+                      </span>
+                    ) : (
+                      theirSites.map((site) => (
+                        <span
+                          key={site.id}
+                          className={`rounded-full border px-2.5 py-1 text-xs ${
+                            site.isPublished
+                              ? "border-accent/40 bg-accent-50 text-accent-700"
+                              : "border-ink/15 text-ink/50"
+                          }`}
+                        >
+                          {site.name}
+                          {site.isPublished ? "" : " (hidden)"}
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  {people.length === 0 ? (
+                    <p className="mt-2 text-xs text-ink/55">
+                      Nobody from this client has been invited yet, so nobody is seeing
+                      any of it.
+                    </p>
+                  ) : (
+                    <ul className="mt-3 space-y-1">
+                      {people.map((person) => {
+                        const restricted = person.grantedSiteIds.length > 0;
+                        const visible = restricted
+                          ? published.filter((s) => person.grantedSiteIds.includes(s.id))
+                          : published;
+                        return (
+                          <li key={person.id} className="text-xs text-ink/70">
+                            <span className="font-semibold text-ink-900">{person.email}</span>
+                            {person.isActive ? "" : " (deactivated)"} —{" "}
+                            {!person.isActive ? (
+                              <span className="text-signal-600">no access, account is off</span>
+                            ) : visible.length === 0 ? (
+                              <span className="text-signal-600">
+                                sees nothing
+                                {published.length === 0
+                                  ? " (this client has no published site)"
+                                  : " (restricted to sites that are not published)"}
+                              </span>
+                            ) : (
+                              <>
+                                sees {visible.map((s) => s.name).join(", ")}
+                                {restricted ? " (restricted)" : " (all published)"}
+                              </>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
       {/* ---------------- Clients ---------------- */}
       {/* items-start: without it each panel stretches to match the taller column
           beside it, leaving a short list sitting in a tall empty card. */}
@@ -101,10 +206,21 @@ export default async function OwnerConsole() {
                     <p className="text-sm font-semibold text-ink-900">{client.name}</p>
                     <p className="text-xs text-ink/55">{client.slug}</p>
                   </div>
-                  <p className="text-xs text-ink/55">
-                    {client.siteCount} site{client.siteCount === 1 ? "" : "s"}, {client.userCount}{" "}
-                    {client.userCount === 1 ? "person" : "people"}
-                  </p>
+                  <div className="flex items-center gap-4">
+                    <p className="text-xs text-ink/55">
+                      {client.siteCount} site{client.siteCount === 1 ? "" : "s"}, {client.userCount}{" "}
+                      {client.userCount === 1 ? "person" : "people"}
+                    </p>
+                    <ActionForm
+                      action={renameClientAction}
+                      hidden={{ clientId: client.id }}
+                      submitLabel="Rename"
+                      variant="ghost"
+                      className="flex flex-wrap items-end gap-2"
+                    >
+                      <Field label="Name" name="name" required defaultValue={client.name} />
+                    </ActionForm>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -288,6 +404,38 @@ export default async function OwnerConsole() {
                       submitLabel={site.isPublished ? "Unpublish" : "Publish"}
                       variant={site.isPublished ? "danger" : "ghost"}
                     />
+                  </div>
+                  {/*
+                    Full width under the row: reassigning and renaming are the
+                    two things that were only possible by editing the database
+                    by hand, so they belong beside the site rather than in a
+                    separate screen.
+                  */}
+                  <div className="flex w-full flex-wrap items-end gap-4 border-t border-ink/[0.06] pt-3">
+                    <ActionForm
+                      action={assignSiteAction}
+                      hidden={{ siteId: site.id }}
+                      submitLabel="Move"
+                      variant="ghost"
+                      className="flex flex-wrap items-end gap-2"
+                    >
+                      <Field
+                        label="Belongs to"
+                        name="clientId"
+                        required
+                        options={clientOptions}
+                        defaultValue={site.clientId}
+                      />
+                    </ActionForm>
+                    <ActionForm
+                      action={renameSiteAction}
+                      hidden={{ siteId: site.id }}
+                      submitLabel="Rename"
+                      variant="ghost"
+                      className="flex flex-wrap items-end gap-2"
+                    >
+                      <Field label="Title" name="name" required defaultValue={site.name} />
+                    </ActionForm>
                   </div>
                 </li>
               ))}
