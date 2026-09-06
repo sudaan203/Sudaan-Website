@@ -76,6 +76,11 @@ jobs:
       #       comparison when they are not, by design. What is left (the corners
       #       of the LZW format; every geo primitive against itself and against a
       #       one-ULP perturbation) is exactly the part that needs no data.
+      #   coarsen-test
+      #     — writes its own GeoTIFFs to a temp dir and reads them back, so the
+      #       synthetic half is self-contained. The half that checks the
+      #       streaming coarsener against the in-memory resample needs Kotba and
+      #       skips without it, which is the same bargain as lzw-test.
       #   db-timeout-test
       #     — reads `src/lib/portal/db/client.ts` as text and does arithmetic on
       #       the timeout constants. The name says database; it never opens one.
@@ -105,6 +110,7 @@ jobs:
             db-timeout-test
             geo-differential-test
             accuracy-test
+            coarsen-test
             portal-map-test
             portal-assets-test
             portal-tile-grant-test
