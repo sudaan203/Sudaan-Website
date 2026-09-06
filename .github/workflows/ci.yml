@@ -76,6 +76,9 @@ jobs:
       #       comparison when they are not, by design. What is left (the corners
       #       of the LZW format; every geo primitive against itself and against a
       #       one-ULP perturbation) is exactly the part that needs no data.
+      #   tenancy-test
+      #     — builds a throwaway Postgres with PGlite, applies drizzle/, and
+      #       exercises the visibility SQL over it. Skips cleanly without PGlite.
       #   coarsen-test
       #     — writes its own GeoTIFFs to a temp dir and reads them back, so the
       #       synthetic half is self-contained. The half that checks the
@@ -111,6 +114,7 @@ jobs:
             geo-differential-test
             accuracy-test
             coarsen-test
+            tenancy-test
             portal-map-test
             portal-assets-test
             portal-tile-grant-test
