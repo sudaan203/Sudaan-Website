@@ -174,14 +174,27 @@ export async function createSiteAction(
   const client = (await db.select().from(schema.clients).where(eq(schema.clients.id, clientId)).limit(1))[0];
   if (!client) return { ok: false, message: "Choose which client this site belongs to." };
 
+  /*
+   * Checked across every client, not just this one. The slug is the site's name
+   * in R2 (`sites/<slug>/...`) and in the tile Worker's grant, and neither
+   * carries a client, so a slug reused under a second client would point at the
+   * first one's rasters. See drizzle/0004_site_slug_global.sql.
+   */
   const clash = (
-    await db
-      .select()
-      .from(schema.sites)
-      .where(and(eq(schema.sites.clientId, clientId), eq(schema.sites.slug, slug)))
-      .limit(1)
+    await db.select().from(schema.sites).where(eq(schema.sites.slug, slug)).limit(1)
   )[0];
-  if (clash) return { ok: false, message: `${client.name} already has a site with the slug "${slug}".` };
+  if (clash) {
+    const owner = (
+      await db.select().from(schema.clients).where(eq(schema.clients.id, clash.clientId)).limit(1)
+    )[0];
+    return {
+      ok: false,
+      message:
+        `The slug "${slug}" is already used by "${clash.name}"` +
+        `${owner ? ` under ${owner.name}` : ""}. Slugs are shared across all clients ` +
+        `because they name the survey's files, so pick another.`,
+    };
+  }
 
   await db.insert(schema.sites).values({ clientId, slug, name, location, summary, isPublished: false });
   await record(db, { id: actorId, email: session.email }, "create_site", `${client.slug}/${slug}`);
@@ -189,6 +202,135 @@ export async function createSiteAction(
   return {
     ok: true,
     message: `Created "${name}". It stays hidden from the client until you publish it.`,
+  };
+}
+
+/**
+ * Move an existing site to a different client.
+ *
+ * The gap this fills: "Add a site" only ever created *new* sites. Every survey
+ * that matters was already in the table, so adding a client and then giving
+ * them one of those surveys was not expressible in the console at all — the
+ * only route was an UPDATE by hand against production.
+ *
+ * Reassigning is the moment a site changes hands, so it also drops that site's
+ * per-user grants. A grant names a user and a site; the users belong to the
+ * *old* client, and leaving the rows behind would mean the previous client's
+ * staff still hold an explicit grant to a survey that is no longer theirs. The
+ * visibility rule would keep them out today, because it tests the client first,
+ * but it would be a row that says otherwise sitting in the table waiting for
+ * someone to write a query that trusts it.
+ */
+export async function assignSiteAction(
+  _prev: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const { session, db, actorId } = await ownerAndDb();
+  const siteId = String(formData.get("siteId") ?? "");
+  const clientId = String(formData.get("clientId") ?? "");
+
+  const site = (await db.select().from(schema.sites).where(eq(schema.sites.id, siteId)).limit(1))[0];
+  if (!site) return { ok: false, message: "That site no longer exists." };
+
+  const client = (
+    await db.select().from(schema.clients).where(eq(schema.clients.id, clientId)).limit(1)
+  )[0];
+  if (!client) return { ok: false, message: "Choose which client this site should belong to." };
+
+  if (site.clientId === clientId) {
+    return { ok: false, message: `"${site.name}" already belongs to ${client.name}.` };
+  }
+
+  const previous = (
+    await db.select().from(schema.clients).where(eq(schema.clients.id, site.clientId)).limit(1)
+  )[0];
+
+  await db.update(schema.sites).set({ clientId }).where(eq(schema.sites.id, siteId));
+  const dropped = await db
+    .delete(schema.userSiteGrants)
+    .where(eq(schema.userSiteGrants.siteId, siteId))
+    .returning({ id: schema.userSiteGrants.userId });
+
+  await record(db, { id: actorId, email: session.email }, "assign_site", site.slug, {
+    from: previous?.slug ?? site.clientId,
+    to: client.slug,
+    grantsRemoved: dropped.length,
+  });
+  revalidatePath("/portal/admin");
+  revalidatePath("/portal");
+  return {
+    ok: true,
+    message:
+      `"${site.name}" now belongs to ${client.name}` +
+      `${previous ? `, moved from ${previous.name}` : ""}.` +
+      `${dropped.length ? ` ${dropped.length} per-user grant(s) from the previous client were removed.` : ""}` +
+      `${site.isPublished ? "" : " It is still hidden until you publish it."}`,
+  };
+}
+
+/**
+ * Rename a client, which is the label everyone reads.
+ *
+ * `slug` and `name` are different jobs and the seeded rows conflated them: the
+ * first client is called "demo-client" in both, so the console offers "Choose a
+ * client: demo-client" and a real company sees a developer's fixture name. The
+ * slug is an identifier and stays put; this is the title.
+ */
+export async function renameClientAction(
+  _prev: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const { session, db, actorId } = await ownerAndDb();
+  const clientId = String(formData.get("clientId") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+
+  if (!name) return { ok: false, message: "Give the client a name." };
+
+  const client = (
+    await db.select().from(schema.clients).where(eq(schema.clients.id, clientId)).limit(1)
+  )[0];
+  if (!client) return { ok: false, message: "That client no longer exists." };
+
+  await db.update(schema.clients).set({ name }).where(eq(schema.clients.id, clientId));
+  await record(db, { id: actorId, email: session.email }, "rename_client", client.slug, {
+    from: client.name,
+    to: name,
+  });
+  revalidatePath("/portal/admin");
+  revalidatePath("/portal");
+  return { ok: true, message: `"${client.name}" is now called "${name}".` };
+}
+
+/**
+ * Rename a site. The title only — the slug is left alone deliberately.
+ *
+ * Changing a slug would rename the survey's files in R2 as well, and nothing
+ * here can do that, so a console that offered it would produce a site whose
+ * rasters had gone missing. Titles are free to change; identifiers are not.
+ */
+export async function renameSiteAction(
+  _prev: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const { session, db, actorId } = await ownerAndDb();
+  const siteId = String(formData.get("siteId") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+
+  if (!name) return { ok: false, message: "Give the site a name." };
+
+  const site = (await db.select().from(schema.sites).where(eq(schema.sites.id, siteId)).limit(1))[0];
+  if (!site) return { ok: false, message: "That site no longer exists." };
+
+  await db.update(schema.sites).set({ name }).where(eq(schema.sites.id, siteId));
+  await record(db, { id: actorId, email: session.email }, "rename_site", site.slug, {
+    from: site.name,
+    to: name,
+  });
+  revalidatePath("/portal/admin");
+  revalidatePath("/portal");
+  return {
+    ok: true,
+    message: `"${site.name}" is now called "${name}". Its address is still /${site.slug}.`,
   };
 }
 
