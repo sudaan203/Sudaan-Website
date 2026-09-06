@@ -49,7 +49,10 @@ import { lonLatToUtm, utmToLonLat } from "../../src/lib/geo/projection.mjs";
  */
 export const SURVEYS = [
   { slug: "kotba-survey", label: "kotba" },
-  { slug: "aektanagar-survey", label: "aektanagar" },
+  // Displayed as "Ektanagar 1"; the slug keeps its original spelling because it
+  // names the survey's files in R2 and cannot be renamed without moving them.
+  { slug: "aektanagar-survey", label: "ektanagar-1" },
+  { slug: "ektanagar-2-survey", label: "ektanagar-2" },
   { slug: "kiru-hydroelectric-survey", label: "kiru" },
 ];
 

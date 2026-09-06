@@ -53,7 +53,9 @@ const GRID = Number(args.get("grid") ?? 128);
 const OUT_ROOT = args.get("out") ?? path.join(process.cwd(), "portal-data", "cloud");
 
 if (!SITE || !LAS) {
-  console.error("usage: --site <slug> --las <file.las> [--max-depth 5] [--grid 128]");
+  console.error(
+    "usage: --site <slug> --las <file.las> [--max-depth 5] [--grid 128] [--epsg 32643]",
+  );
   process.exit(2);
 }
 if (!Number.isInteger(MAX_DEPTH) || MAX_DEPTH < 0 || MAX_DEPTH > 8) {
@@ -72,19 +74,108 @@ console.log(
 );
 console.log(`  ${header.crsName ?? "no CRS name"} (EPSG:${header.epsg ?? "unknown"})`);
 
-if (!header.epsg) {
+/**
+ * `--epsg` asserts a CRS the file does not carry. It is not a way to skip the check.
+ *
+ * Plenty of exporters write no CRS record at all — Ektanagar 2's 328M point
+ * cloud is one, and refusing it outright would mean the survey simply has no
+ * point cloud in the portal. But a cloud whose units are degrees, or whose
+ * coordinates belong to a different zone, produces a quadtree that looks
+ * perfectly reasonable and sits in the wrong place on the map, so the assertion
+ * has to be a deliberate act with evidence behind it rather than a default.
+ *
+ * The evidence is cheap and this refuses without it: the declared zone must put
+ * the cloud on ground the site's own DTM covers. That catches the two mistakes
+ * worth catching — a geographic CRS, whose degrees land the cloud within a few
+ * hundred metres of the equator and nowhere near a UTM easting, and the wrong
+ * zone, which shifts the easting by hundreds of kilometres. Both miss the
+ * raster's bounding box by far more than any real survey overlaps it.
+ *
+ * For Ektanagar 2 the two agree to 2 cm on the eastern edge, which is what
+ * makes asserting 32643 honest rather than hopeful.
+ */
+const assertedEpsg = args.get("epsg") ? Number(args.get("epsg")) : null;
+if (assertedEpsg !== null && !Number.isInteger(assertedEpsg)) {
+  console.error(`--epsg must be an integer EPSG code, got "${args.get("epsg")}"`);
+  process.exit(2);
+}
+
+const epsg = header.epsg ?? assertedEpsg;
+
+if (!epsg) {
   console.error(
     "\nThis cloud declares no projected CRS. Everything below assumes a metre is a " +
       "metre in both directions, which is exactly what a geographic CRS is not, so " +
-      "refusing is the only honest answer.",
+      "refusing is the only honest answer.\n\n" +
+      "If you know the CRS, pass it explicitly with --epsg (for example --epsg 32643).\n" +
+      "It is checked against this site's DTM before anything is written.",
   );
   process.exit(1);
 }
-const zone = header.epsg >= 32601 && header.epsg <= 32660 ? header.epsg - 32600 : null;
-const northern = header.epsg >= 32601 && header.epsg <= 32660;
+const zone = epsg >= 32601 && epsg <= 32660 ? epsg - 32600 : null;
+const northern = epsg >= 32601 && epsg <= 32660;
 if (zone === null) {
-  console.error(`\nEPSG:${header.epsg} is not a northern-hemisphere UTM zone; unsupported.`);
+  console.error(`\nEPSG:${epsg} is not a northern-hemisphere UTM zone; unsupported.`);
   process.exit(1);
+}
+if (header.epsg && assertedEpsg && header.epsg !== assertedEpsg) {
+  console.error(
+    `\nThe file declares EPSG:${header.epsg} but --epsg says ${assertedEpsg}. ` +
+      `Refusing to overrule a cloud that already knows what it is.`,
+  );
+  process.exit(1);
+}
+
+if (!header.epsg) {
+  /*
+   * Checked against the DTM the portal already serves for this site, which is
+   * the only independent statement of where this survey is on the earth.
+   */
+  const { openSurvey } = await import("./lib/survey.mjs");
+  let survey;
+  try {
+    survey = await openSurvey(SITE, "dtm");
+  } catch (error) {
+    console.error(
+      `\n--epsg needs this site's DTM to check against, and it could not be opened:\n  ` +
+        `${error.message}`,
+    );
+    process.exit(1);
+  }
+  const b = header.bounds;
+  const west = survey.originX;
+  const east = survey.originX + survey.width * survey.cellSize;
+  const south = survey.originY - survey.height * survey.cellSize;
+  const north = survey.originY;
+  const overlapX = Math.min(b.maxX, east) - Math.max(b.minX, west);
+  const overlapY = Math.min(b.maxY, north) - Math.max(b.minY, south);
+  const spanX = b.maxX - b.minX;
+  const spanY = b.maxY - b.minY;
+  await survey.close();
+
+  if (survey.epsg !== epsg) {
+    console.error(
+      `\nYou asserted EPSG:${epsg} but this site's DTM is EPSG:${survey.epsg}. ` +
+        `A cloud and a raster of the same ground have to be in the same CRS.`,
+    );
+    process.exit(1);
+  }
+  // Half the cloud's own extent: generous enough for a cloud that covers more
+  // ground than the raster, strict enough that a wrong zone cannot pass.
+  if (!(overlapX > spanX * 0.5 && overlapY > spanY * 0.5)) {
+    console.error(
+      `\nEPSG:${epsg} does not put this cloud on the same ground as ${SITE}'s DTM.\n` +
+        `  cloud  X ${b.minX.toFixed(0)}..${b.maxX.toFixed(0)}  Y ${b.minY.toFixed(0)}..${b.maxY.toFixed(0)}\n` +
+        `  DTM    X ${west.toFixed(0)}..${east.toFixed(0)}  Y ${south.toFixed(0)}..${north.toFixed(0)}\n` +
+        `  overlap ${overlapX.toFixed(0)} m x ${overlapY.toFixed(0)} m\n` +
+        `That is the wrong zone or the wrong file, not a CRS worth asserting.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `  no CRS in the file; asserting EPSG:${epsg}, which overlaps the DTM by ` +
+      `${overlapX.toFixed(0)} m x ${overlapY.toFixed(0)} m`,
+  );
 }
 
 const { minX, minY, maxX, maxY, minZ, maxZ } = header.bounds;
@@ -391,7 +482,12 @@ const manifest = {
   generatedAt: new Date().toISOString(),
   source: path.basename(LAS),
   format: "SGAPC1",
-  crs: { epsg: header.epsg, name: header.crsName },
+  /*
+   * The effective CRS, which is the asserted one when the file carried none.
+   * Recording `header.epsg` here would write null into the manifest for a cloud
+   * that is perfectly well placed, and the viewer reads this to position it.
+   */
+  crs: { epsg, name: header.crsName ?? `EPSG:${epsg} (asserted; absent from the file)` },
   sourcePointCount: header.pointCount,
   storedPointCount: placed,
   hasColour,
