@@ -19,10 +19,10 @@ import { SignJWT } from "jose";
 import postgres from "postgres";
 import { readFileSync } from "node:fs";
 import { lonLatToUtm, utmToLonLat } from "../src/lib/geo/projection.mjs";
+import { describeSurvey, openSurvey } from "./lib/survey.mjs";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const SITE = process.env.SITE ?? "kotba-survey";
-const ZONE = 43;
 const ENV = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
 const val = (k) => ENV.split("\n").find((l) => l.startsWith(`${k}=`))?.slice(k.length + 1).trim();
 
@@ -45,12 +45,45 @@ const token = await new SignJWT({
 }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("8h")
   .sign(new TextEncoder().encode(val("PORTAL_AUTH_SECRET")));
 
-/** A line across Kotba, chosen to stay on the survey for its whole length. */
-const LINE = [
-  [73.72949, 20.84199],
-  [73.73042, 20.84268],
-  [73.73101, 20.84322],
-];
+/**
+ * The survey's own header, which every coordinate below is derived from.
+ *
+ * Only the directory is parsed, so this costs the same on Kiru's 2.3 GB DTM as
+ * on Kotba's 7 MB one, and no pixels are read here at all: the route reads the
+ * raster, and every number checked below comes back from the route.
+ */
+const survey = await openSurvey(SITE, "dtm");
+
+/**
+ * The UTM zone to project through, taken from the raster rather than typed in.
+ *
+ * This was `const ZONE = 43`, with `true` for the hemisphere at every call site.
+ * All three surveys happen to be 43N, so the constant was invisibly correct —
+ * and would stay invisibly correct right up until the first survey that is not,
+ * at which point every "independently computed" metre in this file would be
+ * computed in the wrong projection and still look entirely plausible. The whole
+ * point of these checks is that they are anchored to something the route did not
+ * supply, so the anchor must come from the survey.
+ */
+const ZONE = survey.zone;
+const NORTHERN = survey.northern;
+
+/**
+ * The alignment: a bent 200 m line across the middle of the survey.
+ *
+ * This was three hand-picked lon/lat points on Kotba. On Aektanagar and Kiru
+ * they are off the surveyed ground entirely, so the route refuses and every
+ * check below fails for a reason that says nothing about alignments.
+ *
+ * `lineOfMetres` places the same shape on any survey, and the bend is the part
+ * that matters: on a straight line a section cut along the grid axes and one cut
+ * across the alignment coincide, so the perpendicularity check further down —
+ * the one a picture cannot make — would have nothing to catch. 200 m in metres
+ * rather than cells because the interval it is sampled at is 25 m, a real
+ * engineering quantity, and the station count has to mean the same thing on
+ * every survey.
+ */
+const LINE = survey.lineOfMetres(200);
 
 async function ask(op, body = {}) {
   const response = await fetch(`${BASE}/api/portal/sites/${SITE}/analysis`, {
@@ -63,16 +96,17 @@ async function ask(op, body = {}) {
 
 /** Planar metres between two lon/lat points, through the survey's own CRS. */
 function metresApart(a, b) {
-  const [ax, ay] = lonLatToUtm(a[0], a[1], ZONE, true);
-  const [bx, by] = lonLatToUtm(b[0], b[1], ZONE, true);
+  const [ax, ay] = lonLatToUtm(a[0], a[1], ZONE, NORTHERN);
+  const [bx, by] = lonLatToUtm(b[0], b[1], ZONE, NORTHERN);
   return Math.hypot(bx - ax, by - ay);
 }
 function bearing(a, b) {
-  const [ax, ay] = lonLatToUtm(a[0], a[1], ZONE, true);
-  const [bx, by] = lonLatToUtm(b[0], b[1], ZONE, true);
+  const [ax, ay] = lonLatToUtm(a[0], a[1], ZONE, NORTHERN);
+  const [bx, by] = lonLatToUtm(b[0], b[1], ZONE, NORTHERN);
   return Math.atan2(by - ay, bx - ax);
 }
 
+console.log(`\n${describeSurvey(survey)}`);
 console.log("\nTool 19: chainage");
 let alignmentLength = 0;
 {
@@ -110,7 +144,7 @@ let alignmentLength = 0;
    */
   const worst = Math.max(
     ...r.stations.map((s) => {
-      const [x, y] = lonLatToUtm(s.lonlat[0], s.lonlat[1], ZONE, true);
+      const [x, y] = lonLatToUtm(s.lonlat[0], s.lonlat[1], ZONE, NORTHERN);
       return Math.hypot(x - s.easting, y - s.northing);
     }),
   );
@@ -318,7 +352,7 @@ console.log("\nRefusals");
   const short = await fetch(`${BASE}/api/portal/sites/${SITE}/analysis`, {
     method: "POST",
     headers: { "content-type": "application/json", Cookie: `sga_portal_session=${token}` },
-    body: JSON.stringify({ op: "chainage", line: [[73.7295, 20.842]], crs: "lonlat" }),
+    body: JSON.stringify({ op: "chainage", line: [LINE[0]], crs: "lonlat" }),
   });
   check("a line of one point is refused", short.status === 400, `status ${short.status}`);
 
