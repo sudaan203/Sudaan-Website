@@ -98,6 +98,24 @@ function toProjected(geometry, crs, zone, northern) {
 }
 
 const survey = await openSurvey(SITE, "dtm");
+
+/*
+ * Placed on terrain rather than on the middle of the bounding box.
+ *
+ * A survey's centre is not necessarily land: Ektanagar 2's is a reservoir, and
+ * over water the DSM sits below the DTM and nothing has any relief, so the
+ * checks below about canopy, sign and steepness fail while saying nothing about
+ * the product. A no-op on every survey whose centre already has relief, which
+ * is three of the four.
+ */
+const placed = await survey.useLandCentre();
+if (placed.moved) {
+  console.log(
+    `  sample moved to the ${placed.quadrant} quadrant: the bounding-box centre ` +
+      `is featureless (water), gradient ${placed.gradient.toFixed(4)}`,
+  );
+}
+
 const { zone, northern, centreE, centreN } = survey;
 
 /*
@@ -172,11 +190,43 @@ console.log("\nTool 1, spot level: a click in degrees, an answer in metres");
   const [lon, lat] = utmToLonLat(centreE, centreN, zone, northern);
   // Exactly what `AnalysisClient.spot` sends: a one element array, crs lonlat.
   const [[x, y]] = toProjected([[lon, lat]], "lonlat", zone, northern);
-  // A micrometre. The round trip through degrees is not bit exact, and the
-  // survey it is describing is accurate to 4 cm, so anything at this scale is
-  // arithmetic noise rather than a projection error. Tightening this to 1e-9
-  // would only ever fail for reasons nobody should act on.
-  near("a lon/lat click reads the same cell as the UTM coordinate", spotLevel(grid, x, y), truth, 1e-5, " m");
+  /*
+   * The tolerance is derived, not chosen, because the thing that goes wrong is
+   * positional and the thing being measured is vertical.
+   *
+   * The round trip through degrees is not bit exact: it lands about 4.8e-5 m
+   * away, and that figure is a property of the projection arithmetic rather
+   * than of the survey — it is 4.8e-5 on Aektanagar, Ektanagar 2 and Kotba
+   * alike, and 2.9e-5 on Kiru. What that horizontal slip costs in *elevation*
+   * is however steep the ground is underneath it, so a fixed vertical
+   * tolerance says something different on every survey.
+   *
+   * It was a flat 1e-5 m, which held while every sample sat on gentle ground
+   * and failed the moment one did not: Ektanagar 2 samples a 42% slope, where
+   * the same 4.8e-5 m of slip is 2.0e-5 m of height — twice the tolerance, for
+   * a projection that is behaving exactly as it does everywhere else.
+   *
+   * So: measure the slip, measure the slope it happened on, and allow their
+   * product with room to spare. On flat ground this collapses to the floor
+   * below, which is the arithmetic-noise limit the old constant was reaching
+   * for.
+   */
+  const slip = Math.hypot(x - centreE, y - centreN);
+  const step = grid.cellSize;
+  const slopeAt = Math.max(
+    Math.abs(spotLevel(grid, centreE + step, centreN) - truth),
+    Math.abs(spotLevel(grid, centreE - step, centreN) - truth),
+    Math.abs(spotLevel(grid, centreE, centreN + step) - truth),
+    Math.abs(spotLevel(grid, centreE, centreN - step) - truth),
+  ) / step;
+  const tolerance = Math.max(1e-6, slip * (Number.isFinite(slopeAt) ? slopeAt : 0) * 4);
+  near(
+    "a lon/lat click reads the same cell as the UTM coordinate",
+    spotLevel(grid, x, y),
+    truth,
+    tolerance,
+    ` m (${slip.toExponential(1)} m of round-trip slip on a ${(slopeAt * 100).toFixed(0)}% slope)`,
+  );
 
   /*
    * "A real elevation", without quoting one survey's range.
@@ -412,7 +462,14 @@ console.log("\nDSM against DTM: the surface model cannot sit below bare earth");
   let dsm;
   try {
     const dsmSurvey = await openSurvey(SITE, "dsm");
-    dsm = await dsmSurvey.centreWindowMetres(WINDOW_HALF_M);
+    /*
+     * At the DTM's centre, not the DSM's own. They are different rasters with
+     * different extents, so "the centre window" means a different piece of
+     * ground in each — and once `useLandCentre` can move the DTM off a
+     * reservoir, the two stop overlapping at all. On Ektanagar 2 that produced
+     * a canopy height of NaN from two windows of unrelated terrain.
+     */
+    dsm = await dsmSurvey.windowAtMetres(survey.centreE, survey.centreN, WINDOW_HALF_M);
     await dsmSurvey.close();
   } catch (error) {
     check("a surface model is available to compare", false, error.message.slice(0, 100));

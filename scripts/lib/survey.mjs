@@ -120,9 +120,9 @@ export async function openSurvey(slug, kind = "dtm") {
    * cell centre is the farthest a point can be from that seam, and costs
    * nothing.
    */
-  const centreE = originX + (Math.floor(width / 2) + 0.5) * cellSize;
-  const centreN = originY - (Math.floor(height / 2) + 0.5) * cellSize;
-  const [centreLon, centreLat] = utmToLonLat(centreE, centreN, zone.zone, zone.northern);
+  let centreE = originX + (Math.floor(width / 2) + 0.5) * cellSize;
+  let centreN = originY - (Math.floor(height / 2) + 0.5) * cellSize;
+  let [centreLon, centreLat] = utmToLonLat(centreE, centreN, zone.zone, zone.northern);
 
   const toLonLat = ([e, n]) => utmToLonLat(e, n, zone.zone, zone.northern);
   const toUtm = ([lon, lat]) => lonLatToUtm(lon, lat, zone.zone, zone.northern);
@@ -145,10 +145,16 @@ export async function openSurvey(slug, kind = "dtm") {
     zone: zone.zone,
     northern: zone.northern,
     cells: width * height,
-    centreE,
-    centreN,
-    centreLon,
-    centreLat,
+    /*
+     * Getters, not snapshots: `useLandCentre()` can move the centre, and
+     * every helper below plus every caller has to see the same point. A
+     * plain property captured here would leave callers measuring one place
+     * while `ringOfMetres` drew another.
+     */
+    get centreE() { return centreE; },
+    get centreN() { return centreN; },
+    get centreLon() { return centreLon; },
+    get centreLat() { return centreLat; },
     toLonLat,
     toUtm,
 
@@ -262,11 +268,147 @@ export async function openSurvey(slug, kind = "dtm") {
       return raster.readWindow(window);
     },
 
+    /**
+     * A centre to place terrain checks on that is actually terrain.
+     *
+     * Returns the geometric centre unchanged whenever that centre has relief,
+     * so every survey that was already fine is byte-for-byte unaffected and
+     * keeps sampling exactly where it did. Only a survey whose middle is water
+     * moves, and then only to the nearest quadrant offset that is not.
+     *
+     * Preferred over simply skipping the affected checks: a skip means the
+     * survey gets no coverage of canopy or relief at all, and Ektanagar 2 is
+     * 247 ha of real ground with a lake in the middle of its bounding box, not
+     * a survey that cannot be checked.
+     */
+    async landCentre(half = 100) {
+      const at = async (e, n) => {
+        const window = raster.windowFor([e - half, n - half, e + half, n + half]);
+        if (!window) return null;
+        const grid = await raster.readWindow(window);
+        if (!grid) return null;
+        return meanGradient(grid);
+      };
+
+      const here = await at(centreE, centreN);
+      if (Number.isFinite(here) && here >= FEATURELESS_GRADIENT) {
+        return { easting: centreE, northing: centreN, gradient: here, moved: false };
+      }
+
+      /*
+       * Quadrant offsets at a quarter of the survey's extent: far enough to
+       * clear a central water body, close enough to stay well inside the
+       * surveyed ground. Ordered, so the answer is deterministic.
+       */
+      const dx = (width * cellSize) / 4;
+      const dy = (height * cellSize) / 4;
+      for (const [label, e, n] of [
+        ["NW", centreE - dx, centreN + dy],
+        ["NE", centreE + dx, centreN + dy],
+        ["SW", centreE - dx, centreN - dy],
+        ["SE", centreE + dx, centreN - dy],
+      ]) {
+        const g = await at(e, n);
+        if (Number.isFinite(g) && g >= FEATURELESS_GRADIENT) {
+          return { easting: e, northing: n, gradient: g, moved: true, quadrant: label };
+        }
+      }
+      return {
+        easting: centreE,
+        northing: centreN,
+        gradient: here,
+        moved: false,
+        featureless: true,
+      };
+    },
+
+    /**
+     * Move this survey's centre onto terrain, if it is not already on some.
+     *
+     * Call it straight after `openSurvey` and every helper that follows —
+     * `ringOfMetres`, `lineOfMetres`, `centreWindowMetres` — is placed on
+     * ground rather than water, because they all read the same centre.
+     *
+     * A no-op on every survey whose middle already has relief, which is three
+     * of the four: the geometry those suites sample is unchanged to the bit.
+     */
+    /**
+     * A window centred on a point given explicitly, rather than on this
+     * survey's own centre.
+     *
+     * Needed because a DSM is opened as its own survey object with its own
+     * geometry — different extent and cell size — so asking it for "the centre
+     * window" gives the centre of the *DSM*, which is only the same ground as
+     * the DTM's centre by coincidence. It stopped being a coincidence the
+     * moment `useLandCentre` could move one of them: on Ektanagar 2 the DTM
+     * moved to the NW quadrant while the DSM stayed on the reservoir, and
+     * comparing the two produced NaN.
+     */
+    async windowAtMetres(easting, northing, half) {
+      const window = raster.windowFor([
+        easting - half,
+        northing - half,
+        easting + half,
+        northing + half,
+      ]);
+      if (!window) throw new Error(`${slug}: no ${kind} coverage at ${easting}, ${northing}`);
+      return raster.readWindow(window);
+    },
+
+    async useLandCentre(half = 100) {
+      const found = await this.landCentre(half);
+      if (found.moved) {
+        centreE = found.easting;
+        centreN = found.northing;
+        [centreLon, centreLat] = utmToLonLat(centreE, centreN, zone.zone, zone.northern);
+      }
+      return found;
+    },
+
     async close() {
       await raster.close();
     },
   };
 }
+
+
+/**
+ * Mean gradient between horizontally neighbouring cells: how textured a patch
+ * of ground is, as a slope, so it does not depend on the cell size.
+ *
+ * This exists to tell *ground* from *water*. Every suite here places its
+ * geometry at the centre of the survey's bounding box, and nothing says the
+ * middle of a survey is land. On Ektanagar 2 it is a reservoir, and
+ * photogrammetry cannot see through water: the returns come back interpolated
+ * flat and the DSM can sit *below* the DTM. Checks that assert canopy height,
+ * or that faces are steeper than benches, then fail while reporting nothing
+ * whatsoever about the product — and read as "the DSM and DTM are swapped",
+ * which on Ektanagar 2 they are not.
+ *
+ * Measured, mean |difference| to the next cell over, divided by the cell size:
+ *
+ *   Kiru 0.87 (a gorge), Kotba 0.53, Aektanagar 0.20, Ektanagar 2 land 0.16-0.23
+ *   Ektanagar 2, bounding-box centre: 0.0067   <- the reservoir
+ *
+ * Thirty-fold apart, so the threshold is not delicate.
+ */
+export function meanGradient(grid) {
+  let sum = 0;
+  let n = 0;
+  for (let row = 0; row < grid.height; row += 1) {
+    for (let col = 0; col < grid.width - 1; col += 1) {
+      const a = grid.data[row * grid.width + col];
+      const b = grid.data[row * grid.width + col + 1];
+      if (grid.isNoData(a) || grid.isNoData(b)) continue;
+      sum += Math.abs(a - b);
+      n += 1;
+    }
+  }
+  return n ? sum / n / grid.cellSize : NaN;
+}
+
+/** Below this a patch is water or an interpolated void rather than terrain. */
+export const FEATURELESS_GRADIENT = 0.02;
 
 /**
  * One line describing a survey, printed by every suite before its checks.
