@@ -54,6 +54,24 @@ const token = await new SignJWT({
  */
 const survey = await openSurvey(SITE, "dtm");
 
+/*
+ * Placed on terrain rather than on the middle of the bounding box.
+ *
+ * A survey's centre is not necessarily land: Ektanagar 2's is a reservoir, and
+ * over water the DSM sits below the DTM and nothing has any relief, so the
+ * checks below about canopy, sign and steepness fail while saying nothing about
+ * the product. A no-op on every survey whose centre already has relief, which
+ * is three of the four.
+ */
+const placed = await survey.useLandCentre();
+if (placed.moved) {
+  console.log(
+    `  sample moved to the ${placed.quadrant} quadrant: the bounding-box centre ` +
+      `is featureless (water), gradient ${placed.gradient.toFixed(4)}`,
+  );
+}
+
+
 /**
  * The UTM zone to project through, taken from the raster rather than typed in.
  *
