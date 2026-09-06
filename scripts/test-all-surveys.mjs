@@ -75,28 +75,32 @@ const SUITES = [
 /**
  * Suites that read `SITE` but are not yet safe to point at another survey.
  *
- * Every one of these hardcodes geometry taken from Kotba — a polygon, a line, a
- * stretch of elevations — so on another survey it is not merely wrong, it is off
- * the map, and the suite fails for a reason that says nothing about the product.
- * They still run on Kotba, which is the survey their geometry was written for
- * and where they pass — skipping them everywhere would trade a coverage gap on
- * two surveys for a coverage gap on three. On the others they are skipped with
- * the reason named, so the matrix reports honest coverage: a cell that says
- * "hardcodes Kotba geometry" is useful, and a red one that really means "the
- * test asked about ground that is not there" is not.
+ * **This list is now empty, and the goal is that it stays that way.**
  *
- * `scripts/lib/survey.mjs` is where a suite goes to stop being on this list.
- * Two are already off it: `analysis-api-test` and `analysis-contract-test`.
+ * Every entry hardcoded geometry taken from Kotba — a polygon, a line, a stretch
+ * of elevations — so on another survey it was not merely wrong, it was off the
+ * map, and the suite failed for a reason that said nothing about the product.
+ * The last three came off it together:
+ *
+ *   surface-api-test    a Kotba ring and a 366 m design level
+ *   alignment-api-test  a Kotba centreline and `const ZONE = 43`
+ *   render-api-test     a 337..425 m stretch, a flow-accumulation max of 7246,
+ *                       and a whole-file read that threw ERR_FS_FILE_TOO_LARGE
+ *                       on Kiru before a single check ran
+ *
+ * All three now derive their geometry from the raster's own header through
+ * `scripts/lib/survey.mjs`, and all three pass on all three surveys.
+ *
+ * `scripts/lib/survey.mjs` is where a suite goes to stop being on this list. Add
+ * an entry only as a deliberate, temporary admission — a skip that names its
+ * reason is honest, but it is still a survey going untested, and the two
+ * production bugs this matrix caught (the Kiru shapefile export, the flood
+ * refusing a real view on Aektanagar) were both on surveys nothing exercised.
  */
-/** The survey every suite's hardcoded geometry was written against. */
+/** The survey a suite is run against when it is pinned to one. */
 const HOME_SURVEY = "kotba-survey";
 
-const NOT_YET_PORTABLE = {
-  "surface-api-test": "hardcodes a Kotba polygon; off the map on any other survey",
-  "alignment-api-test": "hardcodes a Kotba centreline; off the map on any other survey",
-  "render-api-test":
-    "its colour-ramp thresholds are calibrated to Kotba's flow-accumulation distribution",
-};
+const NOT_YET_PORTABLE = {};
 
 const surveys = (only ? SURVEYS.filter((s) => s.slug === only) : SURVEYS).map((s) => ({
   ...s,

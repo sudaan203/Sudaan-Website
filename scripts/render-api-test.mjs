@@ -17,12 +17,10 @@ import { SignJWT } from "jose";
 import postgres from "postgres";
 import { inflateSync } from "node:zlib";
 import { readFileSync } from "node:fs";
-import { readGeoTiff } from "../src/lib/geo/raster.mjs";
-import { utmToLonLat } from "../src/lib/geo/projection.mjs";
+import { describeSurvey, openSurvey } from "./lib/survey.mjs";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const SITE = process.env.SITE ?? "kotba-survey";
-const DTM = process.env.DTM ?? `portal-data/terrain/${SITE}/dtm.tif`;
 const ENV = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
 const val = (k) => ENV.split("\n").find((l) => l.startsWith(`${k}=`))?.slice(k.length + 1).trim();
 
@@ -99,21 +97,66 @@ async function tile(layer, z, x, y, query = "") {
 }
 
 // ---- where the survey is ---------------------------------------------------
-const grid = readGeoTiff(DTM);
-const width = grid.width ?? grid.ncols;
-const height = grid.height ?? grid.nrows;
-const [lon, lat] = utmToLonLat(
-  grid.originX + (width / 2) * grid.cellSize,
-  grid.originY - (height / 2) * grid.cellSize,
-  grid.utmZone.zone,
-  grid.utmZone.northern,
-);
+/**
+ * The survey's header, and — separately — a small window of its pixels.
+ *
+ * This was `readGeoTiff(DTM)`, which reads the *whole* raster to find out where
+ * the middle is. On Kiru that does not merely run out of memory: `readFileSync`
+ * throws `ERR_FS_FILE_TOO_LARGE` above 2 GiB, so the suite died on its first
+ * line before a single check ran. `openSurvey` parses the directory only.
+ */
+const survey = await openSurvey(SITE, "dtm");
+const lon = survey.centreLon;
+const lat = survey.centreLat;
+
+/**
+ * An elevation stretch taken from this survey's own ground.
+ *
+ * The literal `?min=337&max=425` is Kotba's plateau. Handed to Aektanagar it is
+ * 300 m below the terrain and to Kiru a kilometre above it, so every pixel
+ * saturates at one end of the ramp — and the checks that follow are about
+ * *colour variation*, so they fail on a picture that is uniformly the top colour
+ * exactly as they would on a broken renderer. The two are indistinguishable
+ * without knowing the ground, so the ground is what this reads.
+ *
+ * Taken from a 300 m window at the centre rather than the whole raster: it must
+ * describe the tiles actually being rendered, and it has to be affordable on a
+ * 2.3 GB file.
+ */
+const sample = await survey.centreWindowMetres(150);
+let lo = Infinity;
+let hi = -Infinity;
+for (const v of sample.data) {
+  if (!Number.isFinite(v) || v === sample.nodata) continue;
+  if (v < lo) lo = v;
+  if (v > hi) hi = v;
+}
+if (!Number.isFinite(lo) || hi <= lo) {
+  throw new Error(`${SITE}: the centre window carries no elevations to stretch against`);
+}
+/** Rounded outwards, so the stretch always contains the ground it came from. */
+const MIN = Math.floor(lo);
+const MAX = Math.ceil(hi);
+/** The full-range stretch, as the query string every check below shares. */
+const RANGE = `?min=${MIN}&max=${MAX}`;
+/**
+ * A deliberately narrow stretch, for "a different stretch is a different
+ * picture". A tenth of the range around the middle, so it is guaranteed to clip
+ * on both sides whatever the survey's relief is.
+ */
+const NARROW = `?min=${(MIN + (MAX - MIN) * 0.45).toFixed(3)}&max=${(MIN + (MAX - MIN) * 0.55).toFixed(3)}`;
+/** And a deliberately wide one, which must clip nothing. */
+const WIDE = `?min=${MIN - (MAX - MIN)}&max=${MAX + (MAX - MIN)}`;
+
 const Z = 18;
 const n = 2 ** Z;
 const X = Math.floor(((lon + 180) / 360) * n);
 const Y = Math.floor(((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * n);
 
-console.log(`\nRendering ${SITE} at z${Z}, tile ${X}/${Y}`);
+console.log(`\n${describeSurvey(survey)}`);
+console.log(
+  `  stretch ${MIN}..${MAX} m, from a 300 m window at the centre; z${Z} tile ${X}/${Y}`,
+);
 
 console.log("\nA tile over the survey");
 {
@@ -184,7 +227,7 @@ console.log("\nThe stretch is the layer's, not the tile's");
     return { rows: n, mean: n ? sum / n : 0 };
   };
 
-  const range = "?min=337&max=425";
+  const range = RANGE;
   const shared = edgeDifference(
     decodePng((await tile("dtm", Z, X, Y, range)).body),
     decodePng((await tile("dtm", Z, X + 1, Y, range)).body),
@@ -202,16 +245,16 @@ console.log("\nThe stretch is the layer's, not the tile's");
     `per tile ${perTile.mean.toFixed(1)} vs shared ${shared.mean.toFixed(1)}`);
 
   // An explicit range must actually change the picture, or the parameter is a lie.
-  const narrow = decodePng((await tile("dtm", Z, X, Y, "?min=360&max=370")).body);
-  const wide = decodePng((await tile("dtm", Z, X, Y, "?min=200&max=600")).body);
+  const narrow = decodePng((await tile("dtm", Z, X, Y, NARROW)).body);
+  const wide = decodePng((await tile("dtm", Z, X, Y, WIDE)).body);
   check("a different stretch produces a different picture",
     Buffer.compare(narrow.pixels, wide.pixels) !== 0);
 }
 
 console.log("\nRelief");
 {
-  const shaded = decodePng((await tile("dtm", Z, X, Y, "?min=337&max=425")).body);
-  const flat = decodePng((await tile("dtm", Z, X, Y, "?min=337&max=425&relief=0")).body);
+  const shaded = decodePng((await tile("dtm", Z, X, Y, RANGE)).body);
+  const flat = decodePng((await tile("dtm", Z, X, Y, `${RANGE}&relief=0`)).body);
   check("relief changes the image", Buffer.compare(shaded.pixels, flat.pixels) !== 0);
 
   // Shading must vary across the tile: a constant multiplier would pass the
@@ -229,8 +272,19 @@ console.log("\nRelief");
 }
 
 console.log("\nHydrology layers render too");
+/*
+ * These come from `hydro-run.mjs`, which is a separate publishing step, so a
+ * survey can legitimately have a DTM and no hydrology. That is a gap in the
+ * data rather than a defect in the route, and a suite that reports it as a
+ * failure teaches everyone to ignore its output. Reported as a skip, and named,
+ * so the gap stays visible without being an error.
+ */
 for (const layer of ["slope_degrees", "flow_accumulation", "filled"]) {
   const { status, body } = await tile(layer, Z, X, Y);
+  if (status === 404) {
+    console.log(`  SKIPPED: ${layer} is not published for ${SITE}; run hydro-run.mjs to cover it.`);
+    continue;
+  }
   if (status !== 200) {
     check(`${layer} renders`, false, `status ${status}`);
     continue;
@@ -258,14 +312,37 @@ console.log("\nFlow accumulation is drawn logarithmically, or it is a blank map"
     return seen.size;
   };
 
-  const range = "?min=1&max=7246";
-  const log = decodePng((await tile("flow_accumulation", Z, X, Y, range)).body);
-  const linear = decodePng((await tile("flow_accumulation", Z, X, Y, `${range}&scale=linear`)).body);
+  /*
+   * The range is the survey's own cell count, which is the *theoretical*
+   * maximum accumulation: the most cells that can drain through one cell is all
+   * of them. It is an upper bound on every survey by construction, so it needs
+   * no calibration and no knowledge of the drainage.
+   *
+   * This was `?min=1&max=7246` — the greatest accumulation on *Kotba*. It is a
+   * count of upstream cells, so it scales with the survey's size and drainage
+   * and means nothing anywhere else.
+   *
+   * Dropping the range entirely does not work either, and it is worth writing
+   * down why: the route then falls back to the *tile's* own min and max, which
+   * is a narrow range, and over a narrow range a linear ramp does not collapse.
+   * Measured on Kotba that way, log spread 34 tones against linear's 24 — the
+   * right direction but nothing like the separation this check is asserting,
+   * because the thing being tested had been removed from the test. A wide range
+   * is the precondition for "linear collapses", so it has to be stated.
+   */
+  const range = `?min=1&max=${survey.cells}`;
+  const got = await tile("flow_accumulation", Z, X, Y, range);
+  if (got.status !== 200) {
+    console.log(`  SKIPPED: no flow accumulation published for ${SITE} (status ${got.status}).`);
+  } else {
+    const log = decodePng(got.body);
+    const linear = decodePng((await tile("flow_accumulation", Z, X, Y, `${range}&scale=linear`)).body);
 
-  check("the two scales produce different pictures", Buffer.compare(log.pixels, linear.pixels) !== 0);
-  check("and the logarithmic one uses far more of the ramp",
-    spread(log) > spread(linear) * 2,
-    `${spread(log)} tones against ${spread(linear)}`);
+    check("the two scales produce different pictures", Buffer.compare(log.pixels, linear.pixels) !== 0);
+    check("and the logarithmic one uses far more of the ramp",
+      spread(log) > spread(linear) * 2,
+      `${spread(log)} tones against ${spread(linear)}`);
+  }
 }
 
 console.log("\nRefusals and isolation");
