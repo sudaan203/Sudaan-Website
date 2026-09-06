@@ -25,6 +25,8 @@
  */
 
 import sharp from "sharp";
+import { cached, fileSource } from "../src/lib/geo/raster-source.mjs";
+import { openRaster } from "../src/lib/geo/raster-window.mjs";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +71,22 @@ const SITES = {
     vectors: [
       { key: "contours", title: "Contours", shapefile: "Aektanagar/Contours/Contours/Contours" },
     ],
+  },
+  /*
+   * No contours delivered for this flight yet, so `vectors` is empty rather
+   * than absent — the loop below iterates it either way.
+   *
+   * The rasters here are 1.9 GB tiled BigTIFFs. Only a decimated overview is
+   * written for the base map; every measurement the portal makes goes through
+   * the dynamic tiler and the analysis API against the native raster, so the
+   * preview being coarse costs nothing but bytes on the wire.
+   */
+  "ektanagar-2-survey": {
+    rasters: [
+      { key: "dsm", title: "Surface model (DSM)", tif: "ektanagar/Ektanagar 2 DSM.tif" },
+      { key: "dtm", title: "Terrain model (DTM)", tif: "ektanagar/Ektanagar 2 DTM.tif" },
+    ],
+    vectors: [],
   },
 };
 
@@ -121,11 +139,52 @@ for (const raster of rasters) {
   const tfw = tif.replace(/\.tiff?$/i, ".tfw");
   const prj = tif.replace(/\.tiff?$/i, ".prj");
   requireFile(tif, "GeoTIFF");
-  requireFile(tfw, "world file");
-  requireFile(prj, "projection file");
 
-  const proj = readProjection(prj);
-  const world = readWorldFile(tfw);
+  /*
+   * The sidecars are optional, because a GeoTIFF already carries everything
+   * they say.
+   *
+   * Kotba and Ektanagar 1 arrived as .tif + .tfw + .prj, so this read the
+   * sidecars and refused without them. Ektanagar 2 arrived as a bare tiled
+   * BigTIFF — georeferenced perfectly well in its own tags, and rejected here
+   * for missing a file that would only have restated them. Writing the sidecars
+   * by hand to satisfy this would mean transcribing an origin and a cell size
+   * between two files that must agree, which is a way to get them to disagree.
+   *
+   * So: prefer the sidecars where a delivery includes them, and otherwise read
+   * the same numbers out of the raster's own directory.
+   */
+  const hasSidecars = existsSync(tfw) && existsSync(prj);
+  let proj;
+  let world;
+  if (hasSidecars) {
+    proj = readProjection(prj);
+    world = readWorldFile(tfw);
+  } else {
+    const source = cached(await fileSource(tif));
+    const header = await openRaster(source);
+    if (!header.utmZone) {
+      throw new Error(
+        `${raster.tif} has no world file and its own CRS (EPSG:${header.epsg}) is not a ` +
+          `UTM zone, so there is nothing to place it with.`,
+      );
+    }
+    proj = { zone: header.utmZone.zone, northern: header.utmZone.northern };
+    /*
+     * A world file states the centre of the top left *pixel*, while a GeoTIFF's
+     * tie point states its top left *corner*. Half a cell apart, and on a 7.4 cm
+     * survey that is 3.7 cm of shift in the base map — small enough to look
+     * right and wrong enough to matter.
+     */
+    world = {
+      pxWidth: header.cellSize,
+      pxHeight: -header.cellSize,
+      originX: header.originX + header.cellSize / 2,
+      originY: header.originY - header.cellSize / 2,
+    };
+    await header.close();
+    console.log(`  no sidecars; placed from the GeoTIFF's own tags (EPSG:${header.epsg})`);
+  }
   const image = sharp(tif, { limitInputPixels: false });
   const meta = await image.metadata();
 
@@ -152,7 +211,43 @@ for (const raster of rasters) {
   // for a float TIFF, and reinterpreting those bytes as float32 produces
   // convincing nonsense: the first run of this script reported the DSM spanning
   // -24 to 0 metres and the DTM 0 to 0.
-  const { data, info } = await image
+  /*
+   * Decimated on the way in, not after.
+   *
+   * What this writes is an overview for the base map — Kiru's is 180 KB — but
+   * it was colourising at full resolution first and shrinking at the end.
+   * Ektanagar 2 is 25462 x 28831, so that meant a 2.9 GB RGBA buffer beside a
+   * 2.9 GB float one, and Node died with "Ineffective mark-compacts near heap
+   * limit" after 46 seconds. The two surveys already published are 2.2M and
+   * 42.8M cells and never came close.
+   *
+   * PREVIEW_MAX_PX is generous for something drawn under a map at survey scale,
+   * and `fit: "inside"` keeps the aspect ratio so `rasterCorners` still places
+   * it correctly — the corners come from the world file and the raster's own
+   * dimensions, neither of which this changes.
+   *
+   * Elevation range is measured after the resize, from the pixels actually
+   * written, so the legend describes the image rather than something the viewer
+   * cannot see. On a smooth overview that shaves the extremes very slightly,
+   * which is the honest reading of a decimated picture.
+   */
+  const PREVIEW_MAX_PX = 4096;
+  const decimating = meta.width > PREVIEW_MAX_PX || meta.height > PREVIEW_MAX_PX;
+  if (decimating) {
+    console.log(
+      `  ${meta.width} x ${meta.height} is larger than ${PREVIEW_MAX_PX} px; ` +
+        `decimating for the overview (measurement still reads the native raster)`,
+    );
+  }
+  const { data, info } = await (decimating
+    ? image.resize({
+        width: PREVIEW_MAX_PX,
+        height: PREVIEW_MAX_PX,
+        fit: "inside",
+        kernel: "nearest",
+      })
+    : image
+  )
     .raw({ depth: "float" })
     .toBuffer({ resolveWithObject: true });
 
@@ -235,7 +330,15 @@ for (const raster of rasters) {
 }
 
 // ---- contours ----------------------------------------------------------
-{
+/*
+ * Skipped when a delivery has none. This read `CONFIG.vectors[0]`
+ * unconditionally, which was fine while both configured sites happened to ship
+ * a contour shapefile and threw on the first one that did not. Contours are a
+ * separate deliverable, not a property of having a survey.
+ */
+if (CONFIG.vectors.length === 0) {
+  console.log("\nNo contour shapefile configured for this site; skipping that layer.");
+} else {
   const vector = CONFIG.vectors[0];
   const base = join(root, vector.shapefile);
   requireFile(`${base}.shp`, "contour shapefile");
