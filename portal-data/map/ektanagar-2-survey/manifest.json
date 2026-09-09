@@ -1,7 +1,51 @@
 {
   "site": "ektanagar-2-survey",
-  "generatedAt": "2026-09-06T11:07:51.281Z",
+  "generatedAt": "2026-09-09T05:20:34.632Z",
   "layers": [
+    {
+      "key": "ektanagar-2-orthomosaic",
+      "kind": "tiles",
+      "title": "Orthomosaic",
+      "tiles": "tiles/ektanagar-2-orthomosaic/{z}/{x}/{y}.webp",
+      "minZoom": 13,
+      "maxZoom": 19,
+      "bounds": [
+        73.6543021924629,
+        21.87469198197007,
+        73.67203665288785,
+        21.893771955242826
+      ],
+      "coordinates": [
+        [
+          73.6543021924629,
+          21.893771955242826
+        ],
+        [
+          73.67185868193341,
+          21.893914542792835
+        ],
+        [
+          73.67203665288785,
+          21.87469198197007
+        ],
+        [
+          73.65448251426827,
+          21.874549532219508
+        ]
+      ],
+      "downsampledFrom": [
+        51244,
+        60119
+      ],
+      "backgroundCleared": {
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "share": 0.5283
+      }
+    },
     {
       "key": "dsm",
       "kind": "raster",

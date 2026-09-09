@@ -81,6 +81,20 @@ const text = () =>
     return (panel ?? document.body).innerText.replace(/\s+/g, " ");
   });
 
+/*
+ * The manifest itself, fetched over HTTP with the same session, so the check
+ * below is anchored to what this survey's own cloud actually says rather than
+ * to the one number ever hand typed here. Hardcoding Aektanagar's 50,183,644
+ * made this check pass for exactly one survey and silently vacuous for every
+ * other -- reported as a false "0 points flown" on Ektanagar 2, which had
+ * nothing to do with the cloud that was actually loading and drawing
+ * correctly underneath it. Same shape of trap as defect 24 in docs/tools.md.
+ */
+const manifestResponse = await fetch(`${BASE}/api/portal/sites/${SITE}/cloud`, {
+  headers: { Cookie: `sga_portal_session=${token}` },
+});
+const cloudManifest = manifestResponse.ok ? await manifestResponse.json() : null;
+
 console.log(`\nOpening the ${SITE} map`);
 await page.goto(`${BASE}/portal/${SITE}/map`, { waitUntil: "networkidle2", timeout: 60000 });
 await page.waitForSelector("canvas.maplibregl-canvas", { timeout: 30000 }).catch(() => {});
@@ -93,8 +107,10 @@ check("the point cloud panel appears for a survey that has one", appeared);
 
 {
   const t = await text();
+  const expectedCount = cloudManifest?.sourcePointCount?.toLocaleString("en-GB");
   check("it states how many points were flown, not how many are drawn",
-    /50,183,644 points flown/.test(t), t.match(/[\d,]+ points flown[^.]*\./)?.[0] ?? "not stated");
+    Boolean(expectedCount) && t.includes(`${expectedCount} points flown`),
+    t.match(/[\d,]+ points flown[^.]*\./)?.[0] ?? "not stated");
 }
 
 /** Turn the cloud on with its own Show checkbox. */

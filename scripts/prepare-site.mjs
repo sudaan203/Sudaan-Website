@@ -32,6 +32,8 @@
 import sharp from "sharp";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
+import { cached, fileSource } from "../src/lib/geo/raster-source.mjs";
+import { readDirectory } from "../src/lib/geo/raster-window.mjs";
 import {
   isElevation,
   lonLatToUtm,
@@ -120,19 +122,79 @@ const outDir = resolve(flag("out", join("portal-data", "map", siteSlug)));
 
 /* ------------------------------------------------------------- discovery --- */
 
-/** Georeferencing for a raster: from sidecars, or nothing. */
-function georeferenceFor(file) {
+/**
+ * Georeferencing for a raster: from sidecars where a delivery includes them,
+ * otherwise from the GeoTIFF's own tags.
+ *
+ * Kotba and Aektanagar arrived as .tif + .tfw + .prj. Ektanagar 2 arrived as a
+ * bare tiled BigTIFF, georeferenced perfectly well in its own tags and refused
+ * here for missing a file that would only have restated them — the same trap
+ * `prepare-map-data.mjs` hit and fixed for the DSM/DTM pair. Writing sidecars
+ * by hand instead would mean transcribing an origin and a cell size between two
+ * files that must agree, which is a way to get them to disagree.
+ */
+async function georeferenceFor(file) {
   const stem = file.replace(/\.[^.]+$/, "");
   const worldExts = [".tfw", ".pgw", ".jgw", ".wld"];
   const tfw = worldExts.map((e) => stem + e).find(existsSync);
   const prj = existsSync(stem + ".prj") ? stem + ".prj" : null;
-  if (!tfw || !prj) return null;
-  try {
-    return { world: readWorldFile(tfw), proj: readProjection(prj), tfw, prj };
-  } catch (err) {
-    console.warn(`  ! ${basename(file)}: ${err.message}`);
-    return null;
+  if (tfw && prj) {
+    try {
+      return { world: readWorldFile(tfw), proj: readProjection(prj), tfw, prj };
+    } catch (err) {
+      console.warn(`  ! ${basename(file)}: ${err.message}`);
+      return null;
+    }
   }
+  if ([".tif", ".tiff"].includes(extname(file).toLowerCase())) {
+    try {
+      // `readDirectory` reads tags only, not pixels, so it does not care how
+      // many samples per pixel the file has — unlike `openRaster`, which
+      // refuses anything but a single band DEM and is the wrong tool for an
+      // orthomosaic's three bands.
+      const source = cached(await fileSource(file));
+      const { tags } = await readDirectory(source);
+      await source.close?.();
+
+      const scale = tags.get(33550);
+      const tie = tags.get(33922);
+      if (!scale || !tie) return null; // no sidecars and no georeferencing in the tags
+
+      const cellSize = scale[0];
+      const originX = tie[3] - tie[0] * scale[0];
+      const originY = tie[4] + tie[1] * scale[1];
+
+      let epsg = null;
+      const geoKeys = tags.get(34735);
+      if (geoKeys && geoKeys.length >= 4) {
+        for (let i = 4; i + 3 < geoKeys.length; i += 4) {
+          if (geoKeys[i] === 3072 && geoKeys[i + 1] === 0) epsg = geoKeys[i + 3];
+        }
+      }
+      const northern = epsg !== null && epsg >= 32601 && epsg <= 32660;
+      const southern = epsg !== null && epsg >= 32701 && epsg <= 32760;
+      if (!northern && !southern) return null; // not a UTM zone; nothing to place it with
+
+      /*
+       * A world file states the centre of the top left pixel; a GeoTIFF's tie
+       * point states its top left corner — half a cell apart, and 3.7 cm of
+       * shift on a 7.4 cm survey if this is skipped.
+       */
+      const world = {
+        pxWidth: cellSize,
+        pxHeight: -cellSize,
+        originX: originX + cellSize / 2,
+        originY: originY - cellSize / 2,
+      };
+      const proj = { zone: northern ? epsg - 32600 : epsg - 32700, northern };
+      console.log(`  ${basename(file)}: no sidecars; placed from the GeoTIFF's own tags (EPSG:${epsg})`);
+      return { world, proj, tfw: null, prj: null };
+    } catch (err) {
+      console.warn(`  ! ${basename(file)}: ${err.message}`);
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -430,11 +492,11 @@ for (const file of rasterFiles) {
   const info = await classify(file);
   if (!info) continue;
 
-  const geo = georeferenceFor(file);
+  const geo = await georeferenceFor(file);
   if (!geo) {
     console.warn(
-      `  ! ${basename(file)}: no georeferencing. Needs a GeoTIFF with a world file, ` +
-        `or a sidecar .tfw and .prj beside it. Skipped.`,
+      `  ! ${basename(file)}: no georeferencing. Needs a sidecar .tfw and .prj, ` +
+        `or (for a GeoTIFF) a usable UTM zone in its own tags. Skipped.`,
     );
     continue;
   }
