@@ -27,6 +27,9 @@
 import sharp from "sharp";
 import { cached, fileSource } from "../src/lib/geo/raster-source.mjs";
 import { openRaster } from "../src/lib/geo/raster-window.mjs";
+import { rampFor } from "../src/lib/geo/colour.mjs";
+import { hillshade, renderGrid } from "../src/lib/geo/render.mjs";
+import { readManifest, emptyManifest, upsertLayer, writeManifest } from "./lib/manifest.mjs";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,7 +105,17 @@ const OUT = join(root, "portal-data", "map", SITE);
 /* ------------------------------------------------------------------ run --- */
 
 mkdirSync(OUT, { recursive: true });
-const manifest = { site: SITE, generatedAt: new Date().toISOString(), layers: [] };
+/*
+ * Start from the manifest that is already there, not from an empty one.
+ *
+ * This used to build a fresh manifest and overwrite whatever existed on every
+ * run — the exact trap `manifest.mjs`'s own docstring describes and
+ * `prepare-site.mjs` was fixed for: re-running this for Ektanagar 2's DSM/DTM
+ * silently dropped the orthomosaic layer `prepare-site.mjs` had added, because
+ * neither script knows about the other's layers. Layers this run produces are
+ * upserted by key; layers it did not touch are left alone.
+ */
+const manifest = readManifest(OUT) ?? emptyManifest(SITE);
 
 function requireFile(path, what) {
   if (!existsSync(path)) {
@@ -115,24 +128,20 @@ function requireFile(path, what) {
 // ---- rasters -----------------------------------------------------------
 const rasters = CONFIG.rasters;
 
-/** Warm elevation ramp, matching the marketing site's DEM renders. */
-const ramp = [
-  [0.0, [250, 226, 192]],
-  [0.35, [229, 142, 58]],
-  [0.65, [180, 83, 9]],
-  [1.0, [74, 42, 16]],
-];
-function elevColor(t) {
-  for (let i = 0; i < ramp.length - 1; i += 1) {
-    const [a, ca] = ramp[i];
-    const [b, cb] = ramp[i + 1];
-    if (t >= a && t <= b) {
-      const k = (t - a) / (b - a);
-      return [0, 1, 2].map((c) => Math.round(ca[c] + (cb[c] - ca[c]) * k));
-    }
-  }
-  return ramp[ramp.length - 1][1];
-}
+/**
+ * The same rainbow ramp the dynamic tiler and `prepare-site.mjs` use.
+ *
+ * This used to be a warm sepia gradient with no relief shading, "matching the
+ * marketing site's DEM renders" — which was exactly the bug Malhar caught in
+ * `prepare-site.mjs`'s own tiles (see the comment there): a DSM and a DTM of
+ * the same ground came out as two nearly identical brown washes, unreadable and
+ * indistinguishable, while the rendered-layers panel drew a properly graded
+ * picture from the same raster through a different code path. That fix never
+ * reached this script, so every site this one generates the overview for —
+ * Ektanagar 2 and Kiru, since e701a84 stopped baking full tile pyramids for
+ * them — kept the old sepia look, inconsistent with Kotba and Ektanagar 1's.
+ */
+const ELEVATION_RAMP = rampFor("rainbow");
 
 for (const raster of rasters) {
   const tif = join(root, raster.tif);
@@ -292,27 +301,44 @@ for (const raster of rasters) {
   sample.sort((a, b) => a - b);
   const lo = sample[Math.floor(sample.length * 0.02)] ?? min;
   const hi = sample[Math.floor(sample.length * 0.98)] ?? max;
-  const span = hi - lo || 1;
   console.log(`     colour ramp clipped to ${lo.toFixed(1)} - ${hi.toFixed(1)} m`);
 
-  const rgba = Buffer.alloc(pixels * 4);
+  /*
+   * A grid shaped the way `render.mjs` expects, over the decimated floats —
+   * dense, not the strided view sharp returns, because hillshade reads eight
+   * neighbours per pixel and a stride of anything but one would sample the
+   * wrong ones. NaN marks nodata, matching `isNoData` below and leaving those
+   * pixels transparent, same as `prepare-site.mjs`'s `elevationToRgba`.
+   */
+  const dense = new Float32Array(pixels);
   for (let i = 0; i < pixels; i += 1) {
     const v = floats[i];
-    const nodata = !isElevation(v);
-    if (nodata) continue; // leaves 0,0,0,0
-    const [r, g, b] = elevColor(Math.min(1, Math.max(0, (v - lo) / span)));
-    rgba[i * 4] = r;
-    rgba[i * 4 + 1] = g;
-    rgba[i * 4 + 2] = b;
-    rgba[i * 4 + 3] = 255;
+    dense[i] = isElevation(v) ? v : NaN;
   }
+  const grid = {
+    width: info.width,
+    height: info.height,
+    data: dense,
+    /*
+     * Metres per pixel, scaled by however much this overview was decimated —
+     * the world file states the *native* raster's cell size, and a hillshade
+     * computed against that on a resized grid would read gradients four or
+     * five times shallower than they are, the same trap `prepare-site.mjs`
+     * warns about for a defaulted cell size.
+     */
+    cellSize: (Math.abs(world.pxWidth) || 1) * (meta.width / info.width),
+    isNoData: (v) => !Number.isFinite(v),
+  };
+  const relief = hillshade(grid, { azimuth: 315, altitude: 45, exaggeration: 1.6 });
+  const shaded = renderGrid(grid, { stops: ELEVATION_RAMP, min: lo, max: hi, relief });
+  const rgba = Buffer.from(shaded.buffer, shaded.byteOffset, shaded.byteLength);
 
   const file = `${raster.key}.webp`;
   await sharp(rgba, { raw: { width: info.width, height: info.height, channels: 4 } })
     .webp({ quality: 82 })
     .toFile(join(OUT, file));
 
-  manifest.layers.push({
+  upsertLayer(manifest, {
     key: raster.key,
     kind: "raster",
     title: raster.title,
@@ -455,7 +481,7 @@ if (CONFIG.vectors.length === 0) {
   const file = "contours.geojson";
   writeFileSync(join(OUT, file), JSON.stringify({ type: "FeatureCollection", features }));
 
-  manifest.layers.push({
+  upsertLayer(manifest, {
     key: vector.key,
     kind: "vector",
     title: vector.title,
@@ -469,5 +495,5 @@ if (CONFIG.vectors.length === 0) {
   );
 }
 
-writeFileSync(join(OUT, "manifest.json"), JSON.stringify(manifest, null, 2));
+writeManifest(OUT, manifest);
 console.log(`\nwrote ${manifest.layers.length} layers to portal-data/map/${SITE}\n`);
