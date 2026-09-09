@@ -42,6 +42,13 @@ next-env.d.ts
 /Contours/
 /Aektanagar/
 
+# Ektanagar 2's own delivery folder (DSM/DTM/orthomosaic TIFFs, ECW, and an
+# 11 GB LAS point cloud) and the Kiru hydroelectric delivery. Both arrived
+# after the patterns above and were sitting untracked and unignored -- one
+# `git add -A` away from staging ~27 GB of raw survey data.
+/ektanagar/
+/Kiru hydroelectric project/
+
 # raw project screenshots (processed copies live in public/projects)
 /SS/
 /SS.zip

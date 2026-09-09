@@ -69,7 +69,13 @@ const MARGIN_CELLS = 2;
  * awaits every field; merging them would make the simple path async for no
  * benefit and put the file everything depends on at risk for a refactor.
  */
-async function readDirectory(source) {
+/**
+ * Exported for callers that only need a GeoTIFF's tags — the georeferencing in
+ * particular — and not a windowed reader over pixel data. `openRaster` refuses
+ * anything but a single band DEM; a caller placing an orthomosaic on the map
+ * needs exactly the tags this reads and none of that restriction.
+ */
+export async function readDirectory(source) {
   await source.warm?.();
 
   const head = await source.read(0, 16);
