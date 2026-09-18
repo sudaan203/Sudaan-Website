@@ -1,11 +1,13 @@
 # Dashboard tools: what was asked for, what was built, and where it stands
 
 Written 23 Aug 2026 for PRs #40 to #45, and kept current since. This revision
-covers everything merged up to PR #73 on 5 Sep 2026, and corrects the entries
-that had gone stale rather than leaving them to be believed: the profile overlay
-was reversed a week after it shipped, the flood no longer coarsens anything, two
-rows of the merged table carried the wrong pull-request numbers, and the test
-counts were a fortnight out of date.
+covers everything merged up to PR #92 on 18 Sep 2026.
+
+The tool-by-tool table has not moved since PR #73: no tool changed status
+between #74 and #92. That is not a stall, it is what the work was — coverage
+and the pipeline rather than new tools. Section 0 below says what happened
+instead, and it matters to anyone reading the rest of this document, because
+three of the things it describes were quietly wrong until this month.
 
 Companion to two existing documents rather than a replacement for either.
 `portal-map-architecture.md` says what the architecture should be.
@@ -18,6 +20,47 @@ honestly still missing.
 > **The tool-by-tool table lives in [`tool-catalogue.md`](./tool-catalogue.md)**,
 > generated from the same list the dashboard reads so the two cannot disagree.
 > This document is the story: what was built, why, and what is still missing.
+
+## 0. What happened between PR #73 and PR #92
+
+No tool gained or lost a status. The work was making the portal stop being
+shaped around one survey, and then making publishing one command.
+
+**Coverage (#74 to #90).** The suites run against every survey rather than the
+convenient one, the render and alignment suites became portable and the
+not-portable list is empty, vertical accuracy has an entry path and runs in CI,
+and Ektanagar 2 was brought up to the same footing as the other sites — map,
+orthomosaic, and DSM/DTM on the same ramp and relief as everywhere else.
+
+**One colour module (#91).** Five different elevation ramps were shipping. The
+baked tiles and the dynamic tiler shared one; the site previews, the marketing
+DEM renderer, the overview baker and both point clouds each had their own, and
+three carried a comment claiming they matched another file — true when written,
+false once the original moved. So a client's preview thumbnail and the map they
+opened next were two different pictures of the same ground.
+
+Two of those copies were wrong rather than merely different. `make-site-previews.mjs`
+never negated its north-south gradient, so **every preview was lit from the
+south-east and every ridge read as a valley**; an inverted hillshade still looks
+like terrain, which is why it survived review for months. `prepare-map-data.mjs`
+had no relief at all. `src/lib/geo/elevation-image.mjs` now holds the only
+opinion about elevation colour, and `colour-consistency-test.mjs` enforces it in
+CI — including a check that renders a north-south ridge, because the obvious
+version of that test passes on the broken code.
+
+**One command to publish (#91, #92).** Hydrology and the point cloud were built
+after `publish-site.mjs` and never folded into it, so a site took five commands
+and a Vercel environment edit. `publish-site.mjs <folder> <slug> --publish` now
+builds, uploads every data class to R2, writes the catalogue and prints the
+client's link. `r2-prune.mjs` removes orphaned objects — Ektanagar 2's point
+cloud had been stored twice since it was published.
+
+**Google-only sign in (#93).** The password fallback is gone. It was the only
+reason adding a client login needed a developer, an environment variable and a
+redeploy; an owner now invites from the console and the invitee is emailed the
+link.
+
+---
 
 ## 1. The requirement
 

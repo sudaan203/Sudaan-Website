@@ -38,6 +38,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { checkStorageDir } from "./storage-config";
 import { cached, fileSource, httpSource } from "@/lib/geo/raster-source.mjs";
 import { openRaster } from "@/lib/geo/raster-window.mjs";
 import { fromEsriCodes } from "@/lib/geo/hydrology.mjs";
@@ -128,7 +129,9 @@ function hydrologyLocation(siteSlug: string) {
   if (url) {
     return { remote: true as const, base: `${url.replace(/\/+$/, "")}/${siteSlug}/hydrology` };
   }
-  const dir = process.env.PORTAL_HYDROLOGY_DIR ?? join(process.cwd(), "portal-data", "hydrology");
+  const configured = process.env.PORTAL_HYDROLOGY_DIR;
+  const dir = configured ?? join(process.cwd(), "portal-data", "hydrology");
+  checkStorageDir("PORTAL_HYDROLOGY_DIR", "PORTAL_HYDROLOGY_URL", dir, Boolean(configured));
   return { remote: false as const, base: join(dir, siteSlug) };
 }
 

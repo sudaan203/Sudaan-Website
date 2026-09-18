@@ -16,8 +16,18 @@ import { getDb } from "./db/client";
 import * as schema from "./db/schema";
 import { logPortalEvent } from "./log";
 import { isOwnerEmail } from "./users-db";
+import { sendInviteEmail, type InviteMailResult } from "./invite-email";
 
 export type ActionResult = { ok: true; message: string } | { ok: false; message: string };
+
+/** What to add to an owner's confirmation about whether the person was told. */
+function deliveryNote(result: InviteMailResult, email: string): string {
+  if (result.sent) return ` We have emailed ${email} the sign-in link.`;
+  if (result.reason === "not_configured") {
+    return ` No email was sent — RESEND_API_KEY is not set on this deployment, so send them the link yourself.`;
+  }
+  return ` The invitation email did not go out, so send them the link yourself. Their access is set up either way.`;
+}
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -122,7 +132,11 @@ export async function inviteUserAction(
       .where(eq(schema.users.id, existing.id));
     await record(db, { id: actorId, email: session.email }, "reassign_user", email, { client: client.slug });
     revalidatePath("/portal/admin");
-    return { ok: true, message: `${email} now has access to ${client.name}.` };
+    const mail = await sendInviteEmail(email, client.name, session.email);
+    return {
+      ok: true,
+      message: `${email} now has access to ${client.name}.` + deliveryNote(mail, email),
+    };
   }
 
   await db
@@ -130,9 +144,21 @@ export async function inviteUserAction(
     .values({ email, fullName, role: "client", clientId: client.id, invitedBy: actorId });
   await record(db, { id: actorId, email: session.email }, "invite_user", email, { client: client.slug });
   revalidatePath("/portal/admin");
+
+  /*
+   * After the row is written, and never in a way that can undo it.
+   *
+   * The access grant is the thing that matters and it is already committed. A
+   * failure to send means the person has access and has not been told, which an
+   * owner can fix; a failure that looked like the invite itself failing would
+   * have them invite again.
+   */
+  const mail = await sendInviteEmail(email, client.name, session.email);
   return {
     ok: true,
-    message: `Invited ${email}. They can now sign in with that Google account.`,
+    message:
+      `Invited ${email}. They can now sign in with that Google account.` +
+      deliveryNote(mail, email),
   };
 }
 

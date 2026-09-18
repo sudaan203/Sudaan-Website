@@ -31,6 +31,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { checkStorageDir } from "./storage-config";
 import { readGeoTiff } from "@/lib/geo/raster.mjs";
 import { cached, fileSource, httpSource } from "@/lib/geo/raster-source.mjs";
 import { openRaster } from "@/lib/geo/raster-window.mjs";
@@ -49,7 +50,9 @@ const MAX_CELLS = 80_000_000;
 
 /** Where a site's source rasters live. Outside public/, never served directly. */
 function terrainDir(siteSlug: string) {
-  const base = process.env.PORTAL_TERRAIN_DIR ?? join(process.cwd(), "portal-data", "terrain");
+  const configured = process.env.PORTAL_TERRAIN_DIR;
+  const base = configured ?? join(process.cwd(), "portal-data", "terrain");
+  checkStorageDir("PORTAL_TERRAIN_DIR", "PORTAL_TERRAIN_URL", base, Boolean(configured));
   return join(base, siteSlug);
 }
 

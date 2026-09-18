@@ -24,6 +24,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { checkStorageDir } from "./storage-config";
 import { createTileGrant, TILE_GRANT_COOKIE } from "@/lib/portal/tile-grant";
 
 export class CloudUnavailable extends Error {
@@ -92,7 +93,9 @@ function cloudLocation(siteSlug: string) {
   if (url) {
     return { remote: true as const, base: `${url.replace(/\/+$/, "")}/${siteSlug}/cloud` };
   }
-  const dir = process.env.PORTAL_CLOUD_DIR ?? join(process.cwd(), "portal-data", "cloud");
+  const configured = process.env.PORTAL_CLOUD_DIR;
+  const dir = configured ?? join(process.cwd(), "portal-data", "cloud");
+  checkStorageDir("PORTAL_CLOUD_DIR", "PORTAL_CLOUD_URL", dir, Boolean(configured));
   return { remote: false as const, base: join(dir, siteSlug) };
 }
 

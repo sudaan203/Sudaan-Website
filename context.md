@@ -162,9 +162,9 @@ database and no paid services** so it fits the Vercel Hobby plan.
   `src/lib/portal/*` (session, users, store, seed, files, log, rate-limit),
   `src/app/portal/**`, `src/app/api/portal/**`, `src/components/portal/*`.
 - Catalogue = `src/lib/portal/seed.ts` (typed seed). Sample files = `portal-data/files/**`
-  (committed, ~700 KB, outside `public/` on purpose). Logins = `PORTAL_USERS` env var on
-  Vercel or gitignored `portal-data/users.json` locally, both created by
-  `node scripts/portal-user.mjs`. Needs `PORTAL_AUTH_SECRET` set in Vercel to work in prod.
+  (committed, ~700 KB, outside `public/` on purpose). Logins = Google sign in only,
+  against the `users` table allowlist; an owner invites from `/portal/admin` and the
+  invitee is emailed the link. Needs `PORTAL_AUTH_SECRET` set in Vercel to work in prod.
 - Pages never import `seed.ts` directly, always go through `src/lib/portal/store.ts`, which
   is async and tenant-scoped so the Postgres swap does not touch the UI.
 - Marketing chrome is suppressed on `/portal` by `src/components/SiteChrome.tsx`, which
@@ -197,9 +197,11 @@ moved ahead of schedule. Design + provisioning checklist: `docs/client-portal-pl
   `/api/auth/callback/google`, `users-db.ts` (the allowlist: Google proves identity, a users
   row grants access; `PORTAL_OWNER_EMAILS` bootstraps owners), `/portal/admin` owner console
   with `admin-actions.ts` (create client, invite, deactivate, create site, publish, grants).
-- Password login still exists as a **staff fallback** behind a details toggle, so a Google
-  problem cannot lock the owners out. Remove it by clearing `PORTAL_USERS` and deleting
-  `portal-data/users.json`.
+- Password login is **gone** (18 Sep 2026). It was the only reason adding a client login
+  needed a developer, an env var and a redeploy. Google is the sole route in, `bcryptjs` is
+  no longer a dependency, and sessions minted before the change are refused rather than
+  migrated. The residual risk is stated plainly: a Google outage locks everyone out,
+  owners included. `PORTAL_OWNER_EMAILS` still bootstraps owners against an empty table.
 - **Use the transaction pooler (port 6543) everywhere** — production, local dev and the test
   scripts. This used to say that `next dev` needed the session pooler (5432) because a
   persistent client on 6543 "wedges after a few requests". That was a misdiagnosis. The real
@@ -276,8 +278,10 @@ Fixed:
   `image/svg+xml` or `text/html` file served from our origin is same origin
   script. Now an allowlist, which matters before uploads land.
 - **Password sessions were never re-checked**, so removing someone from
-  `PORTAL_USERS` left them signed in for up to eight hours. Rights are now
-  re-read per request, so a demotion takes effect immediately.
+  `PORTAL_USERS` left them signed in for up to eight hours. Fixed first by
+  re-reading rights per request, then settled by removing password login
+  entirely: every session is now checked against the users table on every
+  request.
 - **Login throttling keyed on email+IP only**, which permits spraying one
   password across thousands of addresses from one host. There is now also a per
   IP ceiling.
