@@ -32,6 +32,24 @@
  * So this orchestrates every step, derives the catalogue from what was actually
  * produced, and runs the guards at the end. Nothing about a new site requires
  * touching code.
+ *
+ * ## What it covers, as of 18 Sep 2026
+ *
+ * Hydrology and the point cloud were built after this script and never folded
+ * in, so publishing a site had drifted back to five commands: this one, then
+ * hydro-run.mjs, then prepare-point-cloud.mjs, then upload-site.mjs, then a
+ * Vercel environment edit for the client's login. The first three are now here.
+ *
+ *   tiles, contours, manifest   prepare-site.mjs
+ *   terrain                     make-terrain-tiles.mjs
+ *   previews                    make-site-previews.mjs
+ *   PDF deliverables            make-site-deliverables.mjs
+ *   hydrology                   hydro-run.mjs            (skip: --skip-hydrology)
+ *   point cloud                 prepare-point-cloud.mjs  (skip: --skip-cloud)
+ *   catalogue                   portal-db-publish.mjs    (with --db)
+ *
+ * The last two are the slow ones and run last, so a mistake in --client is
+ * caught in minutes rather than after an hour of tiling and streaming.
  * ---------------------------------------------------------------------------
  */
 
@@ -68,6 +86,10 @@ Usage: node scripts/publish-site.mjs <survey-folder> <site-slug> [options]
   --max-pixels N     working limit for one raster (default 120000000)
   --db               also upsert the catalogue into Postgres
   --skip-tiles       reuse the tiles already in portal-data/map/<slug>
+  --skip-hydrology   do not derive flow, streams and catchments from the DTM
+  --skip-cloud       do not build the point cloud quadtree from the LAS
+  --hydro-cell N     hydrology analysis cell size in metres (default 1)
+  --hydro-threshold N  channel initiation threshold in cells (default 500)
   --dry-run          say what would happen, write nothing
 
 Example:
@@ -95,6 +117,7 @@ const flownOn = flag("flown-on", null);
 const dryRun = has("dry-run");
 
 const mapDir = resolve("portal-data", "map", slug);
+const hydrologyDir = resolve("portal-data", "hydrology", slug);
 const filesRoot = resolve("portal-data", "files");
 
 /* ------------------------------------------------------------- discovery --- */
@@ -179,7 +202,7 @@ console.log(`  shapefiles        ${found.shapefiles.length}`);
 console.log(`  point grids       ${found.grids.length}`);
 console.log(`  point clouds      ${found.clouds.length}${cloud ? `  ${basename(cloud)}` : ""}`);
 if (found.skipped.length) {
-  console.log(`  ! not georeferenced, will be skipped: ${found.skipped.map(basename).join(", ")}`);
+  console.log(`  ! not georeferenced, will be skipped: ${found.skipped.map((f) => basename(f)).join(", ")}`);
 }
 if (dems.length === 0 && orthos.length === 0) {
   console.error(`\nnothing to publish: no georeferenced raster in ${inputDir}`);
@@ -190,14 +213,22 @@ if (!dtm) {
   console.log(`  ! no terrain model found, so there will be no elevation readout or measurement`);
 }
 
-if (dryRun) {
-  console.log(`\ndry run, nothing written\n`);
-  process.exit(0);
-}
-
 /* ------------------------------------------------------------------ steps --- */
 
 const node = process.execPath;
+
+/**
+ * A command line a person can paste back into a shell.
+ *
+ * Execution goes through spawnSync with an argument array, so quoting never
+ * affects what runs. It affects only what gets printed — and what gets printed
+ * is a rerun line for a step that failed, which is useless if the survey folder
+ * is called "Ektanagar 2 Final" and the line silently breaks at the space.
+ */
+const shellArg = (a) => (/[^\w@%+=:,./-]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a);
+const commandLine = (args) => `node ${args.map(shellArg).join(" ")}`;
+
+/** Run one thing, and stop the whole publish if it fails. */
 function step(label, args) {
   console.log(`\n--- ${label} ---`);
   const r = spawnSync(node, args, { stdio: "inherit" });
@@ -207,33 +238,125 @@ function step(label, args) {
   }
 }
 
+/**
+ * What this run will do, as data, before any of it happens.
+ *
+ * Collected rather than executed inline for two reasons. `--dry-run` can then
+ * show the actual plan — the whole point of a dry run is to answer "what is
+ * about to happen to my survey", which a message saying "nothing written" does
+ * not. And the ordering decision, cheap steps first and the two slow ones last,
+ * becomes visible in one place instead of being implied by the order of the
+ * statements that happen to run them.
+ *
+ * `optional: true` means a failure degrades the site rather than stopping it.
+ * That is right for hydrology and the point cloud and wrong for everything else:
+ * without tiles there is no site, and publishing half of one wastes the client's
+ * first look. Hydrology and the cloud are additional layers over a site that is
+ * already complete, they are the two slowest things here by an order of
+ * magnitude, and they are the two most likely to meet something they dislike in
+ * a survey nobody has processed before. Losing an hour of tiling because a LAS
+ * has an unexpected point format would be the wrong trade.
+ */
+const plan = [];
+
 if (!has("skip-tiles")) {
-  step("tiles, contours and the manifest", [
-    "scripts/prepare-site.mjs", inputDir, slug,
-    "--quality", flag("quality", "80"),
-    "--max-pixels", flag("max-pixels", "120000000"),
-  ]);
+  plan.push({
+    label: "tiles, contours and the manifest",
+    args: [
+      "scripts/prepare-site.mjs", inputDir, slug,
+      "--quality", flag("quality", "80"),
+      "--max-pixels", flag("max-pixels", "120000000"),
+    ],
+  });
 }
 
 if (dtm) {
-  step("terrain, so elevation survives into the browser", [
-    "scripts/make-terrain-tiles.mjs", dtm, slug, "--layer", "terrain",
-  ]);
+  plan.push({
+    label: "terrain, so elevation survives into the browser",
+    args: ["scripts/make-terrain-tiles.mjs", dtm, slug, "--layer", "terrain"],
+  });
 }
 
-const previewArgs = ["scripts/make-site-previews.mjs", slug, "--client", clientSlug];
-if (dsm) previewArgs.push("--dsm", dsm);
-if (dtm) previewArgs.push("--dtm", dtm);
-if (ortho) previewArgs.push("--ortho", ortho);
-if (dsm || dtm || ortho) step("imagery previews", previewArgs);
+if (dsm || dtm || ortho) {
+  const args = ["scripts/make-site-previews.mjs", slug, "--client", clientSlug];
+  if (dsm) args.push("--dsm", dsm);
+  if (dtm) args.push("--dtm", dtm);
+  if (ortho) args.push("--ortho", ortho);
+  plan.push({ label: "imagery previews", args });
+}
 
-const delivArgs = [
-  "scripts/make-site-deliverables.mjs", slug,
-  "--client", clientSlug, "--name", siteName,
-];
-if (location) delivArgs.push("--location", location);
-if (cloud) delivArgs.push("--las", cloud);
-step("PDF deliverables", delivArgs);
+{
+  const args = [
+    "scripts/make-site-deliverables.mjs", slug,
+    "--client", clientSlug, "--name", siteName,
+  ];
+  if (location) args.push("--location", location);
+  if (cloud) args.push("--las", cloud);
+  plan.push({ label: "PDF deliverables", args });
+}
+
+/*
+ * The two slow, optional layers.
+ *
+ * Both were built after this orchestrator and never folded into it, so every
+ * site since has needed them run by hand — which is most of the reason
+ * publishing a survey had drifted back to five commands.
+ */
+if (dtm && !has("skip-hydrology")) {
+  plan.push({
+    label: "hydrology: flow, streams and catchments",
+    args: [
+      "scripts/hydro-run.mjs",
+      "--dtm", dtm,
+      "--out", hydrologyDir,
+      "--cell", flag("hydro-cell", "1"),
+      "--threshold", flag("hydro-threshold", "500"),
+    ],
+    optional: true,
+    missing: "but tools 24 to 28 will have nothing to read",
+  });
+} else if (!dtm && !has("skip-hydrology")) {
+  console.log(`  ! no terrain model, so no hydrology. Water runs over bare earth, not over a surface model.`);
+}
+
+if (cloud && !has("skip-cloud")) {
+  plan.push({
+    label: "point cloud: streaming quadtree",
+    args: ["scripts/prepare-point-cloud.mjs", "--site", slug, "--las", cloud],
+    optional: true,
+    missing: "but the cloud browser will have nothing to stream",
+  });
+}
+
+if (dryRun) {
+  console.log(`\nwould run, in order:\n`);
+  for (const [i, p] of plan.entries()) {
+    console.log(`  ${i + 1}. ${p.label}${p.optional ? "   (optional)" : ""}`);
+    console.log(`     ${commandLine(p.args)}`);
+  }
+  console.log(`\n  then: catalogue${has("db") ? ", database" : ""}, guards`);
+  console.log(`\ndry run, nothing written\n`);
+  process.exit(0);
+}
+
+/**
+ * Named at the end as well as where it happened: a failure a thousand lines up
+ * the scroll of an hour-long run is a failure nobody sees.
+ */
+const degraded = [];
+
+for (const p of plan) {
+  if (!p.optional) {
+    step(p.label, p.args);
+    continue;
+  }
+  console.log(`\n--- ${p.label} ---`);
+  const r = spawnSync(node, p.args, { stdio: "inherit" });
+  if (r.status === 0) continue;
+  console.error(`\n  ! ${p.label} failed with exit code ${r.status}.`);
+  console.error(`    The site will still publish, ${p.missing}.`);
+  degraded.push({ ...p, rerun: commandLine(p.args) });
+}
 
 /* --------------------------------------------- copy through what is data --- */
 
@@ -364,5 +487,23 @@ done. ${slug} is published.
 
   map bundle   portal-data/map/${slug}/
   deliverables portal-data/files/${clientSlug}/${siteFolder}/
-  catalogue    ${cataloguePath}
+  catalogue    ${cataloguePath}${existsSync(hydrologyDir) ? `
+  hydrology    portal-data/hydrology/${slug}/` : ""}${existsSync(resolve("portal-data", "cloud", slug)) ? `
+  point cloud  portal-data/cloud/${slug}/` : ""}
 `);
+
+/*
+ * Named at the end as well as where they happened.
+ *
+ * A failure a thousand lines up the scroll of an hour-long run is a failure
+ * nobody sees. The rerun line is given in full so fixing one does not mean
+ * reconstructing its arguments.
+ */
+if (degraded.length > 0) {
+  console.log(`  ${degraded.length} layer${degraded.length === 1 ? "" : "s"} did not build:\n`);
+  for (const d of degraded) {
+    console.log(`  - ${d.label}`);
+    console.log(`    ${d.missing}`);
+    console.log(`    re-run: ${d.rerun}\n`);
+  }
+}
