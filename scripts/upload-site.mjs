@@ -21,12 +21,9 @@
  *   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
  */
 
-import { createHash, createHmac } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-
-const REGION = "auto"; // R2 has one region and expects this literal
-const SERVICE = "s3";
+import { createReadStream, readFileSync, statSync } from "node:fs";
+import { hashOf, r2Client, r2Credentials } from "./lib/r2.mjs";
+import { CLASS_NAMES, localObjects, presentClasses } from "./lib/site-objects.mjs";
 
 function parseArgs(argv) {
   const args = { concurrency: 4 };
@@ -71,111 +68,10 @@ if (args.help || !args.site) {
   process.exit(args.help ? 0 : 1);
 }
 
-// A slug that could escape its prefix would defeat the Worker's whole check, so
-// it is validated here as well. Two places, because this one runs on a laptop
-// with credentials and the other runs on the edge without them.
-if (!/^[a-z0-9][a-z0-9-]*$/.test(args.site)) {
-  throw new Error(
-    `--site "${args.site}" is not a safe slug. Lower case letters, digits and hyphens only: ` +
-      `anything else could place objects outside sites/<slug>/.`,
-  );
-}
-
-const env = (name) => {
-  const value = process.env[name];
-  if (!value && !args.dryRun) {
-    throw new Error(`${name} is not set. Cloudflare dashboard -> R2 -> Manage API tokens.`);
-  }
-  return value ?? "";
-};
-const ACCOUNT = env("R2_ACCOUNT_ID");
-const ACCESS_KEY = env("R2_ACCESS_KEY_ID");
-const SECRET_KEY = env("R2_SECRET_ACCESS_KEY");
-const BUCKET = env("R2_BUCKET");
-const HOST = `${ACCOUNT}.r2.cloudflarestorage.com`;
-
-// Node's Hash.update() rejects a single call over roughly 2 GiB ("data is
-// too long") - a real limitation, not this script's own guard, and it bit
-// Kiru's 3.76 GB DSM the same way readFileSync's 2 GiB cap did above.
-// Feeding it in chunks is well within what update() supports repeatedly.
-const HASH_CHUNK = 512 * 1024 * 1024;
-function hashOf(algorithm, data) {
-  const hash = createHash(algorithm);
-  if (typeof data === "string" || data.length <= HASH_CHUNK) {
-    hash.update(data);
-    return hash;
-  }
-  for (let offset = 0; offset < data.length; offset += HASH_CHUNK) {
-    hash.update(data.subarray(offset, offset + HASH_CHUNK));
-  }
-  return hash;
-}
-const sha256 = (data) => hashOf("sha256", data).digest("hex");
-const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
-
-/**
- * AWS Signature Version 4.
- *
- * Written out rather than pulled in because it is forty lines and the
- * alternative is the AWS SDK, which is tens of megabytes for one PUT. The two
- * places this usually goes wrong are both handled: every path segment is encoded
- * except the slashes, and the payload hash is the hash of the actual body rather
- * than UNSIGNED-PAYLOAD, so a truncated upload fails the signature instead of
- * silently storing a partial object.
- */
-function sign({ method, key, body, contentType, query }) {
-  const now = new Date();
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
-  const dateStamp = amzDate.slice(0, 8);
-  const payloadHash = sha256(body ?? "");
-
-  const canonicalUri =
-    "/" + [BUCKET, ...key.split("/")].map((s) => encodeURIComponent(s)).join("/");
-  // Sorted key=value pairs, joined with "&" - required even for a valueless
-  // param like "uploads" (multipart initiate), which still needs its "=".
-  const canonicalQuery = query
-    ? Object.keys(query).sort()
-        .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k] ?? "")}`)
-        .join("&")
-    : "";
-
-  const headers = {
-    host: HOST,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-    ...(contentType ? { "content-type": contentType } : {}),
-  };
-  const signedHeaders = Object.keys(headers).sort().join(";");
-  const canonicalHeaders = Object.keys(headers)
-    .sort()
-    .map((h) => `${h}:${String(headers[h]).trim()}\n`)
-    .join("");
-
-  const canonicalRequest = [
-    method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash,
-  ].join("\n");
-
-  const scope = `${dateStamp}/${REGION}/${SERVICE}/aws4_request`;
-  const toSign = [
-    "AWS4-HMAC-SHA256", amzDate, scope, sha256(canonicalRequest),
-  ].join("\n");
-
-  let signingKey = hmac(`AWS4${SECRET_KEY}`, dateStamp);
-  signingKey = hmac(signingKey, REGION);
-  signingKey = hmac(signingKey, SERVICE);
-  signingKey = hmac(signingKey, "aws4_request");
-  const signature = createHmac("sha256", signingKey).update(toSign).digest("hex");
-
-  return {
-    url: `https://${HOST}${canonicalUri}${canonicalQuery ? `?${canonicalQuery}` : ""}`,
-    headers: {
-      ...headers,
-      Authorization:
-        `AWS4-HMAC-SHA256 Credential=${ACCESS_KEY}/${scope}, ` +
-        `SignedHeaders=${signedHeaders}, Signature=${signature}`,
-    },
-  };
-}
+const creds = r2Credentials({ required: !args.dryRun });
+const BUCKET = creds.bucket;
+const ACCOUNT = creds.account;
+const { sign, host: HOST } = r2Client(creds);
 
 const CONTENT_TYPES = {
   tif: "image/tiff", tiff: "image/tiff", webp: "image/webp", png: "image/png",
@@ -188,27 +84,6 @@ const CONTENT_TYPES = {
   pnt: "application/octet-stream",
   txt: "text/plain", csv: "text/csv", xml: "application/xml", dxf: "application/dxf",
 };
-
-function walk(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) continue; // .DS_Store and friends
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) { out.push(...walk(full)); continue; }
-    if (entry.isFile()) { out.push(full); continue; }
-    // Dirent.isFile()/.isDirectory() report the link itself, not its target,
-    // so a symlink is neither - which is exactly what portal-data/terrain/
-    // holds (dsm.tif/dtm.tif point at the real rasters elsewhere on disk;
-    // see the resume-point memory). Without this, this walk silently found
-    // zero files here and the upload never got them.
-    if (entry.isSymbolicLink()) {
-      const target = statSync(full); // follows the link
-      if (target.isFile()) out.push(full);
-      else if (target.isDirectory()) out.push(...walk(full));
-    }
-  }
-  return out;
-}
 
 // readFileSync refuses anything over 2 GiB (Node's own guard, not a real
 // memory limit) - which Kiru's terrain rasters are, at 3.76 GB and 2.3 GB.
@@ -320,73 +195,35 @@ async function alreadyThere(key, body) {
   return etag === hashOf("md5", body).digest("hex");
 }
 
-/**
- * Where each data class lives locally, and the prefix the portal reads it from.
- *
- * The prefixes are not uniform and that is not an accident to tidy away: the
- * three `PORTAL_*_URL` bases all point at the same `sites` root, and each source
- * module appends its own segment — terrain reads `<slug>/dtm.tif`, hydrology
- * reads `<slug>/hydrology/<file>`, the cloud reads `<slug>/cloud/cloud.json`.
- * This table is the one place those three facts are written down together, and
- * it was checked against the live bucket rather than inferred.
+/*
+ * What goes where is `scripts/lib/site-objects.mjs`, shared with r2-prune.mjs.
+ * A pruner working from a different idea of the key layout than the uploader
+ * would delete live data, so neither script is allowed its own copy.
  */
-const CLASSES = [
-  { name: "map", dir: join("portal-data", "map", args.site), prefix: "" },
-  { name: "terrain", dir: join("portal-data", "terrain", args.site), prefix: "" },
-  { name: "hydrology", dir: join("portal-data", "hydrology", args.site), prefix: "hydrology" },
-  { name: "cloud", dir: join("portal-data", "cloud", args.site), prefix: "cloud" },
-];
-
-if (args.only && !CLASSES.some((c) => c.name === args.only)) {
-  throw new Error(`--only "${args.only}" is not one of: ${CLASSES.map((c) => c.name).join(", ")}`);
+if (args.only && !CLASS_NAMES.includes(args.only)) {
+  throw new Error(`--only "${args.only}" is not one of: ${CLASS_NAMES.join(", ")}`);
 }
 
-/**
- * A copy a sync tool made, which must never reach the bucket.
- *
- * iCloud and Finder resolve a conflict by leaving "nodes 2" beside "nodes", and
- * `portal-data/cloud/ektanagar-2-survey` holds exactly that today. Walking it
- * would upload a second complete quadtree under a name nothing reads — 740
- * objects of pure cost, which is how half the duplication already in the bucket
- * got there. Skipped loudly, because the right fix is to delete it on disk.
- */
-const DUPLICATE = /(^| )\d+$/;
+const { present, absent } = args.from
+  ? { present: [{ name: "from", prefix: "" }], absent: [] }
+  : presentClasses(args.site, { only: args.only });
+for (const c of absent) console.log(`  - ${c.name.padEnd(10)} nothing at ${c.dir(args.site)}`);
 
-const sources = args.from
-  ? [{ name: "from", dir: args.from, prefix: "" }]
-  : CLASSES.filter((c) => (args.only ? c.name === args.only : true)).filter((c) => {
-      if (existsSync(c.dir)) return true;
-      console.log(`  - ${c.name.padEnd(10)} nothing at ${c.dir}`);
-      return false;
-    });
-
-if (sources.length === 0) {
+const files = localObjects(args.site, {
+  only: args.only,
+  from: args.from,
+  onSkip: (what) => console.log(`  ! skipping ${what} — looks like a sync tool's duplicate`),
+});
+if (files.length === 0) {
   throw new Error(
     `nothing to upload for ${args.site}. Looked in:\n  ` +
-      CLASSES.map((c) => c.dir).join("\n  "),
+      CLASS_NAMES.join("\n  "),
   );
 }
 
-const files = [];
-for (const source of sources) {
-  for (const file of walk(source.dir)) {
-    const suffix = relative(source.dir, file).split(sep).join("/");
-    const first = suffix.split("/")[0];
-    if (DUPLICATE.test(first.replace(/\.[^.]+$/, ""))) {
-      console.log(`  ! skipping ${source.name}/${suffix} — looks like a sync tool's duplicate`);
-      continue;
-    }
-    files.push({
-      path: file,
-      key: `sites/${args.site}/${source.prefix ? `${source.prefix}/` : ""}${suffix}`,
-    });
-  }
-}
-if (files.length === 0) throw new Error(`no files found for ${args.site}`);
-
 console.log(`\nUploading ${files.length} files to sites/${args.site}/`);
-for (const source of sources) {
-  console.log(`  ${source.name.padEnd(10)} ${source.dir} -> sites/${args.site}/${source.prefix ? `${source.prefix}/` : ""}`);
+for (const c of present) {
+  console.log(`  ${c.name.padEnd(10)} -> sites/${args.site}/${c.prefix ? `${c.prefix}/` : ""}`);
 }
 console.log(`  bucket   ${BUCKET || "(dry run)"}`);
 console.log(`  endpoint ${ACCOUNT ? HOST : "(dry run)"}\n`);
