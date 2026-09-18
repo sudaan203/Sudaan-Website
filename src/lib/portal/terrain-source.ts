@@ -69,9 +69,28 @@ export type TerrainKind = "dtm" | "dsm";
 type Cached = { grid: ReturnType<typeof readGeoTiff>; loadedAt: number };
 const cache = new Map<string, Cached>();
 
+/**
+ * Why a measurement could not be taken, in the terms the client has to act on.
+ *
+ * `survey-too-large` and `area-too-large` used to be one code, and conflating
+ * them cost more than it looks. They are different facts with different next
+ * actions — one is a survey this reader cannot open at all, the other is a
+ * request for more ground than one read can hold — and the client wording for
+ * the pair was written for the first: "this survey is too large to measure
+ * interactively, ask us for the figures you need." So a client who drew too big
+ * an area was told the survey was the problem and that their next step was to
+ * email us, when the server had already worked out that a smaller area would
+ * answer. Both facts still exist; each now says its own thing.
+ */
+export type TerrainUnavailableReason =
+  | "missing"
+  | "survey-too-large"
+  | "area-too-large"
+  | "not-projected";
+
 export class TerrainUnavailable extends Error {
-  readonly reason: "missing" | "too-large" | "not-projected";
-  constructor(reason: "missing" | "too-large" | "not-projected", message: string) {
+  readonly reason: TerrainUnavailableReason;
+  constructor(reason: TerrainUnavailableReason, message: string) {
     super(message);
     this.reason = reason;
     this.name = "TerrainUnavailable";
@@ -116,7 +135,7 @@ export function loadTerrain(siteSlug: string, kind: TerrainKind = "dtm") {
   }
   if (grid.width * grid.height > MAX_CELLS) {
     throw new TerrainUnavailable(
-      "too-large",
+      "survey-too-large",
       `The ${kind.toUpperCase()} for this site is ${grid.width} x ${grid.height} cells, past ` +
         `what can be read whole. This needs the windowed COG reader.`,
     );
@@ -256,7 +275,7 @@ export async function readTerrainWindow(
 
   if (window.cols * window.rows > MAX_CELLS) {
     throw new TerrainUnavailable(
-      "too-large",
+      "area-too-large",
       `That area covers ${window.cols} x ${window.rows} cells at this survey's ` +
         `${raster.cellSize.toFixed(3)} m resolution, which is past what can be measured in one ` +
         `request. Draw a smaller area.`,

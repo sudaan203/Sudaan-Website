@@ -207,7 +207,51 @@ export function fillDepressions(dem, { epsilon = 1e-5 } = {}) {
     sinks.data[i] = d > 0 ? d : sinks.nodata;
   }
 
-  return { filled, sinks, raisedCells: raised, maxRaise };
+  /*
+   * `trueLevel` as a grid in its own right, because it answers a question far
+   * beyond sink depth and answering it any other way is expensive.
+   *
+   * The pop order here is ascending by the level water stands at, seeded from
+   * the survey's boundary and its nodata edges. That makes this pass Priority-
+   * Flood, and `trueLevel[c]` is therefore the *minimax* elevation from the
+   * boundary to `c`: the lowest value of "the highest ground you must cross"
+   * over every path from outside the survey to that cell.
+   *
+   * Which gives the identity the flood tool is built on:
+   *
+   *     water rising from outside at level L covers exactly { c : spill[c] <= L }
+   *
+   * A whole-survey flood at any level is then a per-cell comparison against a
+   * raster computed once, rather than a connected fill run per level over
+   * hundreds of millions of cells. It is the same answer `connectedFlood` gives
+   * — the same components, at the same resolution — with the traversal done in
+   * advance and shared by every level.
+   *
+   * Epsilon never touches it. `filled` carries a drainage gradient so D8 always
+   * has somewhere to send water, and that gradient is a fabricated slope: using
+   * it here would move shorelines by an amount that grows with distance from
+   * the spill point, which is exactly the kind of invisible error this tool
+   * exists to avoid.
+   */
+  const spill = dem.like(Float32Array, 0, dem.nodata);
+  for (let i = 0; i < dem.length; i += 1) {
+    spill.data[i] = dem.isNoData(dem.data[i]) ? spill.nodata : trueLevel[i];
+  }
+
+  return { filled, sinks, spill, raisedCells: raised, maxRaise };
+}
+
+/**
+ * The level water stands at, per cell, when it rises from outside the survey.
+ *
+ * A thin name over `fillDepressions`, because the flood tool asks for exactly
+ * one of its four outputs and asking for "the depression fill" when you mean
+ * "the flood arrival level" is how the epsilon surface gets used by mistake.
+ * Pinned to `epsilon: 0` for the reason given above: the two surfaces differ,
+ * and only one of them is a water level.
+ */
+export function spillLevel(dem) {
+  return fillDepressions(dem, { epsilon: 0 }).spill;
 }
 
 /**

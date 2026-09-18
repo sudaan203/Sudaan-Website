@@ -232,7 +232,20 @@ export function toleranceAnalysis(surfaceGrid, referenceGrid, tolerance, { rmseZ
  * @param {{ rmseZ?: number|null }} [options]
  */
 export function stockpileVolume(demGrid, ring, reference, { rmseZ = null } = {}) {
-  const result = cutFill(demGrid, ring, reference, { rmseZ });
+  return stockpileFrom(cutFill(demGrid, ring, reference, { rmseZ }), ring);
+}
+
+/**
+ * A stockpile's figures, from a cut and fill that has already been computed.
+ *
+ * Every number here is a renaming or a ratio of one `cutFill` already reports —
+ * the pile is the cut above its base, and its mean height is that volume over
+ * that footprint. Splitting the derivation out is what lets a stockpile be
+ * measured by the tiled reduction: the walk produces a cut and fill result, and
+ * this turns it into a stockpile afterwards, with no second pass over the
+ * ground and no second copy of the arithmetic.
+ */
+export function stockpileFrom(result, ring) {
   const baseArea = result.cutArea;
   return {
     ...result,

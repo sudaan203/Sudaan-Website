@@ -72,7 +72,7 @@ export type AnalysisErrorKind =
  */
 export class AnalysisError extends Error {
   readonly kind: AnalysisErrorKind;
-  /** `TerrainUnavailable.reason` for a 409: missing | too-large | not-projected. */
+  /** `TerrainUnavailable.reason` for a 409: missing | survey-too-large | area-too-large | not-projected. */
   readonly reason?: string;
 
   constructor(kind: AnalysisErrorKind, message: string, reason?: string) {
@@ -651,8 +651,14 @@ function terrainMessage(reason: string | undefined): string {
   switch (reason) {
     case "missing":
       return "Measurements are not available for this survey yet.";
-    case "too-large":
+    case "survey-too-large":
+      // Our limitation, and not one the client can do anything about, so it
+      // does not pretend to be their problem or ask them to redraw something.
       return "This survey is too large to measure interactively. Ask us for the figures you need.";
+    case "area-too-large":
+      // Theirs to act on, and the action is one gesture away. The old wording
+      // sent this case to the one above and told them to email us instead.
+      return "That area covers more ground than one measurement can read. Draw a smaller area and try again.";
     case "not-projected":
       return "This survey is not in a projected coordinate system, so it cannot be measured.";
     default:

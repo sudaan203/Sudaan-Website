@@ -536,3 +536,372 @@ export function boundsOf(points) {
   }
   return [minX, minY, maxX, maxY];
 }
+
+/**
+ * Cells one tile of a tiled reduction reads.
+ *
+ * Sized so the transient Float32Array is about 32 MB — comfortable inside a
+ * serverless function alongside everything else a request holds, and large
+ * enough that the per-tile overhead (a corner lattice, a chunk prefetch) is
+ * amortised over enough cells to disappear.
+ *
+ * This is a *memory* bound, not a limit on what can be measured. The polygon is
+ * walked one tile at a time and only the accumulator survives between tiles, so
+ * the ground a reduction may cover is unbounded; this number only decides how
+ * many times round the loop.
+ */
+const REDUCTION_TILE_CELLS = 8_000_000;
+
+/**
+ * Measure a polygon of any size, exactly, by walking it in tiles.
+ *
+ * ## The whole point
+ *
+ * Every quantity `cutFill` and `polygonStats` report is a sum, a weight or a
+ * maximum, and those compose across a partition. So a polygon larger than
+ * memory is not a polygon that cannot be measured — it is one that has to be
+ * read in pieces, with the arithmetic carried between them. The accumulator is
+ * that carry. Nothing else crosses a tile boundary.
+ *
+ * This is what replaced the area cap. The cap existed because the reader was
+ * asked for the polygon's whole bounding box in one allocation, and a full-site
+ * cut and fill on a 7 cm survey is hundreds of millions of cells; refusing was
+ * the only honest answer available at the time. It is not the only one now, and
+ * the result is not a coarsened or sampled approximation — it is the identical
+ * arithmetic, in a different order.
+ *
+ * ## The two rules that make it identical, and what breaks them
+ *
+ * 1. **Tiles are disjoint in cells and carry no margin.** `cellCoverage`
+ *    weights each cell by the fraction of it inside the ring, so a cell read by
+ *    two tiles is counted twice — its area double-reported and its elevation
+ *    double-weighted in the mean. This walks whole cell-index ranges and builds
+ *    the window objects directly. `windowFor` is deliberately **not** used: it
+ *    pads by `MARGIN_CELLS` for interpolation, which is right for sampling a
+ *    point and wrong for partitioning an area.
+ *
+ * 2. **The accumulate step reads no neighbours.** `cellCoverage` is purely
+ *    geometric and `grid.get` is the only raster access on that path, so a tile
+ *    needs no halo and rule 1 is sufficient. A future accumulator that wants a
+ *    3x3 kernel — a slope-weighted volume, say — cannot use this driver as it
+ *    stands, and should say so loudly rather than quietly reading nodata off
+ *    its tile edges.
+ *
+ * Tiles are clipped to the ring's own cell window first, so a long thin
+ * corridor across a survey costs its own bounding box rather than the survey,
+ * and any tile the ring does not actually touch is skipped without a read.
+ *
+ * @param raster an open raster from `openRaster`
+ * @param {number[][]} ring the polygon, in the raster's projected metres
+ * @param {(grid: any) => void | Promise<void>} accumulate called once per tile with a
+ *        windowed Grid. Awaited, so a reference surface that is itself a raster
+ *        can read the matching window of the *other* file band by band — which
+ *        is what lets a DSM-against-DTM volume be as unlimited as a volume
+ *        against a plane, rather than unlimited only in the easy case.
+ * @param {{ onProgress?: (done: number, total: number) => void, signal?: AbortSignal,
+ *           tileCells?: number }} [options] `tileCells` exists so the suites can
+ *           force a many-tile partition on a small survey and assert it agrees
+ *           with the whole-grid answer. A partition that is only ever one tile
+ *           proves nothing about partitioning.
+ * @returns {Promise<{ tiles: number, cells: number, read: number }>} what it cost
+ */
+export async function reduceOverPolygon(raster, ring, accumulate, options = {}) {
+  const { onProgress, signal, tileCells = REDUCTION_TILE_CELLS } = options;
+  const [minX, minY, maxX, maxY] = boundsOf(ring);
+
+  // The ring's own cell window, clamped to the raster and unpadded. Anything
+  // outside it cannot contribute a non-zero coverage fraction.
+  const col0 = Math.max(0, Math.floor((minX - raster.originX) / raster.cellSize));
+  const col1 = Math.min(raster.width - 1, Math.ceil((maxX - raster.originX) / raster.cellSize));
+  const row0 = Math.max(0, Math.floor((raster.originY - maxY) / raster.cellSize));
+  const row1 = Math.min(raster.height - 1, Math.ceil((raster.originY - minY) / raster.cellSize));
+  if (col0 > col1 || row0 > row1) return { tiles: 0, cells: 0, read: 0 };
+
+  const width = col1 - col0 + 1;
+  const height = row1 - row0 + 1;
+
+  /*
+   * Tile shape follows the file's own layout rather than being square.
+   *
+   * A stripped GeoTIFF stores whole rows, so a tall thin tile would fetch every
+   * strip it spans and throw away most of each. Full-width bands read exactly
+   * the strips they cover. For a genuinely tiled file the band is still read as
+   * whole tile rows, which is the same argument one level up.
+   */
+  const bandRows = Math.max(1, Math.min(height, Math.floor(tileCells / width)));
+  const bands = Math.ceil(height / bandRows);
+
+  let cells = 0;
+  let read = 0;
+  let tiles = 0;
+
+  for (let b = 0; b < bands; b += 1) {
+    signal?.throwIfAborted();
+    const r0 = row0 + b * bandRows;
+    const rows = Math.min(bandRows, row1 - r0 + 1);
+    const grid = await raster.readWindow({ col0, row0: r0, cols: width, rows });
+    if (grid) {
+      await accumulate(grid);
+      read += width * rows;
+    }
+    cells += width * rows;
+    tiles += 1;
+    onProgress?.(b + 1, bands);
+  }
+
+  return { tiles, cells, read };
+}
+
+/**
+ * How loosely a group of sample points may be boxed, in cells read per point.
+ *
+ * This, not a fixed size, is what keeps a diagonal honest. A group is read as
+ * one rectangle, and the rectangle around a diagonal run of `n` cells holds
+ * about `n²/2` — so a fixed cell budget lets a line grow until its own bounding
+ * box fills it, and reads a quarter of a million cells to answer a few hundred
+ * questions. Budgeting per *point* instead makes the waste a constant factor
+ * the caller can reason about rather than a function of how the line happens to
+ * lie across the grid.
+ *
+ * 48 is about seven cells square per sample. Dense patterns — a cross section's
+ * perpendicular offsets, a corridor's swath — pack many points into one
+ * rectangle and pay far less than this; a lone diagonal pays roughly all of it.
+ */
+const SAMPLE_CELLS_PER_POINT = 48;
+
+/**
+ * Smallest and largest a group may be regardless of its point count.
+ *
+ * The floor stops a two-point group from being boxed tighter than the halo it
+ * needs. The ceiling bounds one allocation, so a pathological input cannot ask
+ * for a rectangle larger than a tile read.
+ */
+const SAMPLE_GROUP_MIN_CELLS = 4_096;
+const SAMPLE_GROUP_MAX_CELLS = 1_000_000;
+
+/**
+ * Read only the ground a list of sample points actually lands on.
+ *
+ * ## Why this exists
+ *
+ * A cross section, a chainage table, a corridor and a bench analysis all sample
+ * the terrain at discrete points — at most a couple of thousand of them, capped
+ * client side long before they get here. None of them needs the ground between
+ * those points. But the only reader available took a bounding box, so a section
+ * line drawn corner to corner across a survey asked for the survey: 734 million
+ * cells to answer two thousand questions, and the honest response to that was a
+ * refusal. The tool did not fail because the measurement was expensive. It
+ * failed because the read was shaped wrong.
+ *
+ * This reads the neighbourhood of the points instead. Cost scales with the line,
+ * not with the survey, and the refusal goes away without anything being
+ * approximated: the samples are taken from the same cells, at the same
+ * resolution, by the same bilinear interpolation.
+ *
+ * ## The halo is not optional
+ *
+ * `spotLevel` interpolates between the four cells surrounding a point, so a
+ * point landing in the last cell of a window needs the cell after it to exist.
+ * Without the halo every sample sitting near a group edge would read one nodata
+ * corner and return null — a profile with holes in it at regular intervals,
+ * which looks like missing survey data rather than like a bug.
+ *
+ * ## Grouping
+ *
+ * Points are taken in the order given and accumulated into a group while the
+ * group's bounding box stays under budget. Sample orders are spatially
+ * coherent — a profile walks along its line, cross sections walk section by
+ * section — so consecutive points are neighbours and the boxes stay tight. A
+ * point that would blow the budget starts a new group rather than stretching
+ * the old one, which is what keeps a diagonal from degenerating into its own
+ * bounding box.
+ *
+ * @param raster an open raster from `openRaster`
+ * @param {Array<[number, number]>} points sample positions in projected metres
+ * @param {{ halo?: number, groupCells?: number, signal?: AbortSignal }} [options]
+ * @returns a Grid-shaped façade over the windows, plus what it cost
+ */
+export async function sampleTerrain(raster, points, options = {}) {
+  const { halo = 1, cellsPerPoint = SAMPLE_CELLS_PER_POINT, signal } = options;
+  const { cellSize, originX, originY, width, height, nodata, epsg } = raster;
+
+  const groups = [];
+  let current = null;
+  const flush = () => { if (current) { groups.push(current); current = null; } };
+
+  for (const [x, y] of points) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const col = Math.floor((x - originX) / cellSize);
+    const row = Math.floor((originY - y) / cellSize);
+    const c0 = col - halo;
+    const c1 = col + halo + 1;
+    const r0 = row - halo;
+    const r1 = row + halo + 1;
+    if (!current) { current = { c0, c1, r0, r1, count: 1 }; continue; }
+    const nc0 = Math.min(current.c0, c0);
+    const nc1 = Math.max(current.c1, c1);
+    const nr0 = Math.min(current.r0, r0);
+    const nr1 = Math.max(current.r1, r1);
+    const count = current.count + 1;
+    const budget = Math.min(
+      SAMPLE_GROUP_MAX_CELLS,
+      Math.max(SAMPLE_GROUP_MIN_CELLS, cellsPerPoint * count),
+    );
+    if ((nc1 - nc0 + 1) * (nr1 - nr0 + 1) > budget) {
+      flush();
+      current = { c0, c1, r0, r1, count: 1 };
+    } else {
+      current = { c0: nc0, c1: nc1, r0: nr0, r1: nr1, count };
+    }
+  }
+  flush();
+
+  const tiles = [];
+  let read = 0;
+  for (const g of groups) {
+    signal?.throwIfAborted();
+    const c0 = Math.max(0, g.c0);
+    const c1 = Math.min(width - 1, g.c1);
+    const r0 = Math.max(0, g.r0);
+    const r1 = Math.min(height - 1, g.r1);
+    // Entirely off the survey. Not an error — `inside` below reports it as
+    // outside the raster, and the sampler turns that into a null elevation.
+    if (c0 > c1 || r0 > r1) continue;
+    const grid = await raster.readWindow({ col0: c0, row0: r0, cols: c1 - c0 + 1, rows: r1 - r0 + 1 });
+    if (!grid) continue;
+    tiles.push({ col0: c0, row0: r0, col1: c1, row1: r1, grid });
+    read += (c1 - c0 + 1) * (r1 - r0 + 1);
+  }
+
+  /*
+   * Cells asked for that no group covers.
+   *
+   * Should always be zero: every point was given a group and a halo. It is
+   * counted rather than assumed because the failure it guards against is
+   * silent — an uncovered cell reads as nodata, `spotLevel` turns one nodata
+   * corner into a null elevation, and the profile grows a hole that is
+   * indistinguishable from a gap in the survey. The suites assert it is zero.
+   */
+  let misses = 0;
+
+  /*
+   * A Grid-shaped façade, not a Grid. `spotLevel` uses exactly `originX`,
+   * `originY`, `cellSize`, `inside`, `get` and `isNoData`, and the alignment
+   * tools additionally read `cellSize`; presenting the whole raster's geometry
+   * while backing only the sampled windows is what lets `profile`,
+   * `crossSections`, `chainage`, `corridorAnalysis` and `benchAnalysis` run
+   * against it completely unchanged.
+   *
+   * Cell indices are the *raster's* own throughout, never a window's, so a
+   * caller cannot accidentally mix the two coordinate systems.
+   */
+  return {
+    kind: "sampled",
+    width,
+    height,
+    cellSize,
+    cellArea: cellSize * cellSize,
+    originX,
+    originY,
+    epsg,
+    nodata,
+    tiles: tiles.length,
+    cellsRead: read,
+    get misses() { return misses; },
+    inside(col, row) {
+      return col >= 0 && row >= 0 && col < width && row < height;
+    },
+    isNoData(v) {
+      return v === null || v === undefined || Number.isNaN(v)
+        ? true
+        : Number.isNaN(nodata) ? Number.isNaN(v) : v === nodata;
+    },
+    get(col, row) {
+      for (let i = 0; i < tiles.length; i += 1) {
+        const t = tiles[i];
+        if (col >= t.col0 && col <= t.col1 && row >= t.row0 && row <= t.row1) {
+          return t.grid.get(col - t.col0, row - t.row0);
+        }
+      }
+      misses += 1;
+      return nodata;
+    },
+    xOf(col) { return originX + (col + 0.5) * cellSize; },
+    yOf(row) { return originY - (row + 0.5) * cellSize; },
+    cornerX(col) { return originX + col * cellSize; },
+    cornerY(row) { return originY - row * cellSize; },
+  };
+}
+
+/**
+ * Run a sampling analysis against only the ground it actually touches.
+ *
+ * ## The chicken and egg this solves
+ *
+ * `sampleTerrain` needs to know which points will be sampled. But which points
+ * get sampled is decided *inside* `profile`, `crossSections`, `corridorAnalysis`
+ * and `benchAnalysis` — from the interval, the half width, the sample spacing
+ * and the alignment's own geometry. Recomputing that here would mean a second
+ * copy of each tool's sampling rule, kept in step by hand, and a copy that
+ * drifted would not fail loudly: it would read slightly the wrong ground and
+ * return a profile with holes in it.
+ *
+ * So the tool is asked instead. It is run once against a façade that answers
+ * every cell with nodata and writes down which cells it was asked for, and then
+ * run for real against exactly those cells. The set is exact by construction
+ * and stays exact when a tool changes how it samples, because the tool is the
+ * thing being asked.
+ *
+ * **Why the probe pass is sound.** Every one of these tools decides *where* to
+ * sample from geometry alone — a chainage interval along a line, perpendicular
+ * offsets at a half width — and never from an elevation it has already read.
+ * So the cell set does not depend on the values returned, and a probe that
+ * returns nothing asks for the same cells a real read would. A tool that chose
+ * its next sample based on the last elevation — a contour follower, say — would
+ * break this, and must not use it.
+ *
+ * The arithmetic runs twice. It is arithmetic on a few thousand samples, against
+ * a read that would otherwise have been hundreds of millions of cells.
+ *
+ * @param raster an open raster from `openRaster`
+ * @param {(grid: any) => any} run invokes the analysis against the grid it is given
+ * @param {{ signal?: AbortSignal, cellsPerPoint?: number }} [options]
+ * @returns {Promise<{ result: any, grid: any }>} the real result, and what backed it
+ */
+export async function sampleFor(raster, run, options = {}) {
+  const wanted = [];
+  const seen = new Set();
+  const { cellSize, originX, originY, width, height, nodata, epsg } = raster;
+
+  const probe = {
+    kind: "probe",
+    width, height, cellSize, originX, originY, epsg, nodata,
+    cellArea: cellSize * cellSize,
+    inside: (col, row) => col >= 0 && row >= 0 && col < width && row < height,
+    isNoData: () => true,
+    get(col, row) {
+      const key = row * width + col;
+      if (!seen.has(key)) {
+        seen.add(key);
+        // The cell's own centre, which `sampleTerrain` maps back to this exact
+        // cell. Recorded in the order asked, which is the order the tool walks
+        // its geometry — and that spatial coherence is what keeps the groups
+        // tight.
+        wanted.push([originX + (col + 0.5) * cellSize, originY - (row + 0.5) * cellSize]);
+      }
+      return nodata;
+    },
+    xOf: (col) => originX + (col + 0.5) * cellSize,
+    yOf: (row) => originY - (row + 0.5) * cellSize,
+    cornerX: (col) => originX + col * cellSize,
+    cornerY: (row) => originY - row * cellSize,
+  };
+
+  run(probe);
+
+  // Halo zero: the tool already asked for every neighbour its interpolation
+  // needs, because `spotLevel` reads all four corners itself. Padding again
+  // would read ground nothing is going to look at.
+  const grid = await sampleTerrain(raster, wanted, { ...options, halo: 0 });
+  return { result: run(grid), grid };
+}

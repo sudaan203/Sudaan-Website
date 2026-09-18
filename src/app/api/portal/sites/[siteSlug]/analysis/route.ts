@@ -10,21 +10,27 @@ import {
   surveyAccuracy,
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
-import { boundsOf } from "@/lib/geo/raster-window.mjs";
+import { boundsOf, reduceOverPolygon, sampleFor } from "@/lib/geo/raster-window.mjs";
 import { lonLatToUtm, utmToLonLat } from "@/lib/geo/projection.mjs";
 import {
   spotLevel,
   profile,
-  polygonStats,
   gridLevels,
-  cutFill,
-  compareSurfaces,
   pointInPolygon,
+  newCompare,
+  accumulateCompare,
+  finaliseCompare,
+  newPolygonStats,
+  accumulatePolygonStats,
+  finalisePolygonStats,
+  newCutFill,
+  accumulateCutFill,
+  finaliseCutFill,
   REFERENCE,
 } from "@/lib/geo/terrain-analysis.mjs";
 import {
   classifySlope,
-  stockpileVolume,
+  stockpileFrom,
   chainage,
   crossSections,
   corridorAnalysis,
@@ -350,6 +356,59 @@ export async function POST(
     };
 
     /**
+     * Run a sampling tool against only the ground its samples land on.
+     *
+     * This is what unblocked the cross section on a large survey, and it did
+     * not do it by measuring less. A profile takes at most a couple of thousand
+     * samples along a line and needs nothing in between them, but the only
+     * reader available took a bounding box — so a section drawn corner to
+     * corner asked for the box around the diagonal, which on a full site is the
+     * whole survey, and the honest answer to that was a refusal. The tool never
+     * needed the ground it was being refused.
+     *
+     * `sampleFor` asks the tool which cells it wants — by running it once
+     * against a façade that records the question and answers nothing — and then
+     * reads only those, in a handful of small windows. Measured on Kotba with a
+     * line drawn corner to corner: 4% of the survey for a profile, 12% for a
+     * corridor, and byte-identical results either way. On a survey where the
+     * bounding box was hundreds of millions of cells, the saving is the
+     * difference between a refusal and an answer.
+     *
+     * Every tool routed through here decides *where* to sample from geometry
+     * alone, never from an elevation it has already read, which is the property
+     * that makes the probe pass sound. `sampleFor` says so at more length.
+     */
+    const sampled = <T,>(run: (grid: any) => T) =>
+      sampleFor(raster, run as (grid: any) => unknown, { signal: request.signal }) as Promise<{
+        result: T;
+        grid: { tiles: number; cellsRead: number; misses: number };
+      }>;
+
+    /**
+     * Measure a polygon of any size, by walking it in tiles and carrying the
+     * accumulator between them.
+     *
+     * The area cap on cut and fill, stockpile volume, polygon statistics and
+     * surface comparison is gone, and not because the limit was raised. Every
+     * number those four report is a sum, a weight or a maximum, and those
+     * compose across a partition — so the polygon is read one band at a time
+     * and only the running totals cross a band boundary. Nothing is coarsened,
+     * nothing is sampled, and the arithmetic is the same arithmetic in a
+     * different order. `reduceOverPolygon` carries the proof and the two rules
+     * that keep it exact.
+     *
+     * The reference is built *before* the walk, because all three kinds can be:
+     * a plane is a constant, a boundary plane is a least-squares fit through
+     * samples along the rim — sparse, so `sampled` serves it — and a second
+     * surface is read band by band inside the walk, against the same world
+     * coordinates.
+     */
+    const overPolygon = async (
+      ring: Geometry,
+      accumulate: (grid: any) => void | Promise<void>,
+    ) => reduceOverPolygon(raster, ring, accumulate, { signal: request.signal });
+
+    /**
      * The reference a measurement is taken against, read once for every op
      * that needs one.
        *
@@ -358,35 +417,67 @@ export async function POST(
      * same thing, and the whole point of stating a reference is that it means
      * one thing.
      */
-    const readReference = async (
-      grid: NonNullable<Awaited<ReturnType<typeof windowed>>>,
-      ring: Geometry,
-    ) => {
+    const readReference = async (ring: Geometry) => {
       const spec = String(body.reference ?? "");
-      if (spec === "boundary") return REFERENCE.boundaryPlane(grid, ring);
+
+      if (spec === "boundary") {
+        /*
+         * Samples along the rim only, so this is a *sparse* read even when the
+         * polygon it bounds is the whole site. A least-squares plane through
+         * those samples is then a constant for every band of the walk, which is
+         * what keeps a boundary-referenced volume as unlimited as a plane one.
+         */
+        const { result } = await sampled((g) => REFERENCE.boundaryPlane(g, ring));
+        return { at: () => result, perBand: false as const };
+      }
+
       if (spec.startsWith("plane:")) {
         const at = Number(spec.slice(6));
         if (!Number.isFinite(at)) {
-        throw new BadRequest(`"${spec}" does not name an elevation in metres.`);
+          throw new BadRequest(`"${spec}" does not name an elevation in metres.`);
         }
-        return REFERENCE.plane(at);
+        const reference = REFERENCE.plane(at);
+        return { at: () => reference, perBand: false as const };
       }
+
       if (spec === "dsm" || spec === "dtm") {
-        // The other surface, windowed to the same ground. Two rasters of the
-        // same site need not share an origin or a cell size, and they do not
-        // have to: `REFERENCE.surface` samples by world coordinate. Kotba's
-        // are 0.157 m and 0.241 m, so this is the ordinary case here.
+        /*
+         * The other surface, read band by band alongside the one being
+         * measured, rather than windowed whole to the polygon.
+         *
+         * This is the only reference that costs ground, and reading it whole
+         * would have reimposed exactly the limit the tiled walk removes: a
+         * DSM-against-DTM volume over a full site would allocate the second
+         * survey entirely, and refuse. `REFERENCE.surface` samples by world
+         * coordinate, so it does not care that it is being handed one band at
+         * a time — or that the two rasters disagree about origin and cell size,
+         * which on Kotba they do, 0.157 m against 0.241 m.
+         */
         const other = await openTerrain(siteSlug, spec);
-        const [minX, minY, maxX, maxY] = boundsOf(ring);
-        const otherGrid = await readTerrainWindow(other, [minX, minY, maxX, maxY]);
-        if (!otherGrid) {
-        throw new BadRequest(
-          `That area does not overlap this site's ${spec.toUpperCase()}, so there is ` +
-            "nothing to measure against.",
-        );
-        }
-        return REFERENCE.surface(otherGrid);
+        let overlapped = false;
+        return {
+          perBand: true as const,
+          at: async (band: { originX: number; originY: number; width: number; height: number; cellSize: number }) => {
+            const minX = band.originX;
+            const maxX = band.originX + band.width * band.cellSize;
+            const maxY = band.originY;
+            const minY = band.originY - band.height * band.cellSize;
+            const otherGrid = await readTerrainWindow(other, [minX, minY, maxX, maxY]);
+            if (!otherGrid) return null;
+            overlapped = true;
+            return REFERENCE.surface(otherGrid);
+          },
+          /*
+           * Checked after the walk rather than before it. A band that misses
+           * the other survey is ordinary — two surveys of one site rarely share
+           * an outline — and only a polygon that missed it *everywhere* is the
+           * error the old whole-window read was catching.
+           */
+          get overlapped() { return overlapped; },
+          kind: spec.toUpperCase(),
+        };
       }
+
       // Deliberately not defaulted. Measured against a flat plane, against the
       // polygon's own rim and against a second surface are three different
       // questions with three different answers, and the client has to choose.
@@ -394,6 +485,34 @@ export async function POST(
         'reference is required: "boundary", "plane:<elevation>", "dtm" or "dsm". ' +
         "A measurement against an unstated reference is not a measurement.",
       );
+    };
+
+    /**
+     * Walk a polygon in bands, accumulating, with the reference resolved per
+     * band where it has to be. The shape every unlimited polygon op shares.
+     */
+    const measurePolygon = async (
+      ring: Geometry,
+      accumulate: (grid: any, reference: any) => void,
+    ) => {
+      const ref = await readReference(ring);
+      let missingEverywhere = false;
+      await overPolygon(ring, async (grid) => {
+        const reference = ref.perBand ? await ref.at(grid) : ref.at();
+        // No overlap with the reference surface in this band. The cells are
+        // still counted — as reference-missing, which is what they are — so a
+        // partly covered comparison reports the gap instead of hiding it.
+        if (!reference) { missingEverywhere = true; return; }
+        accumulate(grid, reference);
+      });
+      if (ref.perBand && !ref.overlapped) {
+        throw new BadRequest(
+          `That area does not overlap this site's ${ref.kind}, so there is ` +
+            "nothing to measure against.",
+        );
+      }
+      void missingEverywhere;
+      return ref;
     };
 
     let result: Record<string, unknown>;
@@ -418,36 +537,59 @@ export async function POST(
       case "profile": {
         const line = project(readGeometry(body, "line", 2));
         const spacing = Number(body.spacing) > 0 ? Number(body.spacing) : raster.cellSize;
-        result = profile(await windowed(line), line, { spacing });
+        result = (await sampled((g) => profile(g, line, { spacing }))).result;
         break;
       }
 
-      // Tool 2
+      /**
+       * Tool 2. Two different reads, because it asks two different questions.
+       *
+       * The levels themselves are a lattice of spot heights — sparse, capped at
+       * 250,000 points by `gridLevels` itself — so they are sampled. The
+       * statistics beside them describe the whole polygon, so they are reduced
+       * over it. Reading one window big enough for both was what tied the
+       * lattice's cost to the polygon's bounding box rather than to the number
+       * of points actually asked for.
+       */
       case "grid-levels": {
         const ring = project(readGeometry(body, "polygon", 3));
         const spacing = Number(body.spacing) > 0 ? Number(body.spacing) : 1;
-        const grid = await windowed(ring);
-        result = { ...gridLevels(grid, ring, spacing), stats: polygonStats(grid, ring) };
+        const levels = (await sampled((g) => gridLevels(g, ring, spacing))).result;
+        const acc = newPolygonStats();
+        await overPolygon(ring, (grid) => accumulatePolygonStats(acc, grid, ring));
+        result = { ...levels, stats: finalisePolygonStats(acc, ring) };
         break;
       }
 
       // Drawing tools: area, perimeter, min, max, mean
       case "polygon-stats": {
         const ring = project(readGeometry(body, "polygon", 3));
-        result = polygonStats(await windowed(ring), ring);
+        const acc = newPolygonStats();
+        const cost = await overPolygon(ring, (grid) => accumulatePolygonStats(acc, grid, ring));
+        result = { ...finalisePolygonStats(acc, ring), readIn: cost.tiles };
         break;
       }
 
-      // Tool 4, and tool 15 when the reference is the pile's own rim
+      /**
+       * Tool 4, and tool 15 when the reference is the pile's own rim.
+       *
+       * No area limit. The polygon is walked in bands and the accumulator
+       * carries the totals between them, so a cut and fill over a whole site is
+       * a longer read rather than a refusal — at the survey's own resolution,
+       * with the same arithmetic. See `overPolygon` above and
+       * `reduceOverPolygon` for why that is exact rather than approximate.
+       */
       case "volume":
       case "stockpile": {
         const ring = project(readGeometry(body, "polygon", 3));
-        const grid = await windowed(ring);
-        const reference = await readReference(grid, ring);
-        result =
-          op === "stockpile"
-            ? stockpileVolume(grid, ring, reference, { rmseZ })
-            : cutFill(grid, ring, reference, { rmseZ });
+        const acc = newCutFill();
+        let used: unknown = null;
+        await measurePolygon(ring, (grid, reference) => {
+          used = reference;
+          accumulateCutFill(acc, grid, ring, reference);
+        });
+        const volume = finaliseCutFill(acc, ring, { rmseZ, reference: used as { kind: string } });
+        result = op === "stockpile" ? stockpileFrom(volume, ring) : volume;
         break;
       }
 
@@ -461,8 +603,6 @@ export async function POST(
        */
       case "compare": {
         const ring = project(readGeometry(body, "polygon", 3));
-        const grid = await windowed(ring);
-        const reference = await readReference(grid, ring);
         /*
          * Absent is not zero. `Number(undefined)` is NaN and would be caught,
          * but `Number("")` is 0 and finite, and a zero tolerance classifies
@@ -475,7 +615,13 @@ export async function POST(
         if (tolerance !== null && !(tolerance > 0)) {
           throw new BadRequest("tolerance must be a positive number of metres");
         }
-        result = compareSurfaces(grid, ring, reference, { tolerance, rmseZ });
+        const acc = newCompare({ tolerance });
+        let used: unknown = null;
+        await measurePolygon(ring, (grid, reference) => {
+          used = reference;
+          accumulateCompare(acc, grid, ring, reference);
+        });
+        result = finaliseCompare(acc, ring, { rmseZ, reference: used as { kind: string } });
         break;
       }
 
@@ -504,7 +650,7 @@ export async function POST(
       case "chainage": {
         const line = project(readGeometry(body, "line", 2));
         const interval = Number(body.interval) > 0 ? Number(body.interval) : 25;
-        const answer = chainage(await windowed(line), line, interval, { rmseZ });
+        const answer = (await sampled((g) => chainage(g, line, interval, { rmseZ }))).result;
         result = { ...answer, stations: answer.stations.map(withLonLat) };
         break;
       }
@@ -515,10 +661,14 @@ export async function POST(
       case "cross-sections": {
         const line = project(readGeometry(body, "line", 2));
         const halfWidth = Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15;
-        const answer = crossSections(await windowed(line, halfWidth), line, {
-          interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
-          halfWidth,
-        });
+        const answer = (
+          await sampled((g) =>
+            crossSections(g, line, {
+              interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
+              halfWidth,
+            }),
+          )
+        ).result;
         result = {
           ...answer,
           sections: answer.sections.map((section: Record<string, unknown>) => {
@@ -552,13 +702,17 @@ export async function POST(
       case "corridor": {
         const line = project(readGeometry(body, "line", 2));
         const halfWidth = Number(body.halfWidth) > 0 ? Number(body.halfWidth) : 15;
-        const answer = corridorAnalysis(await windowed(line, halfWidth), line, {
-          interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
-          halfWidth,
-          maxGradePercent: Number(body.maxGradePercent) > 0 ? Number(body.maxGradePercent) : 10,
-          maxCrossfallPercent:
-            Number(body.maxCrossfallPercent) > 0 ? Number(body.maxCrossfallPercent) : 6,
-        });
+        const answer = (
+          await sampled((g) =>
+            corridorAnalysis(g, line, {
+              interval: Number(body.interval) > 0 ? Number(body.interval) : 10,
+              halfWidth,
+              maxGradePercent: Number(body.maxGradePercent) > 0 ? Number(body.maxGradePercent) : 10,
+              maxCrossfallPercent:
+                Number(body.maxCrossfallPercent) > 0 ? Number(body.maxCrossfallPercent) : 6,
+            }),
+          )
+        ).result;
         result = {
           ...answer,
           stations: answer.stations.map(withLonLat),
@@ -580,11 +734,15 @@ export async function POST(
        */
       case "bench": {
         const line = project(readGeometry(body, "line", 2));
-        result = benchAnalysis(await windowed(line), line, {
-          benchSlopePercent:
-            Number(body.benchSlopePercent) > 0 ? Number(body.benchSlopePercent) : 10,
-          minBenchWidth: Number(body.minBenchWidth) > 0 ? Number(body.minBenchWidth) : 2,
-        });
+        result = (
+          await sampled((g) =>
+            benchAnalysis(g, line, {
+              benchSlopePercent:
+                Number(body.benchSlopePercent) > 0 ? Number(body.benchSlopePercent) : 10,
+              minBenchWidth: Number(body.minBenchWidth) > 0 ? Number(body.minBenchWidth) : 2,
+            }),
+          )
+        ).result;
         break;
       }
 
