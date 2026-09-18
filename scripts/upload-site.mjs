@@ -22,7 +22,7 @@
  */
 
 import { createHash, createHmac } from "node:crypto";
-import { createReadStream, readFileSync, readdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 const REGION = "auto"; // R2 has one region and expects this literal
@@ -35,6 +35,7 @@ function parseArgs(argv) {
     const value = argv[i + 1];
     if (flag === "--site") { args.site = value; i += 1; }
     else if (flag === "--from") { args.from = value; i += 1; }
+    else if (flag === "--only") { args.only = value; i += 1; }
     else if (flag === "--concurrency") { args.concurrency = Number(value); i += 1; }
     else if (flag === "--dry-run") args.dryRun = true;
     else if (flag === "--force") args.force = true;
@@ -45,16 +46,25 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-if (args.help || !args.site || !args.from) {
+if (args.help || !args.site) {
   console.log(`
-  node scripts/upload-site.mjs --site <slug> --from <directory> [options]
+  node scripts/upload-site.mjs --site <slug> [options]
 
     --site         site slug. Objects land under sites/<slug>/, the prefix the
                    Worker's grant check enforces.
-    --from         directory to upload, walked recursively
+    --only CLASS   just one of: map, terrain, hydrology, cloud
+    --from DIR     upload this directory instead, at sites/<slug>/ with no
+                   prefix. The escape hatch, not the normal path — see below.
     --dry-run      list what would be sent, touch nothing
     --force        re-send objects even when the remote copy already matches
     --concurrency  parallel uploads, default 4
+
+  With neither --only nor --from, every data class a site has is pushed to the
+  prefix the portal reads it from. That is the point: the prefixes are not
+  uniform, and getting one wrong is silent. Ektanagar 2's point cloud is in the
+  bucket twice right now — 741 objects correctly under cloud/ and 741 more
+  flat at nodes/, from a --from that pointed one level too deep. The portal
+  reads the first set and pays to store both.
 
   Needs R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET.
 `);
@@ -287,20 +297,97 @@ async function uploadMultipart(key, path, size, contentType) {
   );
 }
 
-/** Does the remote object already match, byte for byte? */
+/**
+ * Does the remote object already match, byte for byte?
+ *
+ * R2 returns the MD5 for a single part upload, which is what these are — but
+ * for a compressible type it returns it as a **weak** validator, `W/"<md5>"`,
+ * because the bytes it may serve after transfer encoding are not the bytes it
+ * stored. The MD5 inside is still the MD5 of what was stored.
+ *
+ * Stripping only the quotes left `W/04e3c5...`, which never equalled a hex
+ * digest, so every JSON and GeoJSON object re-uploaded on every run while the
+ * TIFFs beside them skipped correctly. That is a quiet kind of wrong: it costs
+ * bandwidth and class A operations rather than breaking anything, so nothing
+ * ever pointed at it. Kotba's nine hydrology products sent three of themselves
+ * every publish.
+ */
 async function alreadyThere(key, body) {
   const request = sign({ method: "HEAD", key });
   const response = await fetch(request.url, { method: "HEAD", headers: request.headers });
   if (!response.ok) return false;
-  const etag = (response.headers.get("etag") ?? "").replace(/"/g, "");
-  // R2 returns the MD5 for a single part upload, which is what these are.
+  const etag = (response.headers.get("etag") ?? "").replace(/^W\//, "").replace(/"/g, "");
   return etag === hashOf("md5", body).digest("hex");
 }
 
-const files = walk(args.from);
-if (files.length === 0) throw new Error(`${args.from} contains no files`);
+/**
+ * Where each data class lives locally, and the prefix the portal reads it from.
+ *
+ * The prefixes are not uniform and that is not an accident to tidy away: the
+ * three `PORTAL_*_URL` bases all point at the same `sites` root, and each source
+ * module appends its own segment — terrain reads `<slug>/dtm.tif`, hydrology
+ * reads `<slug>/hydrology/<file>`, the cloud reads `<slug>/cloud/cloud.json`.
+ * This table is the one place those three facts are written down together, and
+ * it was checked against the live bucket rather than inferred.
+ */
+const CLASSES = [
+  { name: "map", dir: join("portal-data", "map", args.site), prefix: "" },
+  { name: "terrain", dir: join("portal-data", "terrain", args.site), prefix: "" },
+  { name: "hydrology", dir: join("portal-data", "hydrology", args.site), prefix: "hydrology" },
+  { name: "cloud", dir: join("portal-data", "cloud", args.site), prefix: "cloud" },
+];
+
+if (args.only && !CLASSES.some((c) => c.name === args.only)) {
+  throw new Error(`--only "${args.only}" is not one of: ${CLASSES.map((c) => c.name).join(", ")}`);
+}
+
+/**
+ * A copy a sync tool made, which must never reach the bucket.
+ *
+ * iCloud and Finder resolve a conflict by leaving "nodes 2" beside "nodes", and
+ * `portal-data/cloud/ektanagar-2-survey` holds exactly that today. Walking it
+ * would upload a second complete quadtree under a name nothing reads — 740
+ * objects of pure cost, which is how half the duplication already in the bucket
+ * got there. Skipped loudly, because the right fix is to delete it on disk.
+ */
+const DUPLICATE = /(^| )\d+$/;
+
+const sources = args.from
+  ? [{ name: "from", dir: args.from, prefix: "" }]
+  : CLASSES.filter((c) => (args.only ? c.name === args.only : true)).filter((c) => {
+      if (existsSync(c.dir)) return true;
+      console.log(`  - ${c.name.padEnd(10)} nothing at ${c.dir}`);
+      return false;
+    });
+
+if (sources.length === 0) {
+  throw new Error(
+    `nothing to upload for ${args.site}. Looked in:\n  ` +
+      CLASSES.map((c) => c.dir).join("\n  "),
+  );
+}
+
+const files = [];
+for (const source of sources) {
+  for (const file of walk(source.dir)) {
+    const suffix = relative(source.dir, file).split(sep).join("/");
+    const first = suffix.split("/")[0];
+    if (DUPLICATE.test(first.replace(/\.[^.]+$/, ""))) {
+      console.log(`  ! skipping ${source.name}/${suffix} — looks like a sync tool's duplicate`);
+      continue;
+    }
+    files.push({
+      path: file,
+      key: `sites/${args.site}/${source.prefix ? `${source.prefix}/` : ""}${suffix}`,
+    });
+  }
+}
+if (files.length === 0) throw new Error(`no files found for ${args.site}`);
 
 console.log(`\nUploading ${files.length} files to sites/${args.site}/`);
+for (const source of sources) {
+  console.log(`  ${source.name.padEnd(10)} ${source.dir} -> sites/${args.site}/${source.prefix ? `${source.prefix}/` : ""}`);
+}
 console.log(`  bucket   ${BUCKET || "(dry run)"}`);
 console.log(`  endpoint ${ACCOUNT ? HOST : "(dry run)"}\n`);
 
@@ -312,13 +399,9 @@ let failed = 0;
 const queue = [...files];
 async function worker() {
   for (;;) {
-    const file = queue.shift();
-    if (!file) return;
-
-    // POSIX separators, always: a key is not a path, and a backslash from a
-    // Windows run would be a literal character in the object name.
-    const suffix = relative(args.from, file).split(sep).join("/");
-    const key = `sites/${args.site}/${suffix}`;
+    const item = queue.shift();
+    if (!item) return;
+    const { path: file, key } = item;
     const size = statSync(file).size;
     const extension = file.slice(file.lastIndexOf(".") + 1).toLowerCase();
     const contentType = CONTENT_TYPES[extension] ?? "application/octet-stream";
