@@ -1,29 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { rampFor, sampleRamp } from "@/lib/geo/colour.mjs";
 
 type Pt = { x: number; y: number; z: number; r: number; g: number; b: number };
 
+/**
+ * Height to colour, from the shared ramp.
+ *
+ * The same `terrain` stops the portal's own point cloud uses, so the cloud a
+ * prospect sees on this page and the cloud a client opens in the portal are the
+ * same picture. This carried its own four stops until 18 Sep 2026, which made
+ * them two different products in the one place a visitor compares them.
+ */
 function ramp(t: number): [number, number, number] {
-  const stops: [number, [number, number, number]][] = [
-    [0, [20, 80, 140]],
-    [0.4, [30, 180, 120]],
-    [0.7, [220, 200, 70]],
-    [1, [220, 90, 60]],
-  ];
-  for (let i = 0; i < stops.length - 1; i++) {
-    const [a, ca] = stops[i];
-    const [b, cb] = stops[i + 1];
-    if (t >= a && t <= b) {
-      const k = (t - a) / (b - a);
-      return [
-        ca[0] + (cb[0] - ca[0]) * k,
-        ca[1] + (cb[1] - ca[1]) * k,
-        ca[2] + (cb[2] - ca[2]) * k,
-      ];
-    }
-  }
-  return [220, 90, 60];
+  return sampleRamp(rampFor("terrain"), t) as [number, number, number];
 }
 
 function buildPoints(): Pt[] {

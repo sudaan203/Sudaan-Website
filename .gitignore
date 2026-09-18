@@ -95,6 +95,16 @@ next-env.d.ts
 # Source terrain models the analysis API reads, symlinked to the gitignored
 # survey folders above. Local only: in production these come from object storage
 # via PORTAL_TERRAIN_DIR, and committing the symlinks would dangle on Vercel.
+# Test sites. portal-data/map/ and portal-data/files/ are tracked on purpose —
+# the delivered bundles are the canonical copy and upload-site.mjs pushes them
+# from here. That makes any throwaway site published on a developer machine land
+# in the repository, which is how eleven fixture tiles reached a commit on
+# 18 Sep 2026. Publishing under one of these slugs is free.
+/portal-data/map/fixture-site/
+/portal-data/map/test-*/
+/portal-data/files/*/fixture-site/
+/portal-data/files/*/test-*/
+
 /portal-data/terrain/
 
 # Wrangler's local state for the tile Worker: build output and a dev cache,

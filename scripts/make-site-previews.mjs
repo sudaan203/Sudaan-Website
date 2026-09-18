@@ -14,16 +14,20 @@
  * generated from the site's own rasters, and scripts/portal-previews-test.mjs
  * fails if any two sites ever share an image again.
  *
- * The colour ramp is the one prepare-site.mjs uses for its tiles, so a preview and
- * the map agree. The reference dashboard's DEM previews are a rainbow ramp with
- * nodata painted black; ours are warm, nodata is transparent, and relief is
- * shaded so the shape reads at a glance.
+ * Colour, clip and relief come from `src/lib/geo/elevation-image.mjs`, the same
+ * module the map tiles and the dynamic tiler use, so a preview and the map are
+ * the same picture. They were not: this file carried its own sepia stops under a
+ * comment claiming they matched prepare-site.mjs, which stopped being true when
+ * that script moved to the shared ramp, and its own hillshade lit the ground
+ * from the south-east. Nodata is transparent rather than black, so a survey has
+ * no hard edge around it.
  */
 
 import sharp from "sharp";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { maskBorderBackground } from "./lib/nodata.mjs";
+import { renderElevation } from "../src/lib/geo/elevation-image.mjs";
 import {
   isElevation,
   lonLatToUtm,
@@ -63,28 +67,6 @@ const orthoPath = flag("ortho", null);
 const mapDir = resolve("portal-data", "map", slug);
 const outDir = resolve("portal-data", "files", clientSlug, slug.replace(/-survey$/, ""), "imagery");
 
-/* ----------------------------------------------------------------- ramp --- */
-
-// Same stops as prepare-site.mjs, so a preview and the map layer match.
-const RAMP = [
-  [0.0, [250, 226, 192]],
-  [0.35, [229, 142, 58]],
-  [0.65, [180, 83, 9]],
-  [1.0, [74, 42, 16]],
-];
-
-function rampAt(t) {
-  for (let i = 0; i < RAMP.length - 1; i += 1) {
-    const [a, ca] = RAMP[i];
-    const [b, cb] = RAMP[i + 1];
-    if (t >= a && t <= b) {
-      const k = (t - a) / (b - a);
-      return [0, 1, 2].map((c) => Math.round(ca[c] + (cb[c] - ca[c]) * k));
-    }
-  }
-  return RAMP[RAMP.length - 1][1];
-}
-
 /* ------------------------------------------------------ DEM to a preview --- */
 
 /**
@@ -95,8 +77,7 @@ function rampAt(t) {
  */
 function downsampleDem(values, w, h, stride, targetW) {
   const targetH = Math.max(1, Math.round((h / w) * targetW));
-  const out = new Float32Array(targetW * targetH);
-  const ok = new Uint8Array(targetW * targetH);
+  const out = new Float32Array(targetW * targetH).fill(NaN);
   const bx = w / targetW;
   const by = h / targetH;
 
@@ -116,49 +97,10 @@ function downsampleDem(values, w, h, stride, targetW) {
           n += 1;
         }
       }
-      const i = ty * targetW + tx;
-      if (n > 0) {
-        out[i] = sum / n;
-        ok[i] = 1;
-      }
+      if (n > 0) out[ty * targetW + tx] = sum / n;
     }
   }
-  return { grid: out, ok, width: targetW, height: targetH };
-}
-
-/** Standard hillshade, 315 degrees azimuth and 45 degrees altitude. */
-function hillshade(grid, ok, w, h, cellSize, zFactor = 2) {
-  const az = (315 * Math.PI) / 180;
-  const alt = (45 * Math.PI) / 180;
-  const shade = new Float32Array(w * h).fill(1);
-  const at = (x, y) => {
-    const cx = Math.min(w - 1, Math.max(0, x));
-    const cy = Math.min(h - 1, Math.max(0, y));
-    const i = cy * w + cx;
-    return ok[i] ? grid[i] : null;
-  };
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      const i = y * w + x;
-      if (!ok[i]) continue;
-      const c = grid[i];
-      const v = (dx, dy) => at(x + dx, y + dy) ?? c;
-      const dzdx =
-        (v(1, -1) + 2 * v(1, 0) + v(1, 1) - (v(-1, -1) + 2 * v(-1, 0) + v(-1, 1))) /
-        (8 * cellSize);
-      const dzdy =
-        (v(-1, 1) + 2 * v(0, 1) + v(1, 1) - (v(-1, -1) + 2 * v(0, -1) + v(1, -1))) /
-        (8 * cellSize);
-      const slope = Math.atan(zFactor * Math.hypot(dzdx, dzdy));
-      const aspect = Math.atan2(dzdy, -dzdx);
-      let ill =
-        Math.cos(Math.PI / 2 - alt) * Math.cos(slope) +
-        Math.sin(Math.PI / 2 - alt) * Math.sin(slope) * Math.cos(az - aspect);
-      // Keep it a shading pass, not a black and white picture.
-      shade[i] = 0.55 + 0.45 * Math.max(0, Math.min(1, ill));
-    }
-  }
-  return shade;
+  return { grid: out, width: targetW, height: targetH };
 }
 
 async function demPreview(path, label) {
@@ -175,46 +117,39 @@ async function demPreview(path, label) {
   const stride = data.byteLength / 4 / (w * h);
   const values = new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4);
 
-  const { grid, ok, width: pw, height: ph } = downsampleDem(values, w, h, stride, width);
+  const { grid, width: pw, height: ph } = downsampleDem(values, w, h, stride, width);
 
-  // Colour across the 2nd to 98th percentile, for the reason prepare-site.mjs
-  // does: one outlier otherwise flattens the whole survey to a single shade.
-  const sample = [];
-  for (let i = 0; i < grid.length; i += 1) if (ok[i]) sample.push(grid[i]);
-  if (sample.length === 0) {
-    console.warn(`  ! ${label}: no usable elevations. Skipped.`);
-    return null;
-  }
-  sample.sort((a, b) => a - b);
-  const lo = sample[Math.floor(sample.length * 0.02)];
-  const hi = sample[Math.floor(sample.length * 0.98)];
-  const span = hi - lo || 1;
-
+  /*
+   * Metres per cell **of the preview**, not of the source raster.
+   *
+   * The world file states the native spacing, and this grid has been averaged
+   * down by w/pw, so a relief computed against the native figure would read
+   * gradients that many times too steep. Without a world file there is no honest
+   * answer, so the preview is drawn flat rather than with invented relief.
+   */
   let world = null;
   try {
     world = readWorldFile(path.replace(/\.[^.]+$/, "") + ".tfw");
-  } catch { /* cell size falls back below */ }
-  const cellSize = world ? Math.abs(world.pxWidth) * (w / pw) : 1;
-  const shade = hillshade(grid, ok, pw, ph, cellSize);
+  } catch { /* reported below */ }
+  if (!world) {
+    console.warn(`  ! ${label}: no .tfw, so no relief. The colours are still correct.`);
+  }
+  const cellSize = world ? Math.abs(world.pxWidth) * (w / pw) : null;
 
-  const rgba = Buffer.alloc(pw * ph * 4);
-  for (let i = 0; i < grid.length; i += 1) {
-    if (!ok[i]) continue; // stays transparent, rather than black
-    const t = Math.min(1, Math.max(0, (grid[i] - lo) / span));
-    const [r, g, b] = rampAt(t);
-    const s = shade[i];
-    rgba[i * 4] = Math.round(r * s);
-    rgba[i * 4 + 1] = Math.round(g * s);
-    rgba[i * 4 + 2] = Math.round(b * s);
-    rgba[i * 4 + 3] = 255;
+  const out = cellSize
+    ? renderElevation(grid, { width: pw, height: ph, cellSize })
+    : renderElevation(grid, { width: pw, height: ph, cellSize: 1, flat: true });
+  if (!out) {
+    console.warn(`  ! ${label}: no usable elevations. Skipped.`);
+    return null;
   }
 
   console.log(
     `  ${label}: ${pw}x${ph} from ${w}x${h}, ` +
-      `${sample[0].toFixed(2)} to ${sample[sample.length - 1].toFixed(2)} m, ` +
-      `${((sample.length / grid.length) * 100).toFixed(0)}% covered`,
+      `${out.min.toFixed(2)} to ${out.max.toFixed(2)} m, ` +
+      `${(out.coverage * 100).toFixed(0)}% covered`,
   );
-  return sharp(rgba, { raw: { width: pw, height: ph, channels: 4 } })
+  return sharp(out.rgba, { raw: { width: pw, height: ph, channels: 4 } })
     .webp({ quality: 88 })
     .toBuffer();
 }

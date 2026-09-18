@@ -50,8 +50,7 @@ import {
   TILE_SIZE,
 } from "./lib/geo.mjs";
 import { maskBorderBackground } from "./lib/nodata.mjs";
-import { rampFor } from "../src/lib/geo/colour.mjs";
-import { hillshade, renderGrid } from "../src/lib/geo/render.mjs";
+import { denseFloats, renderElevation } from "../src/lib/geo/elevation-image.mjs";
 import {
   readManifest, emptyManifest, upsertLayer, sortLayers, writeManifest, verify,
 } from "./lib/manifest.mjs";
@@ -288,96 +287,39 @@ const report = [];
 /* --------------------------------------------------------------- rasters --- */
 
 /**
- * Elevation models are coloured with the same ramp and the same hillshade the
- * dynamic tiler uses, from `src/lib/geo/colour.mjs` and `render.mjs`.
+ * Colourised RGBA for an elevation model, plus its true range.
  *
- * They were not, and Malhar was right to notice. These tiles were baked before
- * the tiler existed, with the site's own warm brand ramp and no relief at all,
- * so a DSM and a DTM of the same ground came out as two nearly identical sepia
- * washes. You could not read a height off either, you could not tell them apart,
- * and the client's own note asks for "a Global Mapper type of image".
- *
- * Worse, the two representations disagreed: the layer tree drew the brown
- * version while the rendered-layers panel drew a properly graded one from the
- * same raster, so the same data had two appearances depending on which control
- * you found. Sharing the palette makes them the same picture.
+ * The ramp, the percentile clip and the hillshade all live in
+ * `src/lib/geo/elevation-image.mjs`, which is the only place in the repository
+ * allowed an opinion about what height looks like. This function's remaining job
+ * is decoding: get the floats out of the file, work out the cell size, hand over.
  */
-const ELEVATION_RAMP = rampFor("rainbow");
-
-/** Colourised RGBA for an elevation model, plus its true range. */
 async function elevationToRgba(file, geo) {
   const { data, info } = await sharp(file, { limitInputPixels: false })
     .raw({ depth: "float" })
     .toBuffer({ resolveWithObject: true });
 
   const pixels = info.width * info.height;
-  const stride = data.byteLength / 4 / pixels;
   const all = new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4);
-  const at = (i) => all[i * stride];
-
-  let min = Infinity;
-  let max = -Infinity;
-  const sample = [];
-  const step = Math.max(1, Math.floor(pixels / 200000));
-  for (let i = 0; i < pixels; i += 1) {
-    const v = at(i);
-    if (!isElevation(v)) continue;
-    if (v < min) min = v;
-    if (v > max) max = v;
-    if (i % step === 0) sample.push(v);
-  }
-  if (!Number.isFinite(min)) throw new Error("no usable elevations in this raster");
-
-  // Colour across the middle of the distribution, so one wild value cannot
-  // flatten the whole survey into a single shade.
-  sample.sort((a, b) => a - b);
-  const lo = sample[Math.floor(sample.length * 0.02)] ?? min;
-  const hi = sample[Math.floor(sample.length * 0.98)] ?? max;
-  const span = hi - lo || 1;
+  const dense = denseFloats(all, {
+    pixels,
+    stride: data.byteLength / 4 / pixels,
+    isValid: isElevation,
+  });
 
   /*
-   * A grid shaped the way `render.mjs` expects, over the raster's own floats.
+   * Metres per pixel, from the world file, so the hillshade has real gradients.
    *
-   * Copied into a dense Float32Array rather than passed as the strided view the
-   * decoder returns: hillshade reads eight neighbours per pixel and a stride of
-   * anything but one would silently sample the wrong ones. `NaN` marks nodata,
-   * which is what `isNoData` tests for and what leaves those pixels transparent.
+   * Not optional and not defaultable. A relief computed against a cell size of 1
+   * on Kotba's 24 cm raster exaggerates every slope by four, which turns gentle
+   * ground into a mountain range and looks, at a glance, entirely convincing.
+   * The world file's first term is the x pixel size in projected units, which
+   * for every survey here is metres.
    */
-  const dense = new Float32Array(pixels);
-  for (let i = 0; i < pixels; i += 1) {
-    const v = at(i);
-    dense[i] = isElevation(v) ? v : NaN;
-  }
-  const grid = {
-    width: info.width,
-    height: info.height,
-    data: dense,
-    /*
-     * Metres per pixel, from the world file, so the hillshade has real
-     * gradients.
-     *
-     * Not optional and not defaultable. A relief computed against a cell size of
-     * 1 on Kotba's 24 cm raster exaggerates every slope by four, which turns
-     * gentle ground into a mountain range and looks, at a glance, entirely
-     * convincing. The world file's first term is the x pixel size in projected
-     * units, which for every survey here is metres.
-     */
-    cellSize: Math.abs(geo?.world?.[0]) || 1,
-    isNoData: (v) => !Number.isFinite(v),
-  };
-
-  const relief = hillshade(grid, { azimuth: 315, altitude: 45, exaggeration: 1.6 });
-  const shaded = renderGrid(grid, { stops: ELEVATION_RAMP, min: lo, max: hi, relief });
-
-  return {
-    rgba: Buffer.from(shaded.buffer, shaded.byteOffset, shaded.byteLength),
-    width: info.width,
-    height: info.height,
-    min,
-    max,
-    lo,
-    hi,
-  };
+  const cellSize = Math.abs(geo?.world?.[0]) || 1;
+  const out = renderElevation(dense, { width: info.width, height: info.height, cellSize });
+  if (!out) throw new Error("no usable elevations in this raster");
+  return out;
 }
 
 /**
