@@ -27,8 +27,7 @@
 import sharp from "sharp";
 import { cached, fileSource } from "../src/lib/geo/raster-source.mjs";
 import { openRaster } from "../src/lib/geo/raster-window.mjs";
-import { rampFor } from "../src/lib/geo/colour.mjs";
-import { hillshade, renderGrid } from "../src/lib/geo/render.mjs";
+import { denseFloats, renderElevation } from "../src/lib/geo/elevation-image.mjs";
 import { readManifest, emptyManifest, upsertLayer, writeManifest } from "./lib/manifest.mjs";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -128,20 +127,6 @@ function requireFile(path, what) {
 // ---- rasters -----------------------------------------------------------
 const rasters = CONFIG.rasters;
 
-/**
- * The same rainbow ramp the dynamic tiler and `prepare-site.mjs` use.
- *
- * This used to be a warm sepia gradient with no relief shading, "matching the
- * marketing site's DEM renders" — which was exactly the bug Malhar caught in
- * `prepare-site.mjs`'s own tiles (see the comment there): a DSM and a DTM of
- * the same ground came out as two nearly identical brown washes, unreadable and
- * indistinguishable, while the rendered-layers panel drew a properly graded
- * picture from the same raster through a different code path. That fix never
- * reached this script, so every site this one generates the overview for —
- * Ektanagar 2 and Kiru, since e701a84 stopped baking full tile pyramids for
- * them — kept the old sepia look, inconsistent with Kotba and Ektanagar 1's.
- */
-const ELEVATION_RAMP = rampFor("rainbow");
 
 for (const raster of rasters) {
   const tif = join(root, raster.tif);
@@ -271,67 +256,27 @@ for (const raster of rasters) {
     );
   }
   const all = new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4);
-  const floats = stride === 1 ? all : all.filter((_, i) => i % stride === 0);
-
-  let min = Infinity;
-  let max = -Infinity;
-  for (const v of floats) {
-    if (!isElevation(v)) continue;
-    if (v < min) min = v;
-    if (v > max) max = v;
-  }
-  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
-    throw new Error(`${raster.key}: no usable elevation range (${min} to ${max})`);
-  }
-
-  /**
-   * Colour across the 2nd to 98th percentile, not the full range.
-   *
-   * A surface model picks up a handful of wild values, and this one bottoms out
-   * at 143 m while almost every pixel sits between 337 and 438. Stretching the
-   * ramp over the outliers renders the entire survey as one flat orange, which
-   * is what the first version produced. Clipping puts the contrast where the
-   * terrain is; the true range is still reported in the manifest.
-   */
-  const sample = [];
-  for (let i = 0; i < floats.length; i += Math.max(1, Math.floor(floats.length / 200000))) {
-    const v = floats[i];
-    if (isElevation(v)) sample.push(v);
-  }
-  sample.sort((a, b) => a - b);
-  const lo = sample[Math.floor(sample.length * 0.02)] ?? min;
-  const hi = sample[Math.floor(sample.length * 0.98)] ?? max;
-  console.log(`     colour ramp clipped to ${lo.toFixed(1)} - ${hi.toFixed(1)} m`);
 
   /*
-   * A grid shaped the way `render.mjs` expects, over the decimated floats —
-   * dense, not the strided view sharp returns, because hillshade reads eight
-   * neighbours per pixel and a stride of anything but one would sample the
-   * wrong ones. NaN marks nodata, matching `isNoData` below and leaving those
-   * pixels transparent, same as `prepare-site.mjs`'s `elevationToRgba`.
+   * Colour, percentile clip and relief all come from
+   * `src/lib/geo/elevation-image.mjs`, so this overview, the baked tiles and the
+   * dynamic tiler are the same picture of the same ground. This script used to
+   * carry its own warm ramp with no relief at all, which is why Ektanagar 2 and
+   * Kiru looked nothing like Kotba.
    */
-  const dense = new Float32Array(pixels);
-  for (let i = 0; i < pixels; i += 1) {
-    const v = floats[i];
-    dense[i] = isElevation(v) ? v : NaN;
-  }
-  const grid = {
-    width: info.width,
-    height: info.height,
-    data: dense,
-    /*
-     * Metres per pixel, scaled by however much this overview was decimated —
-     * the world file states the *native* raster's cell size, and a hillshade
-     * computed against that on a resized grid would read gradients four or
-     * five times shallower than they are, the same trap `prepare-site.mjs`
-     * warns about for a defaulted cell size.
-     */
-    cellSize: (Math.abs(world.pxWidth) || 1) * (meta.width / info.width),
-    isNoData: (v) => !Number.isFinite(v),
-  };
-  const relief = hillshade(grid, { azimuth: 315, altitude: 45, exaggeration: 1.6 });
-  const shaded = renderGrid(grid, { stops: ELEVATION_RAMP, min: lo, max: hi, relief });
-  const rgba = Buffer.from(shaded.buffer, shaded.byteOffset, shaded.byteLength);
+  const dense = denseFloats(all, { pixels, stride, isValid: isElevation });
+
+  /*
+   * Metres per pixel, scaled by however much this overview was decimated — the
+   * world file states the *native* raster's cell size, and a hillshade computed
+   * against that on a resized grid would read gradients four or five times
+   * shallower than they are.
+   */
+  const cellSize = (Math.abs(world.pxWidth) || 1) * (meta.width / info.width);
+  const out = renderElevation(dense, { width: info.width, height: info.height, cellSize });
+  if (!out) throw new Error(`${raster.key}: no usable elevation range`);
+  const { min, max, lo, hi, rgba } = out;
+  console.log(`     colour ramp clipped to ${lo.toFixed(1)} - ${hi.toFixed(1)} m`);
 
   const file = `${raster.key}.webp`;
   await sharp(rgba, { raw: { width: info.width, height: info.height, channels: 4 } })

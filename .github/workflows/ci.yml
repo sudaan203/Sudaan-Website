@@ -76,6 +76,12 @@ jobs:
       #       comparison when they are not, by design. What is left (the corners
       #       of the LZW format; every geo primitive against itself and against a
       #       one-ULP perturbation) is exactly the part that needs no data.
+      #   colour-consistency-test
+      #     — greps the tree for privately-defined colour ramps and renders two
+      #       synthetic grids. Reads source files and nothing else. This is the
+      #       one suite whose job is to fail on a change to a *different* file
+      #       than the one it checks, which is how five elevation ramps got into
+      #       the product without anyone copying one carelessly.
       #   tenancy-test
       #     — builds a throwaway Postgres with PGlite, applies drizzle/, and
       #       exercises the visibility SQL over it. Skips cleanly without PGlite.
@@ -108,6 +114,7 @@ jobs:
             merge-tree-test
             analysis-core-test
             render-test
+            colour-consistency-test
             shapefile-test
             lzw-test
             db-timeout-test

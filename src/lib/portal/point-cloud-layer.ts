@@ -35,6 +35,7 @@
 
 import type { Map as MapLibreMap } from "maplibre-gl";
 import type { CloudManifest, CloudNode } from "./cloud-source";
+import { rampFor, sampleRamp } from "@/lib/geo/colour.mjs";
 
 export type ColourMode = "rgb" | "elevation" | "classification";
 
@@ -554,32 +555,29 @@ export class PointCloudLayer {
 }
 
 /**
- * Low to high, the same reading as the terrain ramp on the raster layers.
+ * The ramp a point cloud is coloured by height with.
  *
- * Deliberately the *terrain* ramp rather than the rainbow that elevation tiles
- * default to: a point cloud coloured like a relief map reads as ground, and a
- * rainbow cloud reads as data about something else.
+ * Deliberately *terrain* rather than the rainbow the elevation rasters use: a
+ * cloud coloured like a relief map reads as ground, and a rainbow cloud reads as
+ * data about something else. That is a real design decision, so it is named here
+ * rather than buried, and it is the one place in the product where height is
+ * allowed a second look. Changing this to `ELEVATION_RAMP` makes the cloud match
+ * the DTM beneath it exactly, and is a one-word change if that is wanted.
+ *
+ * What it is *not* allowed to be is a private copy of some stops. It was: five
+ * literal stops under a comment claiming they were "the same reading as the
+ * terrain ramp", which they were not — they were a fourth palette, drifted from
+ * the three others the same way every hand-copied ramp in this repository had.
+ */
+export const POINT_CLOUD_RAMP = "terrain";
+
+/**
+ * Low to high, as a colour, from the shared ramp.
+ *
+ * `t` is clamped rather than wrapped, so a point above the stated maximum draws
+ * as the top of the ramp — "at least this" — where wrapping would draw the
+ * highest ground in the colour of the lowest.
  */
 export function elevationRamp(t: number): [number, number, number] {
-  const stops: [number, [number, number, number]][] = [
-    [0, [46, 90, 140]],
-    [0.25, [60, 145, 105]],
-    [0.5, [190, 185, 110]],
-    [0.75, [165, 110, 70]],
-    [1, [245, 245, 245]],
-  ];
-  const clamped = t <= 0 ? 0 : t >= 1 ? 1 : t;
-  for (let i = 0; i < stops.length - 1; i += 1) {
-    const [a, ca] = stops[i];
-    const [b, cb] = stops[i + 1];
-    if (clamped >= a && clamped <= b) {
-      const k = (clamped - a) / (b - a);
-      return [
-        Math.round(ca[0] + (cb[0] - ca[0]) * k),
-        Math.round(ca[1] + (cb[1] - ca[1]) * k),
-        Math.round(ca[2] + (cb[2] - ca[2]) * k),
-      ];
-    }
-  }
-  return stops[stops.length - 1][1];
+  return sampleRamp(rampFor(POINT_CLOUD_RAMP), t) as [number, number, number];
 }
