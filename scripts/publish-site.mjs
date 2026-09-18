@@ -50,6 +50,16 @@
  *
  * The last two are the slow ones and run last, so a mistake in --client is
  * caught in minutes rather than after an hour of tiling and streaming.
+ *
+ * With `--publish` it also pushes every data class to R2 and writes the
+ * database, which is the whole of getting a survey in front of a client:
+ *
+ *   node scripts/publish-site.mjs "D:\surveys\reliance" reliance-jamnagar \
+ *     --client reliance --name "Reliance Jamnagar" --flown-on 2026-10-02 --publish
+ *
+ * Run it on the machine that already holds the processed survey. Nothing about
+ * that machine is special beyond Node 22, this repository, and R2 credentials in
+ * the environment — and the survey never has to be copied anywhere first.
  * ---------------------------------------------------------------------------
  */
 
@@ -85,6 +95,8 @@ Usage: node scripts/publish-site.mjs <survey-folder> <site-slug> [options]
   --quality N        WebP quality for imagery tiles (default 80)
   --max-pixels N     working limit for one raster (default 120000000)
   --db               also upsert the catalogue into Postgres
+  --publish          the whole thing: build, upload to R2, write the database,
+                     and print the client's link. Implies --db.
   --skip-tiles       reuse the tiles already in portal-data/map/<slug>
   --skip-hydrology   do not derive flow, streams and catchments from the DTM
   --skip-cloud       do not build the point cloud quadtree from the LAS
@@ -115,6 +127,45 @@ const district = flag("district", null);
 const state = flag("state", null);
 const flownOn = flag("flown-on", null);
 const dryRun = has("dry-run");
+
+/*
+ * `--publish` is the whole job, so it implies the database: a site whose bytes
+ * are in R2 but whose rows are not in Postgres is invisible to the client, which
+ * is the same as not having published it.
+ */
+const publish = has("publish");
+const writeDb = publish || has("db");
+
+/*
+ * Everything this run will need, checked before it does any work.
+ *
+ * Tiling a survey takes minutes and a point cloud takes an hour, and both of
+ * them happen before the first byte is uploaded or the first row is written.
+ * Discovering there that R2_SECRET_ACCESS_KEY was never exported means doing it
+ * all again. There is nothing clever here — it is just the difference between
+ * finding out in one second and finding out in ninety minutes.
+ */
+{
+  const missing = [];
+  if (publish) {
+    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
+      if (!process.env[name]) missing.push(name);
+    }
+  }
+  if (writeDb && !process.env.DATABASE_URL && !process.env.POSTGRES_URL) {
+    missing.push("DATABASE_URL (or POSTGRES_URL)");
+  }
+  if (missing.length > 0 && !dryRun) {
+    console.error(`\nmissing from the environment: ${missing.join(", ")}`);
+    console.error(
+      publish
+        ? `\nR2 credentials: Cloudflare dashboard -> R2 -> Manage API tokens.\n` +
+          `Put them in .env.local and export them, or drop --publish to build the\nsite on disk and upload it separately.`
+        : `\nDrop --db to build the site without writing the catalogue to Postgres.`,
+    );
+    process.exit(1);
+  }
+}
 
 const mapDir = resolve("portal-data", "map", slug);
 const hydrologyDir = resolve("portal-data", "hydrology", slug);
@@ -334,7 +385,7 @@ if (dryRun) {
     console.log(`  ${i + 1}. ${p.label}${p.optional ? "   (optional)" : ""}`);
     console.log(`     ${commandLine(p.args)}`);
   }
-  console.log(`\n  then: catalogue${has("db") ? ", database" : ""}, guards`);
+  console.log(`\n  then: catalogue${writeDb ? ", database" : ""}${publish ? ", upload to R2" : ""}, guards`);
   console.log(`\ndry run, nothing written\n`);
   process.exit(0);
 }
@@ -461,7 +512,7 @@ console.log(`\nwrote ${cataloguePath}`);
 
 /* ------------------------------------------------------------------- db --- */
 
-if (has("db")) {
+if (writeDb) {
   step("database", ["scripts/portal-db-publish.mjs", cataloguePath]);
 } else {
   console.log(`\nNot written to the database. Re-run with --db, or:`);
@@ -469,6 +520,20 @@ if (has("db")) {
 }
 
 /* ---------------------------------------------------------------- guards --- */
+
+/* ------------------------------------------------------------ to the edge --- */
+
+/*
+ * The upload goes after the database rather than before it.
+ *
+ * Neither order is free of a window where the two disagree, so the question is
+ * which failure is better. Rows without bytes is a site the client can open and
+ * find broken. Bytes without rows is a site that is simply not there yet, which
+ * is what they already believe. The second is the one to be caught in.
+ */
+if (publish) {
+  step("upload to R2", ["scripts/upload-site.mjs", "--site", slug]);
+}
 
 console.log(`\n--- guards ---`);
 for (const t of ["scripts/portal-assets-test.mjs", "scripts/portal-map-test.mjs"]) {
@@ -491,6 +556,17 @@ done. ${slug} is published.
   hydrology    portal-data/hydrology/${slug}/` : ""}${existsSync(resolve("portal-data", "cloud", slug)) ? `
   point cloud  portal-data/cloud/${slug}/` : ""}
 `);
+
+if (publish) {
+  const base = (process.env.AUTH_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  console.log(`  the client opens\n    ${base}/portal/${slug}\n`);
+  console.log(`  They need a login before that link works. If they have none yet, invite`);
+  console.log(`  them from the owner console rather than from here — it is the same`);
+  console.log(`  decision as granting access to the data, and it belongs in one place.\n`);
+} else {
+  console.log(`  Not uploaded. The bytes are on this machine only.`);
+  console.log(`  Re-run with --publish, or: node scripts/upload-site.mjs --site ${slug}\n`);
+}
 
 /*
  * Named at the end as well as where they happened.
