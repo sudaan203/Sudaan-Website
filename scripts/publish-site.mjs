@@ -60,6 +60,24 @@
  * Run it on the machine that already holds the processed survey. Nothing about
  * that machine is special beyond Node 22, this repository, and R2 credentials in
  * the environment — and the survey never has to be copied anywhere first.
+ *
+ * ## On Windows
+ *
+ * This has only ever been run on macOS, so the first Windows run should be done
+ * with someone watching. What has been checked by reading:
+ *
+ *   - Paths are built with `node:path`, and keys are converted to POSIX
+ *     separators at the one place it matters (`lib/site-objects.mjs`), so a
+ *     backslash cannot end up inside an object name.
+ *   - Asset ids are `stableUuid` over slugs and bare filenames, never over a
+ *     filesystem path, so publishing the same survey from Windows and from
+ *     macOS produces the same ids rather than a duplicate set.
+ *   - Steps are spawned via `process.execPath` with an argument array, so paths
+ *     with spaces — "Ektanagar 2 Final" — need no quoting.
+ *
+ * What has not been checked is everything else. The `PATH="/opt/homebrew/..."`
+ * prefix shown in other scripts' usage lines is macOS only; on Windows just make
+ * sure `node --version` reports 22.
  * ---------------------------------------------------------------------------
  */
 

@@ -11,7 +11,6 @@
     "postinstall": "node -e \"const fs=require('fs');fs.mkdirSync('public/vendor',{recursive:true});for(const f of ['maplibre-gl-worker.mjs','maplibre-gl-shared.mjs'])fs.copyFileSync('node_modules/maplibre-gl/dist/'+f,'public/vendor/'+f)\""
   },
   "dependencies": {
-    "bcryptjs": "^3.0.3",
     "drizzle-orm": "^0.45.2",
     "framer-motion": "^11.3.19",
     "jose": "^6.2.4",
@@ -22,7 +21,6 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",

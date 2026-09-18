@@ -3,6 +3,14 @@
 > Status: approved concept, not yet built. Written 25 Jul 2026.
 > Read `context.md` first for the marketing site it plugs into.
 
+> **Historical from here on where sign in is concerned (noted 18 Sep 2026).**
+> This document was written when logins were bcrypt hashes in `PORTAL_USERS`,
+> and its runbook still says to create them with `scripts/portal-user.mjs`.
+> Both are gone. Google sign in against the `users` table is the only route in,
+> and an owner invites from `/portal/admin`, which emails the person their link.
+> Section 10's own plan said to retire the password path once Google was proven;
+> this is that, done. `context.md` is the current description.
+
 ## 1. Goal
 
 Give every Sudaan Geo-Analytics client a private, password protected dashboard on

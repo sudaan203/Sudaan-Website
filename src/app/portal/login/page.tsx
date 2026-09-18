@@ -1,11 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import Logo from "@/components/Logo";
-import LoginForm from "@/components/portal/LoginForm";
 import GoogleSignInButton from "@/components/portal/GoogleSignInButton";
 import { getSession } from "@/lib/portal/auth";
 import { googleConfigured } from "@/lib/portal/google";
-import { passwordLoginAvailable } from "@/lib/portal/users";
 import { siteConfig } from "@/lib/site";
 
 /**
@@ -54,11 +52,6 @@ export default async function PortalLoginPage({
   // Only accept internal paths, so ?next= cannot bounce a signed in user off site.
   const safeNext = next && next.startsWith("/portal") ? next : "/portal";
   const message = error ? (ERRORS[error] ?? ERRORS.google_error) : null;
-
-  // The password form is a transitional fallback for Sudaan staff, so a Google
-  // outage cannot lock the owners out of their own console. Remove it by clearing
-  // PORTAL_USERS (and portal-data/users.json locally) once Google is proven.
-  const passwordLoginEnabled = passwordLoginAvailable();
 
   return (
     <div className="relative flex flex-1 items-center justify-center overflow-hidden px-6 py-14 sm:py-20">
@@ -135,16 +128,6 @@ export default async function PortalLoginPage({
               Geo-Analytics contact enables access to your sites.
             </p>
 
-            {passwordLoginEnabled ? (
-              <details className="mt-7 border-t border-ink/[0.08] pt-5">
-                <summary className="cursor-pointer text-xs font-semibold text-ink/55 hover:text-accent-600">
-                  Sudaan staff sign in
-                </summary>
-                <div className="mt-4">
-                  <LoginForm next={safeNext} />
-                </div>
-              </details>
-            ) : null}
           </div>
 
           <p className="mt-6 text-center text-xs leading-relaxed text-ink/55">

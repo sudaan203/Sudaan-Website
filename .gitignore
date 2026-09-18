@@ -66,7 +66,9 @@ next-env.d.ts
 # reference / demo videos (large, kept locally only)
 *.mp4
 
-# client portal logins (bcrypt hashes, never committed; see scripts/portal-user.mjs)
+# Client portal logins. Nothing writes this any more — password sign in was
+# removed on 18 Sep 2026 and Google is the only route in — but the ignore stays
+# so a leftover file on someone's machine cannot be committed by a `git add -A`.
 /portal-data/users.json
 
 # iCloud sync conflict copies. This project lives in ~/Documents, which syncs,

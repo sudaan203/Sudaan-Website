@@ -37,15 +37,6 @@ export type AssetCategory =
   | "misc";
 
 /** A password login (transitional). Google users live in the database instead. */
-export type PortalUser = {
-  id: string;
-  email: string;
-  fullName: string;
-  role: PortalRole;
-  /** null for admins, who can see every client. */
-  clientId: string | null;
-  passwordHash: string;
-};
 
 /** The signed payload we keep in the session cookie. Never includes the hash. */
 export type PortalSession = {
@@ -54,7 +45,13 @@ export type PortalSession = {
   fullName: string;
   role: PortalRole;
   clientId: string | null;
-  /** How this session was obtained. Only Google sessions are re-checked against the database. */
+  /**
+   * How this session was obtained.
+   *
+   * Only "google" is issued. The union keeps its second member so a cookie
+   * minted before the password path was removed still parses — and is then
+   * refused by getSession, rather than being silently treated as valid.
+   */
   via?: "google" | "password";
 };
 
