@@ -69,7 +69,12 @@
 import { readGeoTiff } from "../src/lib/geo/raster.mjs";
 import { openRaster, reduceOverPolygon } from "../src/lib/geo/raster-window.mjs";
 import { cached, fileSource } from "../src/lib/geo/raster-source.mjs";
-import { spillLevel, connectedFlood } from "../src/lib/geo/hydrology.mjs";
+import { spillLevel, connectedFlood, thresholdFlood } from "../src/lib/geo/hydrology.mjs";
+import {
+  newFloodExtent,
+  accumulateFloodExtent,
+  finaliseFloodExtent,
+} from "../src/lib/geo/flood.mjs";
 import {
   polygonStats,
   cutFill,
@@ -82,7 +87,7 @@ import {
   REFERENCE,
 } from "../src/lib/geo/terrain-analysis.mjs";
 import { SURVEYS, rasterPath, surveyPresent, READ_WHOLE_LIMIT_BYTES } from "./lib/survey.mjs";
-import { statSync } from "node:fs";
+import { statSync, existsSync } from "node:fs";
 
 /**
  * Biggest survey this suite will check, in bytes of DTM.
@@ -265,6 +270,60 @@ async function run(slug, label) {
           `${(tiledStats.area / 10000).toFixed(2)} ha`,
     );
   }
+
+  // ---- 3. site-wide flood by reduction == the whole-grid simulation --------
+  /*
+   * The two site-wide flood paths, against the simulations they replace. Both
+   * are walked in bands over the survey's own bounds, which is the shape the
+   * route uses when a request asks for more ground than one read can hold.
+   *
+   * `thresholdFlood` needs no precomputed anything — "below the level" is a
+   * per-cell predicate — so this path answers on any survey. The rising path
+   * reads the spill surface for its predicate and is what makes a *connected*
+   * flood answerable over ground too large to traverse.
+   */
+  const spillFile = rasterPath(slug, "spill");
+  const spillRaster = existsSync(spillFile)
+    ? await openRaster(cached(await fileSource(spillFile)))
+    : null;
+  const whole = [
+    [bx0, by0], [bx1, by0], [bx1, by1], [bx0, by1],
+  ];
+  const floodLevels = [0.2, 0.5, 0.8].map((f) => lo + (hi - lo) * f);
+
+  for (const rising of spillRaster ? [false, true] : [false]) {
+    const acc = newFloodExtent(floodLevels);
+    await reduceOverPolygon(raster, whole, async (band, cells) => {
+      const spill = rising ? await spillRaster.readWindow(cells) : null;
+      accumulateFloodExtent(acc, band, { spill });
+    }, { tileCells: 300_000 });
+    const tiled = finaliseFloodExtent(acc, { method: rising ? "rising" : "threshold" });
+
+    let off = 0;
+    const detail = [];
+    for (let k = 0; k < floodLevels.length; k += 1) {
+      const level = floodLevels[k];
+      const ref = rising
+        ? connectedFlood(dem, level, seeds)
+        : thresholdFlood(dem, level);
+      const mine = tiled.levels[k];
+      /*
+       * Cells are compared exactly — a count cannot drift — and volume with the
+       * same cell-area floor the reductions above use, for the same reason.
+       */
+      if (mine.cells !== ref.cells) { off += 1; detail.push(`L${k} cells ${mine.cells} vs ${ref.cells}`); }
+      if (!agrees(mine.volume_m3, ref.volume, dem.cellArea)) {
+        off += 1; detail.push(`L${k} volume ${mine.volume_m3} vs ${ref.volume}`);
+      }
+    }
+    check(
+      `site-wide ${rising ? "rising" : "threshold"} flood by reduction matches the simulation`,
+      off === 0,
+      off ? detail.join("; ").slice(0, 160)
+          : `${tiled.levels.map((l) => `${(l.area_ha).toFixed(1)} ha`).join(", ")}`,
+    );
+  }
+  if (spillRaster) await spillRaster.close();
 
   // A polygon off the survey must cost nothing and measure nothing, rather than
   // reading tiles full of nodata and reporting a confident zero.

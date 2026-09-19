@@ -593,11 +593,16 @@ const REDUCTION_TILE_CELLS = 8_000_000;
  *
  * @param raster an open raster from `openRaster`
  * @param {number[][]} ring the polygon, in the raster's projected metres
- * @param {(grid: any) => void | Promise<void>} accumulate called once per tile with a
- *        windowed Grid. Awaited, so a reference surface that is itself a raster
- *        can read the matching window of the *other* file band by band — which
- *        is what lets a DSM-against-DTM volume be as unlimited as a volume
- *        against a plane, rather than unlimited only in the easy case.
+ * @param {(grid: any, window: {col0:number,row0:number,cols:number,rows:number}) => void | Promise<void>}
+ *        accumulate called once per tile with a windowed Grid and the cell
+ *        window it came from. Awaited, so a reference surface that is itself a
+ *        raster can read the matching window of the *other* file band by band —
+ *        which is what lets a DSM-against-DTM volume be as unlimited as a volume
+ *        against a plane, rather than unlimited only in the easy case. The
+ *        window is handed over too because a *sibling* raster — one written from
+ *        this one, sharing its geometry exactly, like the spill surface — is
+ *        read by the same cell indices rather than by world bounds, so the two
+ *        cannot drift apart by a rounding.
  * @param {{ onProgress?: (done: number, total: number) => void, signal?: AbortSignal,
  *           tileCells?: number }} [options] `tileCells` exists so the suites can
  *           force a many-tile partition on a small survey and assert it agrees
@@ -639,9 +644,10 @@ export async function reduceOverPolygon(raster, ring, accumulate, options = {}) 
     signal?.throwIfAborted();
     const r0 = row0 + b * bandRows;
     const rows = Math.min(bandRows, row1 - r0 + 1);
-    const grid = await raster.readWindow({ col0, row0: r0, cols: width, rows });
+    const window = { col0, row0: r0, cols: width, rows };
+    const grid = await raster.readWindow(window);
     if (grid) {
-      await accumulate(grid);
+      await accumulate(grid, window);
       read += width * rows;
     }
     cells += width * rows;

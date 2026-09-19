@@ -56,7 +56,16 @@ function terrainDir(siteSlug: string) {
   return join(base, siteSlug);
 }
 
-export type TerrainKind = "dtm" | "dsm";
+/**
+ * The rasters a site publishes under `terrain/<slug>/`.
+ *
+ * `spill` is derived rather than surveyed: the level water stands at per cell
+ * when it rises from outside the survey, built once by `scripts/spill-run.mjs`.
+ * It lives here rather than with the hydrology bundle because it is at the
+ * survey's *native* resolution — hydrology is deliberately resampled to 1 m for
+ * routing, and a flood at 1 m on a 7 cm survey is a different shoreline.
+ */
+export type TerrainKind = "dtm" | "dsm" | "spill";
 
 /**
  * Grids are cached per process because a client measuring a site will make many
@@ -287,9 +296,26 @@ export async function readTerrainWindow(
 /** Which terrain models a site actually has, for the map to offer. */
 export function availableTerrain(siteSlug: string): TerrainKind[] {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(siteSlug)) return [];
-  return (["dtm", "dsm"] as TerrainKind[]).filter((kind) =>
+  return (["dtm", "dsm", "spill"] as TerrainKind[]).filter((kind) =>
     existsSync(join(terrainDir(siteSlug), `${kind}.tif`)),
   );
+}
+
+/**
+ * Whether this site can answer a flood at any level over its whole extent.
+ *
+ * Which is exactly "has a spill surface been built for it". The flood panel
+ * asks before offering a site-wide run, so a survey without one keeps the
+ * drawn-study-area tool it already had rather than being offered a button that
+ * would refuse.
+ *
+ * Local disk only, deliberately, and it mirrors `availableTerrain`: on a
+ * deployment reading rasters over HTTP this answers false and the site-wide
+ * path stays off until the publish pipeline has actually written one.
+ */
+export function hasSpillSurface(siteSlug: string): boolean {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(siteSlug)) return false;
+  return existsSync(join(terrainDir(siteSlug), "spill.tif"));
 }
 
 /**

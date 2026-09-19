@@ -299,3 +299,112 @@ export function toGeoJson(features, grid) {
     })),
   };
 }
+
+/**
+ * One polygon per connected patch of a mask, with the labelling that produced
+ * it, so per-patch attributes can be measured rather than assumed.
+ *
+ * ## Why this exists
+ *
+ * `polygonize` returns every ring in a mask, and `groupRingsIntoPolygons`
+ * assembles them into polygons, but nothing connects a polygon back to the
+ * *cells* it covers. So a caller with per-cell values — depth, storage — could
+ * only report them summed over the whole mask, and the export wrote that one
+ * aggregate onto a single dissolved MultiPolygon. Every depression in the file
+ * carried the total storage of all depressions, which is not a conservative
+ * approximation of anything; it is a wrong number per feature.
+ *
+ * Labelling first fixes that. Each patch gets an identity, the caller
+ * accumulates whatever it likes per label in one pass over the grid, and the
+ * geometry comes back keyed by the same label.
+ *
+ * ## Four-connected, to match the rings
+ *
+ * `polygonize` emits an edge for each cell side facing a cell outside the mask,
+ * so two cells touching only at a corner are separated by edges and come back
+ * as two rings. Labelling diagonal neighbours as one patch would therefore
+ * produce one label with two disjoint polygons, and the attributes would
+ * describe a shape the file does not contain. Connectivity here and
+ * connectivity there have to be the same relation.
+ *
+ * ## Cost
+ *
+ * The labelling is one pass with a union-free flood fill over an explicit
+ * stack. The geometry is then extracted per label over that label's own
+ * bounding box rather than the whole grid, so the total work is the sum of the
+ * patch boxes — for depressions, a small fraction of the survey — instead of
+ * one full-grid pass per patch.
+ */
+export function polygonizeComponents(mask, grid) {
+  const { width, height } = grid;
+  const labels = new Int32Array(mask.data.length).fill(-1);
+  const boxes = [];
+  const stack = [];
+
+  for (let start = 0; start < mask.data.length; start += 1) {
+    if (mask.data[start] !== 1 || labels[start] !== -1) continue;
+    const label = boxes.length;
+    let c0 = width;
+    let c1 = -1;
+    let r0 = height;
+    let r1 = -1;
+
+    labels[start] = label;
+    stack.push(start);
+    while (stack.length > 0) {
+      const i = stack.pop();
+      const col = i % width;
+      const row = (i - col) / width;
+      if (col < c0) c0 = col;
+      if (col > c1) c1 = col;
+      if (row < r0) r0 = row;
+      if (row > r1) r1 = row;
+      // Four-connected, for the reason in the header.
+      if (col > 0) push(i - 1);
+      if (col < width - 1) push(i + 1);
+      if (row > 0) push(i - width);
+      if (row < height - 1) push(i + width);
+    }
+    boxes.push({ label, c0, c1, r0, r1 });
+  }
+
+  function push(n) {
+    if (mask.data[n] !== 1 || labels[n] !== -1) return;
+    labels[n] = boxes.length;
+    stack.push(n);
+  }
+
+  /*
+   * Geometry per patch, extracted over the patch's own box.
+   *
+   * The sub-mask carries only this label's cells, so a second patch whose box
+   * overlaps this one — common for interlocking shapes — does not leak into
+   * these rings. The sub-grid's origin is the box's own corner, so the rings
+   * come out in the parent's projected coordinates with no offset arithmetic
+   * at the call site.
+   */
+  const components = boxes.map(({ label, c0, c1, r0, r1 }) => {
+    const w = c1 - c0 + 1;
+    const h = r1 - r0 + 1;
+    const sub = {
+      data: new Uint8Array(w * h),
+    };
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        if (labels[row * width + col] === label) sub.data[(row - r0) * w + (col - c0)] = 1;
+      }
+    }
+    const subGrid = {
+      width: w,
+      height: h,
+      cellSize: grid.cellSize,
+      originX: grid.originX + c0 * grid.cellSize,
+      originY: grid.originY - r0 * grid.cellSize,
+      cornerX: (col) => grid.originX + (c0 + col) * grid.cellSize,
+      cornerY: (row) => grid.originY - (r0 + row) * grid.cellSize,
+    };
+    return { label, rings: groupRingsIntoPolygons(polygonize(sub, subGrid)) };
+  });
+
+  return { labels, components };
+}

@@ -37,7 +37,13 @@ import {
   benchAnalysis,
 } from "@/lib/geo/engineering.mjs";
 import { slopeDegrees } from "@/lib/geo/hydrology.mjs";
-import { simulateFlood, seedCellsInPolygon } from "@/lib/geo/flood.mjs";
+import {
+  simulateFlood,
+  seedCellsInPolygon,
+  newFloodExtent,
+  accumulateFloodExtent,
+  finaliseFloodExtent,
+} from "@/lib/geo/flood.mjs";
 import { buildMergeTree } from "@/lib/geo/merge-tree.mjs";
 
 export const runtime = "nodejs";
@@ -859,8 +865,91 @@ export async function POST(
               : "That view does not overlap this survey.",
           );
         }
+        /**
+         * Too much ground to *simulate* — which is not the same as too much
+         * ground to answer.
+         *
+         * A connected flood from a seed the client placed is a traversal, and
+         * its extent is not known before the read, so it stays bounded by the
+         * study area drawn around it. That is the shape of the question rather
+         * than a limitation: placing a seed is saying where to look.
+         *
+         * Everything else is a per-cell predicate. "Below this level" is
+         * `dem <= L`, and "reached by water rising from outside" is
+         * `spill <= L` against a surface where the connectivity was resolved
+         * once, at publish time. Both are reductions, both compose over a
+         * partition, and neither needs the whole grid resident — so the ground
+         * is walked in bands and the answer is exact at the survey's own
+         * resolution, however much of it was asked about.
+         *
+         * This is what the refusal Malhar screenshotted turns into. It was
+         * never a measurement that could not be made; it was a traversal being
+         * run for a question that did not need one.
+         */
+        const seeded = body.at !== undefined || body.polygon !== undefined;
         if (window.cols * window.rows > MAX_FLOOD_CELLS) {
-          throw floodTooLarge(from, window.cols, window.rows, raster.cellSize);
+          if (seeded) throw floodTooLarge(from, window.cols, window.rows, raster.cellSize);
+
+          /*
+           * `rising` asks the connected question — water arriving from outside
+           * the survey — and needs the spill surface to answer it. Without one
+           * the honest answer is the threshold, said plainly, rather than a
+           * connected flood quietly downgraded to a bathtub fill.
+           */
+          const wantsRising = body.rising === true;
+          const spillRaster = wantsRising ? await openTerrain(siteSlug, "spill") : null;
+
+          const acc = newFloodExtent(levels);
+          const area = ring ?? [
+            [box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]],
+          ];
+          await reduceOverPolygon(
+            raster,
+            area,
+            async (band, cells) => {
+              /*
+               * The spill surface is written from this DTM and shares its
+               * geometry exactly, so it is read by the *same cell window*
+               * rather than by world bounds. Matching on coordinates would
+               * introduce a rounding between two rasters that are by
+               * construction the same grid, and a one-cell shift between the
+               * arrival level and the ground it is subtracted from is a depth
+               * error nothing downstream could detect.
+               */
+              const spill = spillRaster ? await spillRaster.readWindow(cells) : null;
+              accumulateFloodExtent(acc, band, { spill, ring });
+            },
+            { signal: request.signal },
+          );
+
+          result = {
+            ...finaliseFloodExtent(acc, {
+              method: spillRaster ? "rising" : "threshold",
+            }),
+            studyArea: {
+              from,
+              cells: window.cols * window.rows,
+              cellSize: raster.cellSize,
+            },
+            /*
+             * No polygons. A site-wide flood at 7 cm is hundreds of millions of
+             * cells and its boundary is not a shape a browser can hold, let
+             * alone draw — Kotba alone vectorises into 207 separate patches
+             * over a fraction of that ground. The extent is drawn by the tiler,
+             * which renders it a tile at a time from the same rasters this
+             * counted, so the picture and the figures cannot disagree.
+             */
+            geojson: null,
+            layer: spillRaster ? "flood_rising" : "flood_level",
+            resolution_m: raster.cellSize,
+            note:
+              `Computed over ${from === "survey" ? "the whole survey" : "the area shown"} at ` +
+              `${raster.cellSize.toFixed(3)} m, the survey's own resolution. ` +
+              (spillRaster
+                ? "Water is connected to ground outside the survey; a hollow with no path to it stays dry."
+                : "Every cell at or below the level counts, whether water could reach it or not."),
+          };
+          break;
         }
         const dtm = await raster.readWindow(window);
         if (!dtm) throw new BadRequest("That study area does not overlap this survey.");
