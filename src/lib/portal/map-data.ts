@@ -15,8 +15,100 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { createTileGrant, TILE_GRANT_COOKIE } from "@/lib/portal/tile-grant";
 
 const MAP_ROOT = path.join(process.cwd(), "portal-data", "map");
+
+/**
+ * Where a site's map layers actually live, which need not be this machine.
+ *
+ * Terrain, hydrology and the point cloud each gained a `PORTAL_*_URL` when they
+ * outgrew the repository. Map never did, so `portal-data/map/` stayed tracked in
+ * git and is served out of `process.cwd()` on Vercel — 156 MB of client raster
+ * committed, and the repository acting as a CDN, which is the exact thing
+ * `upload-site.mjs` was written to stop. Kotba and Ektanagar 1 have had a copy
+ * sitting in R2 for weeks; nothing read it, because there was no way to say so.
+ *
+ * `PORTAL_MAP_URL` is that way. It points at the same Worker in front of the
+ * private bucket that `PORTAL_TERRAIN_URL` points at, serving the identical
+ * `<slug>/<file>` layout, and it is authorised the same way: a per-site tile
+ * grant, so a grant for one site can never fetch another's.
+ *
+ * Unset, everything below reads from disk exactly as it did. That is what keeps
+ * a laptop with a survey folder working, and what makes the migration a
+ * deployment setting rather than a rewrite.
+ */
+function mapBase(): string | null {
+  const base = process.env.PORTAL_MAP_URL?.trim();
+  return base ? base.replace(/\/+$/, "") : null;
+}
+
+/**
+ * Say once, loudly, when the configured map URL is not answering.
+ *
+ * `PORTAL_MAP_URL` **wins outright** when it is set — there is no quiet fall
+ * back to the files on disk, and that is deliberate for the reason
+ * `storage-config.ts` gives at length: a stated intention that cannot be
+ * honoured should be visible, not papered over. A typo in the variable would
+ * otherwise present as every map on every site being empty, which reads as "the
+ * portal is broken" rather than "one environment variable is wrong".
+ *
+ * Once per distinct reason rather than per tile, because a map pulls dozens and
+ * a log with fifty identical lines in it is a log nobody reads.
+ */
+const warnedRemote = new Set<string>();
+function warnRemote(reason: string) {
+  if (warnedRemote.has(reason)) return;
+  warnedRemote.add(reason);
+  console.warn(
+    `[portal] PORTAL_MAP_URL is set and ${reason}. No map layers will be served. ` +
+      `Check the value points at the tile Worker's base (…/sites), or unset it to ` +
+      `read portal-data/map/ from disk.`,
+  );
+}
+
+/**
+ * The bytes of one map file, from wherever this deployment keeps them.
+ *
+ * Every caller has already validated the slug, rejected traversal, and checked
+ * the path against the manifest — so this is only the fetch, and it must not
+ * become a second place where "is this allowed" is decided. `relative` is a
+ * path already proven safe.
+ */
+async function readMapBytes(siteSlug: string, relative: string): Promise<Buffer | null> {
+  const base = mapBase();
+  if (!base) {
+    const dir = siteDir(siteSlug);
+    const full = path.resolve(dir, relative);
+    // Belt and braces: the callers resolve this too, but a path that escapes
+    // the site directory must never reach a read, however it got here.
+    if (full !== dir && !full.startsWith(dir + path.sep)) return null;
+    try {
+      return await readFile(full);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!SAFE_SLUG.test(siteSlug)) return null;
+  try {
+    const response = await fetch(`${base}/${siteSlug}/${relative}`, {
+      headers: { Cookie: `${TILE_GRANT_COOKIE}=${await createTileGrant(siteSlug)}` },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      warnRemote(`${base} answered ${response.status} for ${siteSlug}/${relative}`);
+      return null;
+    }
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    // A network fault reads as "not there", the same as a missing file. The
+    // alternative is a 500 on a map tile, and a screenful of them the moment
+    // the Worker hiccups.
+    warnRemote(`${base} could not be reached: ${(error as Error).message}`);
+    return null;
+  }
+}
 
 /** Two corners are enough for a bounding box; four allow a rotated footprint. */
 export type LonLat = [number, number];
@@ -111,8 +203,9 @@ export async function readMapManifest(siteSlug: string): Promise<MapManifest | n
   }
 
   try {
-    const raw = await readFile(path.join(dir, "manifest.json"), "utf8");
-    const parsed = JSON.parse(raw) as MapManifest;
+    const bytes = await readMapBytes(siteSlug, "manifest.json");
+    if (!bytes) return null;
+    const parsed = JSON.parse(bytes.toString("utf8")) as MapManifest;
     if (!Array.isArray(parsed.layers)) return null;
     // Only expose layers we can build a safe URL for.
     //
@@ -195,6 +288,12 @@ export async function readMapFile(siteSlug: string, requested: string): Promise<
   }
 
   const file = segments.join("/");
+  /*
+   * Resolved against the site directory purely to prove the path stays inside
+   * it. The bytes come from `readMapBytes`, which may fetch them over HTTP
+   * instead — but the containment check is a property of the *path* and has to
+   * hold either way, or a remote deployment would be the one without it.
+   */
   const dir = siteDir(siteSlug);
   const full = path.resolve(dir, file);
   if (!full.startsWith(dir + path.sep)) return null;
@@ -208,9 +307,6 @@ export async function readMapFile(siteSlug: string, requested: string): Promise<
         : null;
   if (!contentType) return null;
 
-  try {
-    return { body: await readFile(full), contentType };
-  } catch {
-    return null;
-  }
+  const body = await readMapBytes(siteSlug, file);
+  return body ? { body, contentType } : null;
 }

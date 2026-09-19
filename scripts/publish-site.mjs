@@ -86,6 +86,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
+import { openRaster } from "../src/lib/geo/raster-window.mjs";
+import { cached, fileSource } from "../src/lib/geo/raster-source.mjs";
 import { readManifest, verify } from "./lib/manifest.mjs";
 import { discoverAssets, siteFactsFromManifest, summaryFromFacts, stableUuid } from "./lib/catalogue.mjs";
 
@@ -199,32 +201,84 @@ const filesRoot = resolve("portal-data", "files");
  * printed and a missing input is a message rather than a stack trace three steps
  * in.
  */
-function survey(dir) {
+/**
+ * Does this raster say where it is, by whatever means its format allows?
+ *
+ * A JPEG or PNG carries no georeferencing, so it needs a world file and a
+ * `.prj` beside it or it is just a picture. A **GeoTIFF does not** — the
+ * coordinates and the CRS are tags inside the file, which is the entire point
+ * of the format.
+ *
+ * Requiring sidecars for a `.tif` rejected the most standard, self-describing
+ * input the pipeline takes. Suigam arrived as a 2.1 GB GeoTIFF with EPSG:32643
+ * in its own tags and was refused with "every raster needs a world file", which
+ * is both wrong and unactionable: there is nothing for the surveyor to fix.
+ * `prepare-site.mjs` had already learned to read a bare GeoTIFF's tags in #88;
+ * this is the discovery gate in front of it catching up.
+ *
+ * Opened rather than guessed. The directory is tens of kilobytes whatever the
+ * file weighs, so this costs milliseconds even on a 2 GB raster, and it answers
+ * the question the pipeline actually cares about — can the coordinates be read
+ * — rather than a proxy for it.
+ */
+async function georeferencedRaster(path) {
+  const stem = path.replace(/\.[^.]+$/, "");
+  const sidecars =
+    [".tfw", ".pgw", ".jgw", ".wld"].some((x) => existsSync(stem + x)) && existsSync(stem + ".prj");
+  if (sidecars) return true;
+
+  const ext = extname(path).toLowerCase();
+  if (ext !== ".tif" && ext !== ".tiff") return false;
+
+  try {
+    const raster = await openRaster(cached(await fileSource(path)));
+    // A geotransform alone is not enough: metres in an unstated CRS cannot be
+    // turned into a map position, and `prepare-site` would place the survey in
+    // the sea. Both have to be readable.
+    const placed = Number.isFinite(raster.epsg) && Number.isFinite(raster.cellSize) &&
+      Number.isFinite(raster.originX) && Number.isFinite(raster.originY);
+    await raster.close?.();
+    return placed;
+  } catch {
+    return false;
+  }
+}
+
+async function survey(dir) {
   const found = { dems: [], orthos: [], shapefiles: [], grids: [], clouds: [], skipped: [] };
+  const files = [];
   const walk = (d) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       if (e.name.startsWith(".")) continue;
       const p = join(d, e.name);
       if (e.isDirectory()) { walk(p); continue; }
-      const ext = extname(e.name).toLowerCase();
-      const stem = p.replace(/\.[^.]+$/, "");
-      const georeferenced = [".tfw", ".pgw", ".jgw", ".wld"].some((x) => existsSync(stem + x)) &&
-        existsSync(stem + ".prj");
-
-      if (ext === ".tif" || ext === ".tiff") {
-        (georeferenced ? found.dems : found.skipped).push(p);
-      } else if ([".jpg", ".jpeg", ".png"].includes(ext)) {
-        (georeferenced ? found.orthos : found.skipped).push(p);
-      } else if (ext === ".shp") {
-        found.shapefiles.push(p);
-      } else if (ext === ".csv") {
-        found.grids.push(p);
-      } else if (ext === ".las" || ext === ".laz") {
-        found.clouds.push(p);
-      }
+      files.push(p);
     }
   };
   walk(dir);
+
+  for (const p of files) {
+    const ext = extname(p).toLowerCase();
+    if (ext === ".tif" || ext === ".tiff") {
+      ((await georeferencedRaster(p)) ? found.dems : found.skipped).push(p);
+    } else if ([".jpg", ".jpeg", ".png"].includes(ext)) {
+      ((await georeferencedRaster(p)) ? found.orthos : found.skipped).push(p);
+    } else if (ext === ".shp") {
+      found.shapefiles.push(p);
+    } else if (ext === ".csv") {
+      found.grids.push(p);
+    } else if (ext === ".las" || ext === ".laz") {
+      found.clouds.push(p);
+    } else if (ext === ".ecw" || ext === ".sid") {
+      /*
+       * ECW and MrSID are readable only through proprietary SDKs that neither
+       * this pipeline nor a Homebrew GDAL ships. Recorded rather than ignored,
+       * because silently dropping the orthomosaic is how a site gets published
+       * with no imagery and nobody notices until the client meeting.
+       */
+      found.skipped.push(p);
+    }
+  }
   return found;
 }
 
@@ -244,7 +298,7 @@ async function classifyDems(paths) {
   return { dems, imagery };
 }
 
-const found = survey(inputDir);
+const found = await survey(inputDir);
 const { dems, imagery } = await classifyDems(found.dems);
 const orthos = [...found.orthos, ...imagery];
 
@@ -342,19 +396,66 @@ if (!has("skip-tiles")) {
   });
 }
 
-if (dtm) {
+/**
+ * How a survey's elevation reaches the browser, which is not one answer.
+ *
+ * `make-terrain-tiles.mjs` and `make-site-previews.mjs` both read their raster
+ * whole and both want a world file beside it. That is fine for a 145 MB survey
+ * and impossible for Suigam: 51,071 x 257,149 cells in a 2.1 GB GeoTIFF whose
+ * georeferencing lives in its own tags, past `readFileSync`'s 2 GiB ceiling and
+ * with no sidecars to find.
+ *
+ * Baking tiles for such a raster is also the wrong shape of work. The dynamic
+ * tiler renders elevation from the source on demand, so a pyramid is only worth
+ * pre-building when the survey is small enough that doing it is cheaper than
+ * not. Past that, the survey needs exactly one image — a decimated overview so
+ * it *appears* on the map — and the tiler takes over the moment anyone zooms.
+ * Kiru already worked this way; it was arranged by hand and never written down.
+ *
+ * So the threshold decides, rather than a person: under it, the established
+ * path; over it, `make-overview.mjs`, which reads windowed, needs no sidecars
+ * and has no size limit.
+ */
+const BAKE_TILES_UNDER_CELLS = 400_000_000;
+
+const dtmCells = await (async () => {
+  if (!dtm) return 0;
+  try {
+    const raster = await openRaster(cached(await fileSource(dtm)));
+    const cells = raster.width * raster.height;
+    await raster.close?.();
+    return cells;
+  } catch {
+    return 0;
+  }
+})();
+const bakeTiles = dtm && dtmCells > 0 && dtmCells < BAKE_TILES_UNDER_CELLS;
+
+if (dtm && bakeTiles) {
   plan.push({
     label: "terrain, so elevation survives into the browser",
     args: ["scripts/make-terrain-tiles.mjs", dtm, slug, "--layer", "terrain"],
   });
+} else if (dtm) {
+  console.log(
+    `  i ${(dtmCells / 1e6).toFixed(0)}M cells — past ${(BAKE_TILES_UNDER_CELLS / 1e6).toFixed(0)}M, ` +
+      `so elevation is served by the dynamic tiler rather than a baked pyramid`,
+  );
 }
 
-if (dsm || dtm || ortho) {
+if (bakeTiles && (dsm || dtm || ortho)) {
   const args = ["scripts/make-site-previews.mjs", slug, "--client", clientSlug];
   if (dsm) args.push("--dsm", dsm);
   if (dtm) args.push("--dtm", dtm);
   if (ortho) args.push("--ortho", ortho);
   plan.push({ label: "imagery previews", args });
+} else {
+  for (const kind of [dtm ? "dtm" : null, dsm ? "dsm" : null].filter(Boolean)) {
+    plan.push({
+      label: `${kind.toUpperCase()} overview for the base map`,
+      args: ["scripts/make-overview.mjs", "--slug", slug, "--kind", kind],
+    });
+  }
 }
 
 {
