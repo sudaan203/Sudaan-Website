@@ -90,6 +90,15 @@ await page.evaluateOnNewDocument(() => {
 
 const settle = (ms = 700) => new Promise((r) => setTimeout(r, ms));
 const PANEL = '[role="region"][aria-label="Shapefile"]';
+
+/**
+ * A short line inside whichever survey is under test, as KML coordinates.
+ *
+ * Taken from the map's own centre at run time rather than hardcoded, so this
+ * suite keeps working on every survey the matrix runs it against — the same
+ * reason `scripts/lib/survey.mjs` exists for the API suites.
+ */
+let KML_LINE = "";
 const panelText = () =>
   page.evaluate((sel) => document.querySelector(sel)?.innerText.replace(/\s+/g, " ") ?? "", PANEL);
 
@@ -178,7 +187,7 @@ console.log("\nThe Shapefile segment is offered on every survey");
   check("the segment can be opened", opened);
   const t = await panelText();
   check("it explains what the tool is for", /export them as a real shapefile/i.test(t));
-  check("upload is offered too", /Drop a \.zip here/i.test(t));
+  check("upload is offered too", /Drop a \.zip, \.kml or \.kmz here/i.test(t));
 }
 
 console.log("\nDrawing a polygon");
@@ -272,8 +281,99 @@ let uploadedOk = false;
   check("the upload succeeded", /1 polygon/i.test(t), t.slice(0, 160));
   check("and states the projection it was read as", /UTM zone 43N/i.test(t), t.slice(0, 200));
 
-  const rendered = await renderedCount("shapefile-uploaded-fill");
+  /*
+   * Each upload has its own source now, so there is no single fixed layer id to
+   * query — that is the change that made a shapefile and a KML able to sit on
+   * the map together. The layer ids carry the upload's own id, so the check is
+   * that *some* upload layer is drawing.
+   */
+  const rendered = await page.evaluate(() => {
+    const m = window.__portalMap;
+    const ids = m.getStyle().layers.map((l) => l.id).filter((id) => /^upload-.*-fill$/.test(id));
+    return ids.reduce((n, id) => n + m.queryRenderedFeatures({ layers: [id] }).length, 0);
+  });
   check("the uploaded shape is drawn on the map", rendered > 0, `${rendered} rendered`);
+}
+
+console.log("\nA KML sits beside the shapefile rather than replacing it");
+{
+  /*
+   * Item 3's actual claim. The old panel had one upload slot, so bringing in a
+   * KML meant losing the shapefile you were comparing against — which defeats
+   * the point of a compare tool. Both must be on the map at once, each with its
+   * own switch.
+   */
+  const { writeFileSync } = await import("node:fs");
+  const path = "/tmp/portal-shapefile-browser-test-upload.kml";
+  KML_LINE = await page.evaluate(() => {
+    const c = window.__portalMap.getCenter();
+    const d = 0.0006;
+    return `${c.lng - d},${c.lat - d} ${c.lng + d},${c.lat + d}`;
+  });
+  writeFileSync(
+    path,
+    `<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+       <Placemark><name>Check line</name><LineString><coordinates>
+         ${KML_LINE}
+       </coordinates></LineString></Placemark></Document></kml>`,
+    "utf8",
+  );
+  const input = await page.$(`${PANEL} input[type=file]`);
+  if (input) {
+    await input.uploadFile(path);
+    // Waited for rather than slept through: the upload is a round trip and a
+    // fixed delay is either flaky or slow, and on this suite it was both.
+    await page
+      .waitForFunction(
+        () =>
+          window.__portalMap.getStyle().layers.filter((l) => /^upload-.*-fill$/.test(l.id))
+            .length >= 2,
+        { timeout: 15000 },
+      )
+      .catch(() => {});
+  }
+
+  const layers = await page.evaluate(() =>
+    window.__portalMap.getStyle().layers.filter((l) => /^upload-.*-fill$/.test(l.id)).length,
+  );
+  check("both uploads are on the map at once", layers >= 2, `${layers} upload fill layers`);
+
+  const t = await panelText();
+  check("and the panel names the KML as its own layer", /KML/i.test(t), t.slice(0, 200));
+
+  /*
+   * Hiding one must not touch the other — and the click has to land on an
+   * *upload* row. Drawn shapes are layers in the same list with the same eye,
+   * and they come first in the DOM, so taking the first "Hide" on the page hid
+   * the drawn polygon instead and made three later checks lie. An upload row is
+   * the one that also offers Remove.
+   */
+  const hid = await page.evaluate(() => {
+    const row = [...document.querySelectorAll("li")].find((li) =>
+      [...li.querySelectorAll("button")].some((b) =>
+        /^Remove /.test(b.getAttribute("aria-label") ?? ""),
+      ),
+    );
+    const eye = row
+      ? [...row.querySelectorAll("button")].find((b) =>
+          /^Hide /.test(b.getAttribute("aria-label") ?? ""),
+        )
+      : null;
+    if (!eye) return false;
+    eye.click();
+    return true;
+  });
+  check("an upload can be hidden without being removed", hid);
+  await settle(300);
+  const after = await page.evaluate(() => {
+    const m = window.__portalMap;
+    const ids = m.getStyle().layers.map((l) => l.id).filter((x) => /^upload-/.test(x));
+    const hidden = ids.filter((id) => m.getLayoutProperty(id, "visibility") === "none");
+    return { ids: ids.length, hidden: hidden.length };
+  });
+  check("the other upload is untouched",
+    after.ids > 0 && after.hidden > 0 && after.hidden < after.ids,
+    `${after.hidden} of ${after.ids} layers hidden`);
 }
 
 console.log("\nDrawn and uploaded are visibly two different things");
@@ -284,7 +384,8 @@ console.log("\nDrawn and uploaded are visibly two different things");
   });
   const uploadedColour = await page.evaluate(() => {
     const m = window.__portalMap;
-    return m.getPaintProperty("shapefile-uploaded-fill", "fill-color");
+    const id = m.getStyle().layers.map((l) => l.id).find((x) => /^upload-.*-fill$/.test(x));
+    return id ? m.getPaintProperty(id, "fill-color") : null;
   });
   check("drawn and uploaded features use different colours",
     drawnColour !== uploadedColour, `${drawnColour} vs ${uploadedColour}`);
@@ -292,9 +393,31 @@ console.log("\nDrawn and uploaded are visibly two different things");
 
 console.log("\nClearing each half works independently");
 {
-  check("uploaded can be removed", await clickIn("Shapefile", "Remove"));
+  /*
+   * Removal is per upload now, so the control is the row's own button rather
+   * than one Remove for the single slot there used to be. Found by its
+   * accessible name, which is what a person using a screen reader would hear.
+   */
+  const before = await page.evaluate(() =>
+    window.__portalMap.getStyle().layers.filter((l) => /^upload-.*-fill$/.test(l.id)).length,
+  );
+  const removed = await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find((b) =>
+      /^Remove /.test(b.getAttribute("aria-label") ?? ""),
+    );
+    if (!button) return false;
+    button.click();
+    return true;
+  });
+  check("uploaded can be removed", removed);
   await settle(400);
-  check("only the uploaded layer emptied", (await renderedCount("shapefile-uploaded-fill")) === 0);
+  const left = await page.evaluate(() =>
+    window.__portalMap.getStyle().layers.filter((l) => /^upload-.*-fill$/.test(l.id)).length,
+  );
+  // One removed, the other kept — which is the point. Removing the slot used to
+  // be the only way to get a second file onto the map at all.
+  check("removing one upload leaves the other", left === before - 1,
+    `${before} before, ${left} after`);
   check("the drawn polygon is still there", (await renderedCount("shapefile-features-fill")) > 0);
 
   check("drawn features can be cleared", await clickIn("Shapefile", "Clear drawn"));

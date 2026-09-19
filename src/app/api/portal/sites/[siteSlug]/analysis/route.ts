@@ -502,6 +502,23 @@ export async function POST(
       ring: Geometry,
       accumulate: (grid: any, reference: any) => void,
     ) => {
+      /*
+       * Overlap first, before the reference is built.
+       *
+       * The old path read a window and got "that area does not overlap this
+       * survey" for free, because the read is what failed. The walk cannot fail
+       * that way — a polygon off the survey simply visits no bands and returns
+       * zero, which is a confident and wrong measurement — and the *reference*
+       * is now built first, so a boundary-referenced volume drawn off the
+       * survey would fail inside a least-squares fit with "fewer than 3
+       * boundary samples carry elevation". That is true, and it is not what the
+       * client needs to be told.
+       */
+      if (!raster.windowFor(boundsOf(ring) as [number, number, number, number])) {
+        throw new BadRequest(
+          "That area does not overlap this survey. Draw it over the surveyed ground.",
+        );
+      }
       const ref = await readReference(ring);
       let missingEverywhere = false;
       await overPolygon(ring, async (grid) => {

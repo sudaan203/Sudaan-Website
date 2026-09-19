@@ -646,12 +646,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         type: "fill",
         source: id,
         filter: ["==", ["geometry-type"], "Polygon"],
-        paint: { "fill-color": "#2563EB", "fill-opacity": 0.14 },
+        paint: { "fill-color": "#7c3aed", "fill-opacity": 0.16 },
       },
       before,
     );
     instance.addLayer(
-      { id: `${id}-line`, type: "line", source: id, paint: { "line-color": "#1D4ED8", "line-width": 1.6 } },
+      { id: `${id}-line`, type: "line", source: id, paint: { "line-color": "#6d28d9", "line-width": 1.6 } },
       before,
     );
     instance.addLayer(
@@ -663,7 +663,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         paint: {
           "circle-radius": 3.5,
           "circle-color": "#FFFFFF",
-          "circle-stroke-color": "#1D4ED8",
+          "circle-stroke-color": "#6d28d9",
           "circle-stroke-width": 1.6,
         },
       },
@@ -2572,36 +2572,6 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         paint: {
           "circle-radius": 4.5,
           "circle-color": "#0f766e",
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1.5,
-        },
-      });
-
-      instance.addSource("shapefile-uploaded", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      instance.addLayer({
-        id: "shapefile-uploaded-fill",
-        type: "fill",
-        source: "shapefile-uploaded",
-        filter: ["==", ["geometry-type"], "Polygon"],
-        paint: { "fill-color": "#7c3aed", "fill-opacity": 0.12 },
-      });
-      instance.addLayer({
-        id: "shapefile-uploaded-line",
-        type: "line",
-        source: "shapefile-uploaded",
-        paint: { "line-color": "#6d28d9", "line-width": 1.8, "line-dasharray": [3, 1.5] },
-      });
-      instance.addLayer({
-        id: "shapefile-uploaded-points",
-        type: "circle",
-        source: "shapefile-uploaded",
-        filter: ["==", ["geometry-type"], "Point"],
-        paint: {
-          "circle-radius": 4.5,
-          "circle-color": "#7c3aed",
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1.5,
         },
