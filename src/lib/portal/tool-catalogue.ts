@@ -21,10 +21,31 @@
  * `spec` is Malhar's own sentence, trimmed but not reworded. Where a tool is
  * partly built, `gap` says what is missing in the terms a surveyor would use,
  * not in the terms of our file layout.
+ *
+ * ## Forest is a sixth department with its own numbering
+ *
+ * `docs/forest-tools-plan.md` §2.1 decided this deliberately: the master
+ * sequence runs 1..40 with twelve numbers (22, 23, 29-36, 38, 39) that were
+ * never described, reserved for documents that may still arrive. Forest's own
+ * PDF numbers its sixteen sections 1..16, and giving Forest a slice of the
+ * master's unused numbers would both overstate how much of "forty" is real and
+ * collide the day a sixth master document turns up describing 29.
+ *
+ * So Forest tools are displayed **F1-F16** (`Tool.ref`) and stored internally as
+ * `n: 101..116` — a unique integer is still required across `ALL_TOOLS` because
+ * `ACTIONS`/`toolAction(n)` in `ToolRail.tsx` key on it — and `countBy` takes an
+ * explicit scope so a caller can report "forty master tools" and "sixteen forest
+ * tools" as two honest specifications rather than one dishonest fifty-six.
  */
 
-/** The five documents, in the order they were numbered. */
-export type ToolGroupKey = "universal" | "contractor" | "mining" | "roads" | "hydrology";
+/** The five master documents, in the order they were numbered, plus Forest. */
+export type ToolGroupKey =
+  | "universal"
+  | "contractor"
+  | "mining"
+  | "roads"
+  | "hydrology"
+  | "forest";
 
 export type ToolStatus =
   /** Usable on the map today by a client, end to end. */
@@ -41,10 +62,23 @@ export type ToolStatus =
   | "blocked";
 
 export type Tool = {
-  /** Malhar's number. Stable, and the only durable identifier he uses. */
+  /**
+   * A unique integer across `ALL_TOOLS`, which `ACTIONS`/`toolAction(n)` in
+   * `ToolRail.tsx` key on. For the master documents this is Malhar's own number
+   * and the only durable identifier he uses. Forest tools are not his — they use
+   * `101..116` internally, per `docs/forest-tools-plan.md` §2.1, precisely so
+   * they never collide with a master number he might still assign.
+   */
   n: number;
   group: ToolGroupKey;
   name: string;
+  /**
+   * The label shown on screen, when it differs from `n`. Forest tools set this
+   * to "F1".."F16" — the sixteen-item numbering their own PDF uses — so a client
+   * never sees the internal 101..116 that exists only to keep `n` unique.
+   * Unset for every master tool, which displays its own `n` directly.
+   */
+  ref?: string;
   /** His sentence from the docx, trimmed. Empty for the unspecified numbers. */
   spec: string;
   status: ToolStatus;
@@ -62,7 +96,15 @@ export type ToolGroup = {
   source: string;
   /** One line, for the client, about who this group is for. */
   blurb: string;
-  range: string;
+  /**
+   * How this group's tools are numbered, shown beside its name. For the five
+   * master groups this is a slice of Malhar's 1..40 sequence, e.g. "1-10, 37,
+   * 40". Forest is not a slice of that sequence at all — it is "F1-F16", its own
+   * document's own numbering — and giving the two the same field name here
+   * rather than inventing a parallel one is what makes `write-tool-catalogue.mjs`
+   * able to print either without a special case.
+   */
+  numbering: string;
 };
 
 export const TOOL_GROUPS: readonly ToolGroup[] = [
@@ -79,35 +121,44 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
      * twelve tools is the kind of small dishonesty that makes a client wonder
      * what else does not add up.
      */
-    range: "1–10, 37, 40",
+    numbering: "1–10, 37, 40",
   },
   {
     key: "hydrology",
     name: "Hydrology",
     source: "2. Hydrology Tool.docx",
     blurb: "Where water goes, where it collects, and what it would flood.",
-    range: "24–28",
+    numbering: "24–28",
   },
   {
     key: "contractor",
     name: "Contractor",
     source: "3. Contractor Tools.docx",
     blurb: "Earthwork against a design surface, and whether it is within tolerance.",
-    range: "11–14",
+    numbering: "11–14",
   },
   {
     key: "mining",
     name: "Mining",
     source: "5. Mining Tool.docx",
     blurb: "Stockpiles, benches, highwalls and haul roads.",
-    range: "15–18",
+    numbering: "15–18",
   },
   {
     key: "roads",
     name: "Roads",
     source: "4. Road Tool.docx",
     blurb: "Chainage, corridor geometry and sections along an alignment.",
-    range: "19–21",
+    numbering: "19–21",
+  },
+  {
+    key: "forest",
+    name: "Forest",
+    source: "2. Forest Tree Detection and Inventory Dashboard.pdf",
+    blurb:
+      "Individual-tree detection, height, crown and inventory statistics, built from " +
+      "LiDAR point cloud, DSM, DTM and the orthomosaic.",
+    numbering: "F1–F16",
   },
 ] as const;
 
@@ -399,7 +450,238 @@ export const STANDALONE: readonly Tool[] = [
   },
 ] as const;
 
-export const ALL_TOOLS: readonly Tool[] = [...TOOLS, ...STANDALONE];
+/**
+ * Forest's sixteen tools, F1-F16, one per section of its PDF.
+ *
+ * `spec` is trimmed from `reference/2. Forest Tree Detection and Inventory
+ * Dashboard.pdf`, read directly rather than paraphrased from memory. `status`
+ * is `not-built` across the board and deliberately so: this pass (Track C of
+ * three, 19 Sep 2026) builds the catalogue entry, the storage and serving
+ * plumbing, the R2 upload class and the CHM render layer — the shelf a real
+ * inventory will sit on — but no detection has run yet. The Python detector
+ * and the JS engine that will actually populate `portal-data/forest/` are
+ * separate, parallel tracks and had not landed when this was written. Marking
+ * anything `engine-only` or `partial` before that lands would be a guess
+ * dressed as a status, which is exactly what this file exists to prevent.
+ */
+export const FOREST_TOOLS: readonly Tool[] = [
+  {
+    n: 101,
+    ref: "F1",
+    group: "forest",
+    name: "Tree Detection & Point Feature Extraction",
+    spec:
+      "Automatically detect individual trees from the LiDAR point cloud and elevation " +
+      "surfaces. For every tree, create a point feature storing tree ID, latitude, " +
+      "longitude, tree-top and ground elevation, tree height, crown diameter, crown " +
+      "area, crown perimeter where technically possible, point density and a detection " +
+      "confidence score. Display every tree as a clickable point; clicking opens a " +
+      "popup with every attribute.",
+    status: "not-built",
+    gap: "No detection has run for this survey yet: the Python detector and the JS engine that populate portal-data/forest/ are separate, in-progress tracks.",
+  },
+  {
+    n: 102,
+    ref: "F2",
+    group: "forest",
+    name: "Tree Height Calculation",
+    spec:
+      "Calculate tree height as tree-top elevation minus DTM ground elevation, using " +
+      "the DTM as ground reference and the LiDAR point cloud/DSM to identify the " +
+      "canopy — never raw elevation alone. Where possible, generate a Canopy Height " +
+      "Model (CHM = DSM − DTM) and use it with the point cloud for detection.",
+    status: "not-built",
+  },
+  {
+    n: 103,
+    ref: "F3",
+    group: "forest",
+    name: "Individual Tree Segmentation",
+    spec:
+      "Segment individual tree crowns using local maximum/local maxima detection, CHM " +
+      "analysis, watershed segmentation, point-cloud clustering and crown boundary " +
+      "extraction, adapting to the available point density and forest structure so " +
+      "that one tree does not register as several.",
+    status: "not-built",
+  },
+  {
+    n: 104,
+    ref: "F4",
+    group: "forest",
+    name: "Height-Based Tree Classification",
+    spec:
+      "Interactive filtering and classification by detected tree height, with ten " +
+      "default classes from 0–2 m to >15 m. Let the user change class intervals, " +
+      "add/remove classes, define custom ranges, enable/disable individual classes and " +
+      "display each separately on the map, with the tree count updating live as a " +
+      "height filter is applied.",
+    status: "not-built",
+    gap: "Needs trees.bin to exist before the client-side filter panel has anything to count; the panel itself is a later wave, queued after the real manifest shape lands.",
+  },
+  {
+    n: 105,
+    ref: "F5",
+    group: "forest",
+    name: "Crown Area & Crown Diameter",
+    spec:
+      "Estimate the horizontal crown extent from the canopy points/CHM: crown area, " +
+      "crown perimeter, maximum crown diameter, minimum crown diameter and average " +
+      "crown diameter. Where the boundary is reliable, store an individual crown " +
+      "polygon as its own GIS feature.",
+    status: "not-built",
+  },
+  {
+    n: 106,
+    ref: "F6",
+    group: "forest",
+    name: "Tree Girth / DBH",
+    spec:
+      "Attempt tree girth only where the point cloud gives sufficient information " +
+      "around the stem. Where it does not, mark the attribute 'Not reliably " +
+      "detectable' rather than generating a false value. Where an estimate is " +
+      "possible, store estimated DBH, estimated girth (= π × DBH) and a DBH " +
+      "confidence score, clearly labelled as estimated.",
+    status: "not-built",
+    gap: "Gated on F0.3's point-density measurement (docs/forest-tools-plan.md §11), which has not been run; the spec itself expects most trees to fail this and report 'Not reliably detectable'.",
+  },
+  {
+    n: 107,
+    ref: "F7",
+    group: "forest",
+    name: "Forest Visualization",
+    spec:
+      "A GIS map interface showing orthomosaic/RGB imagery, DSM, DTM, CHM, the LiDAR " +
+      "point cloud, individual tree points, individual crown polygons and height-class " +
+      "layers, each independently switchable, with trees styled by graduated symbols " +
+      "or height-based colour.",
+    status: "not-built",
+    gap: "This pass wires a chm tile layer through the same render route as terrain and hydrology, so it is ready the moment chm.tif exists. Tree points, crown polygons and height-class styling on the map are not built.",
+  },
+  {
+    n: 108,
+    ref: "F8",
+    group: "forest",
+    name: "Tree Attribute Popup",
+    spec:
+      "Clicking a tree opens a panel with tree ID, latitude, longitude, ground " +
+      "elevation, tree-top elevation, tree height, crown area, crown diameter, crown " +
+      "perimeter, estimated DBH/girth or 'Not Available', height class, point density " +
+      "and detection confidence.",
+    status: "not-built",
+  },
+  {
+    n: 109,
+    ref: "F9",
+    group: "forest",
+    name: "Interactive Filtering",
+    spec:
+      "A dedicated tree filter panel: filter by tree height, crown area, crown " +
+      "diameter, elevation, detection confidence, tree ID and a custom height range, " +
+      "plus quick class filters, with the map immediately showing only the matching " +
+      "trees.",
+    status: "not-built",
+  },
+  {
+    n: 110,
+    ref: "F10",
+    group: "forest",
+    name: "Forest Statistics Dashboard",
+    spec:
+      "Summary cards for total detected trees, trees per hectare, average/maximum/" +
+      "minimum tree height, average crown area, total crown-covered area, average and " +
+      "maximum crown diameter and percentage of area covered by canopy. Charts for " +
+      "trees by height class, tree density by hectare, crown-area distribution, tree-" +
+      "height distribution and elevation vs tree height.",
+    status: "not-built",
+    gap: "summary.json's schema (§2.5, §4 of docs/forest-tools-plan.md) is fixed as a contract for this pass; nothing populates it yet.",
+  },
+  {
+    n: 111,
+    ref: "F11",
+    group: "forest",
+    name: "Spatial Analysis",
+    spec:
+      "Generate a tree density map, canopy density map, height-class map, crown-area " +
+      "map, individual tree inventory and forest structure map. Provide optional grid-" +
+      "based analysis at 10 m/25 m/50 m, reporting per cell: number of trees, trees/" +
+      "hectare, average and maximum tree height, average crown area and canopy " +
+      "coverage %.",
+    status: "not-built",
+  },
+  {
+    n: 112,
+    ref: "F12",
+    group: "forest",
+    name: "Export Functions",
+    spec:
+      "Export detected tree information as Shapefile, GeoJSON, GeoPackage, CSV and " +
+      "KML/KMZ, for both a tree point layer (ID, latitude, longitude, elevation, " +
+      "height, crown area, crown diameter, DBH/girth where available, height class, " +
+      "confidence) and a crown polygon layer (ID, crown area, crown diameter, height, " +
+      "height class), plus a PDF forest inventory report with maps, statistics, " +
+      "charts and the tree inventory table.",
+    status: "not-built",
+    gap: "The plan scopes GeoPackage as a question for Malhar (several days of work for one line of spec); shapefile, GeoJSON, CSV and KML/KMZ are meant to reuse existing writers, none of which have been pointed at forest data yet.",
+  },
+  {
+    n: 113,
+    ref: "F13",
+    group: "forest",
+    name: "Data Quality & Confidence",
+    spec:
+      "Clearly distinguish measured/directly detected values from estimated values; " +
+      "never create artificial or unreliable attributes. For every tree, a confidence " +
+      "score from LiDAR point density, canopy separation, tree-top prominence, crown " +
+      "segmentation quality and availability of RGB/orthomosaic data. Flag low-" +
+      "confidence trees for manual review.",
+    status: "not-built",
+  },
+  {
+    n: 114,
+    ref: "F14",
+    group: "forest",
+    name: "Manual Editing",
+    spec:
+      "Add a tree manually, delete an incorrectly detected tree, move a tree point, " +
+      "split incorrectly merged trees, merge duplicate detections, edit tree " +
+      "attributes, edit the crown boundary and recalculate crown statistics.",
+    status: "not-built",
+    gap: "This is new write infrastructure — a tree_edits table and a spatial (not ordinal) tree reference so a re-run does not silently reassign a client's edits — and none of it exists yet.",
+  },
+  {
+    n: 115,
+    ref: "F15",
+    group: "forest",
+    name: "Forest Area Optimization",
+    spec:
+      "Optimise the workflow for large, hilly forest datasets. Use the LiDAR point " +
+      "cloud as the primary source for individual-tree detection, with DTM as ground " +
+      "reference, DSM as surface/canopy reference, CHM for height/canopy analysis and " +
+      "the orthomosaic for visual verification. Process large datasets efficiently " +
+      "using spatial tiling/chunking where required.",
+    status: "not-built",
+    gap: "Tiling with a halo bounded by the crown radius is specified (docs/forest-tools-plan.md §2.4) so it can run on Kiru's scale later, but the engine that would do it has not been written.",
+  },
+  {
+    n: 116,
+    ref: "F16",
+    group: "forest",
+    name: "Important Technical Principle",
+    spec:
+      "Do not classify every elevated LiDAR point as a tree. Run the full pipeline: " +
+      "ground/non-ground classification → DSM + DTM → CHM → local tree-top detection " +
+      "→ individual tree segmentation → crown extraction → tree attribute calculation " +
+      "→ height classification → GIS visualization, ending in an interactive, " +
+      "individual-tree forest inventory map.",
+    status: "not-built",
+  },
+] as const;
+
+/** Every tool from the five master documents — the "forty tools" specification. */
+export const MASTER_TOOLS: readonly Tool[] = [...TOOLS, ...STANDALONE];
+
+/** Every tool from every document, master and Forest together. */
+export const ALL_TOOLS: readonly Tool[] = [...MASTER_TOOLS, ...FOREST_TOOLS];
 
 export function toolsIn(group: ToolGroupKey): Tool[] {
   return ALL_TOOLS.filter((t) => t.group === group).sort((a, b) => a.n - b.n);
@@ -410,6 +692,17 @@ export function isUsable(status: ToolStatus): boolean {
   return status === "live" || status === "partial";
 }
 
-export function countBy(status: ToolStatus): number {
-  return ALL_TOOLS.filter((t) => t.status === status).length;
+/**
+ * How many tools carry a given status, within a chosen scope.
+ *
+ * Before Forest existed there was one specification, so a plain count over
+ * every tool was an honest number. Now there are two — forty master tools and
+ * sixteen Forest tools, numbered independently (§2.1) — and a caller has to say
+ * which one it means or it gets both, silently combined. Defaulting to
+ * `MASTER_TOOLS` rather than `ALL_TOOLS` keeps every call site written before
+ * Forest existed answering exactly what it always did; a caller that wants the
+ * combined total, or Forest's own sixteen, asks for it by name.
+ */
+export function countBy(status: ToolStatus, scope: readonly Tool[] = MASTER_TOOLS): number {
+  return scope.filter((t) => t.status === status).length;
 }

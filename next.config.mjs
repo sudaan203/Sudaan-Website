@@ -207,6 +207,30 @@ const nextConfig = {
           { key: "Cache-Control", value: "private, max-age=86400, immutable" },
         ],
       },
+      /*
+       * Forest, same shape and same trap as the point cloud immediately above:
+       * `trees.bin` and `crowns.geojson` are written once by `forest-run.mjs`
+       * and do not change until the survey is redetected, so panning across a
+       * site's tree layer should not refetch either file on every pan. The
+       * manifest/summary probe gets the shorter life for the same reason the
+       * cloud's manifest does — it is what tells a client a *new* inventory has
+       * been computed, and a stale one for a day would hide a re-run behind a
+       * browser cache nobody can reach to clear.
+       */
+      {
+        source: "/api/portal/sites/:slug/forest",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "private, max-age=300" },
+        ],
+      },
+      {
+        source: "/api/portal/sites/:slug/forest/:file+",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "private, max-age=86400, immutable" },
+        ],
+      },
       // Client files get a far tighter policy than the app around them, and it
       // has to be declared here rather than in the route handler: a header set
       // in next.config overrides one the handler sets, so the route's own

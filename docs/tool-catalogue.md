@@ -1,17 +1,24 @@
-# The forty tools, as Malhar grouped them
+# Two specifications: the forty master tools, and the sixteen forest tools
 
 *Generated from `src/lib/portal/tool-catalogue.ts` by
 `scripts/write-tool-catalogue.mjs`. Do not edit by hand: the same list drives
 the tool rail on the survey map, and a document that disagrees with the
 dashboard is worse than none.*
 
-The specification arrived as five Word documents plus a master prompt. Each
-document is a discipline, and the numbering runs 1..40 across all of them with
-gaps where documents were never sent. The map now presents them the same way:
-one group at a time, every tool shown, and the ones that are not usable shown
-disabled with a line saying what they are waiting on.
+The original specification arrived as five Word documents plus a master prompt.
+Each document is a discipline, and the numbering runs 1..40 across all of them
+with gaps where documents were never sent. Forest arrived later, as its own PDF
+with its own sixteen sections, and it is numbered independently — F1 through
+F16 — rather than taking a slice of the master's unused numbers. **The two are
+never added together into one total.** Forty plus sixteen displayed as fifty-six
+would count Forest against numbers Malhar assigned to other documents, and the
+day a sixth master document turns up describing one of those numbers, that
+fifty-six would be revealed as never having meant anything. So this document
+gives two honest counts instead of one misleading one, and every tool from both
+specifications is shown below, one group at a time, disabled with a line saying
+what it is waiting on where it is not yet usable.
 
-## Where it stands
+## Where the forty master tools stand
 
 | | Tools |
 |---|---|
@@ -23,6 +30,14 @@ disabled with a line saying what they are waiting on.
 | **Never specified** | 12 — 22, 23, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39 |
 
 Of the forty numbers Malhar used, **12 were never described**. They are listed rather than quietly dropped, so the count of forty is honest and the question can be asked once with the numbers in hand.
+
+## Where the sixteen forest tools stand
+
+| | Tools |
+|---|---|
+| **Not built** | 16 — F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16 |
+
+All sixteen sections of the forest PDF are specified — Forest has no numbers reserved for documents that never arrived, unlike the master sequence above. 16 of the sixteen are **not built**: the catalogue entry, the storage and serving plumbing, the R2 upload class and the CHM render layer exist as of this pass, but no detection has run for any survey yet, so nothing is honestly further along than that.
 
 **Live** means a client can use it on the map today. **Engine only** means the
 calculation is written and tested and nothing calls it — usually because there
@@ -147,6 +162,61 @@ we hold, whatever we do, and says why.
 > **20. Corridor Analysis** — Measure road width, shoulders, median and longitudinal slope along the selected alignment.
 >
 > **21. Automatic Cross Sections** — Generate cross-sections at fixed intervals (5 m, 10 m, 20 m) along a selected alignment.
+
+## Forest (F1–F16)
+
+*2. Forest Tree Detection and Inventory Dashboard.pdf* — Individual-tree detection, height, crown and inventory statistics, built from LiDAR point cloud, DSM, DTM and the orthomosaic.
+
+| # | Tool | Status | |
+|---|---|---|---|
+| F1 | **Tree Detection & Point Feature Extraction** | Not built | No detection has run for this survey yet: the Python detector and the JS engine that populate portal-data/forest/ are separate, in-progress tracks. |
+| F2 | **Tree Height Calculation** | Not built |  |
+| F3 | **Individual Tree Segmentation** | Not built |  |
+| F4 | **Height-Based Tree Classification** | Not built | Needs trees.bin to exist before the client-side filter panel has anything to count; the panel itself is a later wave, queued after the real manifest shape lands. |
+| F5 | **Crown Area & Crown Diameter** | Not built |  |
+| F6 | **Tree Girth / DBH** | Not built | Gated on F0.3's point-density measurement (docs/forest-tools-plan.md §11), which has not been run; the spec itself expects most trees to fail this and report 'Not reliably detectable'. |
+| F7 | **Forest Visualization** | Not built | This pass wires a chm tile layer through the same render route as terrain and hydrology, so it is ready the moment chm.tif exists. Tree points, crown polygons and height-class styling on the map are not built. |
+| F8 | **Tree Attribute Popup** | Not built |  |
+| F9 | **Interactive Filtering** | Not built |  |
+| F10 | **Forest Statistics Dashboard** | Not built | summary.json's schema (§2.5, §4 of docs/forest-tools-plan.md) is fixed as a contract for this pass; nothing populates it yet. |
+| F11 | **Spatial Analysis** | Not built |  |
+| F12 | **Export Functions** | Not built | The plan scopes GeoPackage as a question for Malhar (several days of work for one line of spec); shapefile, GeoJSON, CSV and KML/KMZ are meant to reuse existing writers, none of which have been pointed at forest data yet. |
+| F13 | **Data Quality & Confidence** | Not built |  |
+| F14 | **Manual Editing** | Not built | This is new write infrastructure — a tree_edits table and a spatial (not ordinal) tree reference so a re-run does not silently reassign a client's edits — and none of it exists yet. |
+| F15 | **Forest Area Optimization** | Not built | Tiling with a halo bounded by the crown radius is specified (docs/forest-tools-plan.md §2.4) so it can run on Kiru's scale later, but the engine that would do it has not been written. |
+| F16 | **Important Technical Principle** | Not built |  |
+
+> **F1. Tree Detection & Point Feature Extraction** — Automatically detect individual trees from the LiDAR point cloud and elevation surfaces. For every tree, create a point feature storing tree ID, latitude, longitude, tree-top and ground elevation, tree height, crown diameter, crown area, crown perimeter where technically possible, point density and a detection confidence score. Display every tree as a clickable point; clicking opens a popup with every attribute.
+>
+> **F2. Tree Height Calculation** — Calculate tree height as tree-top elevation minus DTM ground elevation, using the DTM as ground reference and the LiDAR point cloud/DSM to identify the canopy — never raw elevation alone. Where possible, generate a Canopy Height Model (CHM = DSM − DTM) and use it with the point cloud for detection.
+>
+> **F3. Individual Tree Segmentation** — Segment individual tree crowns using local maximum/local maxima detection, CHM analysis, watershed segmentation, point-cloud clustering and crown boundary extraction, adapting to the available point density and forest structure so that one tree does not register as several.
+>
+> **F4. Height-Based Tree Classification** — Interactive filtering and classification by detected tree height, with ten default classes from 0–2 m to >15 m. Let the user change class intervals, add/remove classes, define custom ranges, enable/disable individual classes and display each separately on the map, with the tree count updating live as a height filter is applied.
+>
+> **F5. Crown Area & Crown Diameter** — Estimate the horizontal crown extent from the canopy points/CHM: crown area, crown perimeter, maximum crown diameter, minimum crown diameter and average crown diameter. Where the boundary is reliable, store an individual crown polygon as its own GIS feature.
+>
+> **F6. Tree Girth / DBH** — Attempt tree girth only where the point cloud gives sufficient information around the stem. Where it does not, mark the attribute 'Not reliably detectable' rather than generating a false value. Where an estimate is possible, store estimated DBH, estimated girth (= π × DBH) and a DBH confidence score, clearly labelled as estimated.
+>
+> **F7. Forest Visualization** — A GIS map interface showing orthomosaic/RGB imagery, DSM, DTM, CHM, the LiDAR point cloud, individual tree points, individual crown polygons and height-class layers, each independently switchable, with trees styled by graduated symbols or height-based colour.
+>
+> **F8. Tree Attribute Popup** — Clicking a tree opens a panel with tree ID, latitude, longitude, ground elevation, tree-top elevation, tree height, crown area, crown diameter, crown perimeter, estimated DBH/girth or 'Not Available', height class, point density and detection confidence.
+>
+> **F9. Interactive Filtering** — A dedicated tree filter panel: filter by tree height, crown area, crown diameter, elevation, detection confidence, tree ID and a custom height range, plus quick class filters, with the map immediately showing only the matching trees.
+>
+> **F10. Forest Statistics Dashboard** — Summary cards for total detected trees, trees per hectare, average/maximum/minimum tree height, average crown area, total crown-covered area, average and maximum crown diameter and percentage of area covered by canopy. Charts for trees by height class, tree density by hectare, crown-area distribution, tree-height distribution and elevation vs tree height.
+>
+> **F11. Spatial Analysis** — Generate a tree density map, canopy density map, height-class map, crown-area map, individual tree inventory and forest structure map. Provide optional grid-based analysis at 10 m/25 m/50 m, reporting per cell: number of trees, trees/hectare, average and maximum tree height, average crown area and canopy coverage %.
+>
+> **F12. Export Functions** — Export detected tree information as Shapefile, GeoJSON, GeoPackage, CSV and KML/KMZ, for both a tree point layer (ID, latitude, longitude, elevation, height, crown area, crown diameter, DBH/girth where available, height class, confidence) and a crown polygon layer (ID, crown area, crown diameter, height, height class), plus a PDF forest inventory report with maps, statistics, charts and the tree inventory table.
+>
+> **F13. Data Quality & Confidence** — Clearly distinguish measured/directly detected values from estimated values; never create artificial or unreliable attributes. For every tree, a confidence score from LiDAR point density, canopy separation, tree-top prominence, crown segmentation quality and availability of RGB/orthomosaic data. Flag low-confidence trees for manual review.
+>
+> **F14. Manual Editing** — Add a tree manually, delete an incorrectly detected tree, move a tree point, split incorrectly merged trees, merge duplicate detections, edit tree attributes, edit the crown boundary and recalculate crown statistics.
+>
+> **F15. Forest Area Optimization** — Optimise the workflow for large, hilly forest datasets. Use the LiDAR point cloud as the primary source for individual-tree detection, with DTM as ground reference, DSM as surface/canopy reference, CHM for height/canopy analysis and the orthomosaic for visual verification. Process large datasets efficiently using spatial tiling/chunking where required.
+>
+> **F16. Important Technical Principle** — Do not classify every elevated LiDAR point as a tree. Run the full pipeline: ground/non-ground classification → DSM + DTM → CHM → local tree-top detection → individual tree segmentation → crown extraction → tree attribute calculation → height classification → GIS visualization, ending in an interactive, individual-tree forest inventory map.
 
 ## The hydrology module's sixteen layers
 

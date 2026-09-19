@@ -38,7 +38,7 @@
  * A KMZ is a zip with a `.kml` inside it, so that case unwraps and recurses.
  */
 
-import { readZip } from "./zip.mjs";
+import { readZip, writeZip } from "./zip.mjs";
 
 /**
  * Strip XML comments and CDATA-wrap markers, keeping the CDATA content.
@@ -238,4 +238,117 @@ export function readKmz(bytes) {
     throw new Error("that .kmz has no .kml inside it");
   }
   return readKml(chosen.data);
+}
+
+// ---------------------------------------------------------------------------
+// Writing — the forest export tools' entry point (docs/forest-tools-plan.md
+// §7/§12). Nothing in this codebase wrote KML before this; everything above
+// only ever read one.
+//
+// ## Mirrors the reader's own conventions, in reverse
+//
+// - **Longitude first.** `writeKml` takes plain GeoJSON-shaped geometry
+//   (`{ type: "Point"|"Polygon", coordinates }`), which is already lon-then-lat,
+//   so no reordering happens here — the caller is responsible for handing this
+//   function coordinates already in lon/lat, exactly as `readKml` hands them
+//   back. Passing UTM easting/northing here would silently write a file that
+//   opens in Google Earth over the wrong continent, the write-side version of
+//   the trap `readKml`'s header comment describes.
+// - **Always WGS84.** Same reason `readKml` never looks for a `.prj`: KML has
+//   no projection tag, so there is nothing to declare beyond stating it in
+//   words, which the caller's description text does.
+// - **Holes are `innerBoundaryIs`,** the same tag `readKml` already reads back,
+//   so a polygon this writes and then re-reads with `readKml` round-trips.
+// - **No ring-winding flip.** Unlike a shapefile, KML's recommended winding
+//   (counterclockwise outer, clockwise holes as seen from above) already
+//   matches GeoJSON's right-hand rule, so — unlike `shapefile.mjs`'s
+//   `partsOf` — the rings pass through unreversed. Getting this backwards
+//   would be a silent, easy-to-miss mistake precisely because most readers
+//   render either winding the same way; it is called out here so nobody "fixes"
+//   it into a bug later.
+// ---------------------------------------------------------------------------
+
+function escapeXml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/** One ring, `lon,lat,0` tuples space separated — the exact shape `coordinates` reads. */
+function coordinateRun(ring) {
+  return ring.map(([lon, lat]) => `${lon},${lat},0`).join(" ");
+}
+
+function ringTag(tag, ring) {
+  return `<${tag}><LinearRing><coordinates>${coordinateRun(ring)}</coordinates></LinearRing></${tag}>`;
+}
+
+/** One geometry object to its KML tag. Point, Polygon (with holes) and MultiPolygon. */
+function geometryTag(geometry) {
+  if (!geometry) return "";
+  if (geometry.type === "Point") {
+    const [lon, lat] = geometry.coordinates;
+    return `<Point><coordinates>${lon},${lat},0</coordinates></Point>`;
+  }
+  if (geometry.type === "Polygon") {
+    const [outer, ...holes] = geometry.coordinates;
+    return (
+      `<Polygon>${ringTag("outerBoundaryIs", outer)}` +
+      `${holes.map((h) => ringTag("innerBoundaryIs", h)).join("")}</Polygon>`
+    );
+  }
+  if (geometry.type === "MultiPolygon") {
+    return (
+      `<MultiGeometry>${geometry.coordinates
+        .map((poly) => geometryTag({ type: "Polygon", coordinates: poly }))
+        .join("")}</MultiGeometry>`
+    );
+  }
+  throw new Error(`writeKml: unsupported geometry type "${geometry.type}"`);
+}
+
+function placemarkFor(feature) {
+  const { properties = {}, geometry } = feature;
+  const name = properties.name != null ? `<name>${escapeXml(String(properties.name))}</name>` : "";
+  // The description is written as CDATA, unescaped, the same way `readKml`
+  // decodes entities back out of it (see `decode` above) — so a caller handing
+  // in an HTML popup balloon (a table of a tree's attributes, say) gets exactly
+  // that balloon in Google Earth, not a wall of escaped `&lt;tr&gt;` text.
+  const description =
+    properties.description != null
+      ? `<description><![CDATA[${properties.description}]]></description>`
+      : "";
+  return `<Placemark>${name}${description}${geometryTag(geometry)}</Placemark>`;
+}
+
+/**
+ * Write a KML document from plain GeoJSON-shaped features.
+ *
+ * @param {{ properties?: { name?: string, description?: string }, geometry: object }[]} features
+ * @param {{ documentName?: string }} [options]
+ * @returns {string}
+ */
+export function writeKml(features, { documentName = "Export" } = {}) {
+  const placemarks = features.map(placemarkFor).join("\n");
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<kml xmlns="http://www.opengis.net/kml/2.2"><Document>\n` +
+    `<name>${escapeXml(documentName)}</name>\n` +
+    `${placemarks}\n` +
+    `</Document></kml>\n`
+  );
+}
+
+/**
+ * The same document, wrapped as a KMZ — a zip whose one entry is `doc.kml`,
+ * exactly the shape `readKmz` looks for at the root of the archive.
+ *
+ * @param {Parameters<typeof writeKml>[0]} features
+ * @param {Parameters<typeof writeKml>[1]} [options]
+ * @returns {Buffer}
+ */
+export function writeKmz(features, options = {}) {
+  const kml = writeKml(features, options);
+  return writeZip([{ name: "doc.kml", data: Buffer.from(kml, "utf8") }]);
 }

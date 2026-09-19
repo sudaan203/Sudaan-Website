@@ -106,6 +106,31 @@ import {
 import type { CloudManifest } from "@/lib/portal/cloud-source";
 import { PointCloudLayer } from "@/lib/portal/point-cloud-layer";
 import type { ToolGroupKey } from "@/lib/portal/tool-catalogue";
+import {
+  ForestClient,
+  ForestClientError,
+  axisDomain,
+  confidenceStats,
+  DEFAULT_FILTERS,
+  filterTrees,
+  isRealForestRun,
+  loadHeightClasses,
+  saveHeightClasses,
+  utmZoneFromEpsg,
+  epsgFromCrowns,
+  type CrownProperties,
+  type ForestManifestClient,
+  type ForestSummaryClient,
+  type HeightClassDef,
+  type TreeFilters,
+  type TreeRecord,
+} from "@/lib/portal/forest-client";
+import { ForestLayer } from "@/lib/portal/forest-layer";
+import { TreeFilterPanel, type AxisDomains } from "./TreeFilterPanel";
+import { ForestStatsPanel } from "./ForestStatsPanel";
+import { TreePopup } from "./TreePopup";
+import { ForestExportPanel } from "./ForestExportPanel";
+import { CHM_RAMP } from "@/lib/geo/elevation-image.mjs";
 
 /**
  * The survey map: georeferenced deliverables drawn over each other, with the
@@ -3687,6 +3712,254 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     }
   }, [cloud, cloudControls, ready, siteSlug]);
 
+  // ---- the forest inventory ------------------------------------------------
+
+  /**
+   * Forest is a batch product, exactly like hydrology and the point cloud
+   * above it: `forest-run.mjs` writes a directory once, offline, and this
+   * file only ever reads what it wrote. `forest-client.ts` owns the fetching
+   * and decoding, `forest-layer.ts` owns the MapLibre drawing, and this file
+   * gains the state and the mount point, not the logic — see both files'
+   * own header comments for what precedent each followed and why.
+   */
+  const forestClient = useRef<ForestClient>(null as unknown as ForestClient);
+  if (!forestClient.current) forestClient.current = new ForestClient(siteSlug);
+
+  const [forestManifest, setForestManifest] = useState<ForestManifestClient | null>(null);
+  const [forestSummary, setForestSummary] = useState<ForestSummaryClient | null>(null);
+  /** Set only for a real failure (an "incomplete" inventory) — a "missing"
+   * one is the ordinary, silent case every survey without a forest
+   * department is in, exactly like the point cloud probe above. */
+  const [forestUnavailable, setForestUnavailable] = useState<string | null>(null);
+  const [heightClassDefs, setHeightClassDefsState] = useState<HeightClassDef[]>([]);
+  const [treeFilters, setTreeFilters] = useState<TreeFilters>(DEFAULT_FILTERS);
+  const [trees, setTreesState] = useState<TreeRecord[]>([]);
+  const [crownsCollection, setCrownsCollection] = useState<GeoJSON.FeatureCollection<
+    GeoJSON.Polygon,
+    CrownProperties
+  > | null>(null);
+  const crownsById = useRef<Map<string, CrownProperties>>(new Map());
+  const [selectedTree, setSelectedTree] = useState<CrownProperties | null>(null);
+  const [showTreePoints, setShowTreePoints] = useState(true);
+  const [showCrowns, setShowCrowns] = useState(false);
+  const [crownColourByClass, setCrownColourByClass] = useState(false);
+  const [forestMode, setForestMode] = useState<"off" | "points" | "crowns" | "filter" | "stats">(
+    "off",
+  );
+  const forestLayerRef = useRef<ForestLayer | null>(null);
+  /** Forwarding ref for the same reason `askHydrologyRef` exists below: the
+   * click handler is registered when the layer mounts, well before
+   * `setInspector` is declared further down this function, and reassigning
+   * `.current` once everything it needs is in scope avoids depending on a
+   * binding that does not exist yet at the point the layer is created. */
+  const forestClickRef = useRef<(feature: { properties?: Record<string, unknown> | null }) => void>(
+    () => {},
+  );
+
+  /** A client's edited height bands are per site, per device (§5.4) — saved
+   * on every edit through this wrapper rather than a separate effect, so a
+   * rapid sequence of edits cannot race its own persistence. */
+  const setHeightClassDefs = useCallback(
+    (next: HeightClassDef[]) => {
+      setHeightClassDefsState(next);
+      saveHeightClasses(siteSlug, next);
+    },
+    [siteSlug],
+  );
+
+  /**
+   * Ask once whether this survey has a forest inventory, exactly as the
+   * terrain and point-cloud probes do, and for the same reason: detection is
+   * an operator step (`forest-run.mjs`), not a deliverable every survey has.
+   * Chained rather than parallel — the crown CRS is needed before `trees.bin`
+   * can be reprojected — but each stage still commits what it has as soon as
+   * it arrives, so a slow `trees.bin` fetch does not delay the manifest and
+   * summary from being usable.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    setForestManifest(null);
+    setForestSummary(null);
+    setForestUnavailable(null);
+    setTreesState([]);
+    setCrownsCollection(null);
+    crownsById.current = new Map();
+    setSelectedTree(null);
+
+    void (async () => {
+      try {
+        const info = await forestClient.current.info();
+        if (cancelled) return;
+        setForestManifest(info.manifest);
+        setForestSummary(info.summary);
+        setHeightClassDefsState(loadHeightClasses(siteSlug, info.defaultHeightClasses));
+        setTreeFilters(DEFAULT_FILTERS);
+
+        const crowns = await forestClient.current.crowns();
+        if (cancelled) return;
+        setCrownsCollection(crowns);
+        const byId = new Map<string, CrownProperties>();
+        for (const f of crowns.features) byId.set(f.properties.tree_id, f.properties);
+        crownsById.current = byId;
+
+        const zone = utmZoneFromEpsg(epsgFromCrowns(crowns));
+        if (!zone) {
+          setForestUnavailable("This survey's forest data is not in a recognised UTM zone.");
+          return;
+        }
+        const decoded = await forestClient.current.trees(zone.zone, zone.northern);
+        if (!cancelled) setTreesState(decoded);
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ForestClientError) {
+          // "missing" is the ordinary case (no forest department for this
+          // survey) and stays silent; only "incomplete" is a real failure
+          // worth a message.
+          if (error.reason === "incomplete") setForestUnavailable(error.message);
+        } else {
+          console.error("[portal map] the forest inventory failed to load", error);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [siteSlug]);
+
+  /**
+   * Real detection, not the engine's own test fixture — see
+   * `isRealForestRun`'s own comment in `forest-client.ts` for the exact
+   * heuristic and why `counts.candidates` rather than `counts.accepted` is
+   * the field it reads.
+   */
+  const hasForest = forestManifest !== null && isRealForestRun(forestManifest);
+  const forestUnavailableReason = !forestManifest
+    ? (forestUnavailable ?? undefined)
+    : !hasForest
+      ? "This survey only has the engine's own test-fixture run (a handful of candidate boxes, not a real detection pass), so no forest inventory is shown."
+      : undefined;
+
+  /** Computed once from the *whole* inventory, never the filtered view, so a
+   * tree's colour and opacity mean the same thing regardless of which
+   * filters are active — see `forest-layer.ts`'s own header comment. */
+  const heightDomain = useMemo<[number, number]>(
+    () => (trees.length ? axisDomain(trees, "height") : [0, 30]),
+    [trees],
+  );
+  const confidenceDomain = useMemo<[number, number]>(
+    () => (trees.length ? axisDomain(trees, "confidence") : [0, 1]),
+    [trees],
+  );
+  const confidence = useMemo(() => confidenceStats(trees), [trees]);
+  const axisDomains: AxisDomains = useMemo(
+    () => ({
+      height: axisDomain(trees, "height"),
+      crownArea: axisDomain(trees, "crownArea"),
+      crownDiameter: axisDomain(trees, "crownDiameter"),
+      elevation: axisDomain(trees, "groundElevation"),
+      confidence: axisDomain(trees, "confidence"),
+    }),
+    [trees],
+  );
+
+  const filteredTrees = useMemo(
+    () => filterTrees(trees, treeFilters, heightClassDefs),
+    [trees, treeFilters, heightClassDefs],
+  );
+  const filteredTreeIds = useMemo(() => new Set(filteredTrees.map((t) => t.id)), [filteredTrees]);
+  const filteredCrowns = useMemo(() => {
+    if (!crownsCollection) return null;
+    return {
+      ...crownsCollection,
+      features: crownsCollection.features.filter((f) => filteredTreeIds.has(f.properties.tree_id)),
+    };
+  }, [crownsCollection, filteredTreeIds]);
+
+  /** Mount the forest layer once and leave it mounted, exactly like the point
+   * cloud's own custom layer — only `destroy`ed when the survey changes or
+   * this component unmounts (the effect below), never on every filter
+   * change. */
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready || !hasForest || forestLayerRef.current) return;
+    const layer = new ForestLayer(instance);
+    layer.mount({ heightDomain, confidenceDomain });
+    layer.onTreeClick((feature) => forestClickRef.current(feature));
+    forestLayerRef.current = layer;
+  }, [ready, hasForest, heightDomain, confidenceDomain]);
+
+  useEffect(() => {
+    return () => {
+      forestLayerRef.current?.destroy();
+      forestLayerRef.current = null;
+    };
+  }, [siteSlug]);
+
+  useEffect(() => {
+    forestLayerRef.current?.setTrees(filteredTrees);
+  }, [filteredTrees]);
+
+  useEffect(() => {
+    if (filteredCrowns) forestLayerRef.current?.setCrowns(filteredCrowns);
+  }, [filteredCrowns]);
+
+  useEffect(() => {
+    forestLayerRef.current?.setVisible({ points: showTreePoints, crowns: showCrowns });
+  }, [showTreePoints, showCrowns]);
+
+  useEffect(() => {
+    if (crownColourByClass) forestLayerRef.current?.setCrownColourByClass(heightClassDefs);
+    else forestLayerRef.current?.setCrownColourByHeight(heightDomain);
+  }, [crownColourByClass, heightClassDefs, heightDomain]);
+
+  /**
+   * The CHM tile layer (F7), appended to the rendered-layer list once the
+   * forest manifest is known.
+   *
+   * Deliberately its own small effect rather than folded into the
+   * terrain/hydrology-driven one above: that effect runs earlier in this
+   * function's render order than the forest state declared here exists, and
+   * duplicating its whole dependency chain just to add one more layer would
+   * be a bigger edit than appending to what it already produced.
+   *
+   * It depends on `renderable` itself, not only on the forest state, because
+   * that earlier effect periodically *replaces the whole array*
+   * (`setRenderable(out)`, wholesale) whenever the probe or the hydrology
+   * layer list changes — which would silently drop this entry the next time
+   * either fires, with nothing here to notice. Watching `renderable` lets
+   * this effect re-add "chm" the moment that happens. The `existing.max ===
+   * maxHeight` guard is what stops that same dependency from looping forever:
+   * once the entry is present and correct, this effect becomes a no-op on
+   * its own next run rather than calling `setState` with a new array every
+   * time `renderable` changes because of it.
+   */
+  useEffect(() => {
+    const maxHeight = Math.max(4, Math.ceil(forestSummary?.height.max ?? 30));
+    const existing = renderable.find((l) => l.key === "chm");
+    if (!forestManifest) {
+      if (existing) setRenderable((prev) => prev.filter((l) => l.key !== "chm"));
+      return;
+    }
+    if (existing && existing.max === maxHeight) return;
+    setRenderable((prev) => [
+      ...prev.filter((l) => l.key !== "chm"),
+      {
+        key: "chm",
+        title: "Canopy height (forest analysis grid)",
+        unit: "m",
+        description:
+          "DSM minus DTM, clipped at zero and pit-filled on the forest engine's own 0.25 m " +
+          'analysis grid -- not the same layer as "Surface minus terrain" above, which is ' +
+          "unclipped and on the survey's native grid.",
+        min: 0,
+        max: maxHeight,
+        ramp: CHM_RAMP,
+        relief: true,
+        logarithmic: false,
+      },
+    ]);
+  }, [renderable, forestManifest, forestSummary]);
+
   // ---- the tool rail ------------------------------------------------------
 
   /**
@@ -3708,8 +3981,24 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
    * attention.
    */
   const [inspector, setInspector] = useState<
-    "tool" | "layers" | "water" | "shapefile" | "flood"
+    "tool" | "layers" | "water" | "forest" | "shapefile" | "flood"
   >("layers");
+
+  /**
+   * Assigned here rather than where `forestClickRef` is declared, for the
+   * same reason `askHydrologyRef` is assigned well after `askHydrology`
+   * exists: `setInspector` is declared on the line above, and a click on a
+   * tree should open this segment the same way every other click-driven
+   * readout in this file already does.
+   */
+  forestClickRef.current = (feature) => {
+    const id = (feature.properties as { id?: string } | null | undefined)?.id;
+    const crown = id ? crownsById.current.get(id) : undefined;
+    if (crown) {
+      setSelectedTree(crown);
+      setInspector("forest");
+    }
+  };
 
   /** The keys of the layers this survey can actually render, for the rail. */
   const renderableKeys = useMemo(() => renderable.map((l) => l.key), [renderable]);
@@ -3735,10 +4024,12 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           ? { kind: "hydrology", mode: hydroMode }
           : sinks
             ? { kind: "sinks" }
-            : activeRender
-              ? { kind: "layer", layer: activeRender }
-              : null,
-    [mode, volumeOp, alignmentControls.op, compareOp, hydroMode, sinks, activeRender],
+            : forestMode !== "off"
+              ? { kind: "forest", mode: forestMode }
+              : activeRender
+                ? { kind: "layer", layer: activeRender }
+                : null,
+    [mode, volumeOp, alignmentControls.op, compareOp, hydroMode, sinks, forestMode, activeRender],
   );
 
   /**
@@ -3785,12 +4076,15 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         (action.kind !== "hydrology" ||
           (railAction.kind === "hydrology" && railAction.mode === action.mode)) &&
         (action.kind !== "layer" ||
-          (railAction.kind === "layer" && railAction.layer === action.layer));
+          (railAction.kind === "layer" && railAction.layer === action.layer)) &&
+        (action.kind !== "forest" ||
+          (railAction.kind === "forest" && railAction.mode === action.mode));
 
       // Pressing the tool that is already on turns it off, which is how the
       // toolbar behaved before and is the only way to get back to plain panning.
       if (already) {
         if (action.kind === "measure") setMode("off");
+        else if (action.kind === "forest") setForestMode("off");
         else if (action.kind === "hydrology") setHydroMode("off");
         else if (action.kind === "layer") setActiveRender(null);
         else clearHydrology();
@@ -3836,6 +4130,19 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           // not turn a measurement off. It is here so the rail can offer tools
           // 14 and 25, which are layers rather than actions.
           setActiveRender(action.layer);
+          break;
+        case "forest":
+          setInspector("forest");
+          setMode("off");
+          setHydroMode("off");
+          setForestMode(action.mode);
+          // A nicety, not a requirement: pressing "tree points" or "crown
+          // polygons" turns that layer on if it was off, the same way
+          // pressing "Inspect" does not require the water layer already be
+          // visible. The filter and stats modes have no layer of their own
+          // to flip.
+          if (action.mode === "points") setShowTreePoints(true);
+          if (action.mode === "crowns") setShowCrowns(true);
           break;
       }
     },
@@ -3970,6 +4277,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         probing={probe.state === "checking"}
         unavailable={probe.state === "unavailable" ? probe.message : undefined}
         hasHydrology={Boolean(hydro)}
+        hasForest={hasForest}
+        forestUnavailableReason={forestUnavailableReason}
         renderable={renderableKeys}
         hint={
           floodPicking ? (
@@ -4090,6 +4399,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   ["tool", "Tool"],
                   ["layers", "Layers"],
                   ...(hydro ? ([["water", "Water"]] as const) : []),
+                  ...(hasForest ? ([["forest", "Forest"]] as const) : []),
                   ["shapefile", "Shapefile"],
                   ["flood", "Flood"],
                 ] as const
@@ -4234,6 +4544,49 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   error={hydroError}
                   onClear={clearHydrology}
                 />
+              ) : null}
+
+              {inspector === "forest" && hasForest ? (
+                <div className="space-y-4">
+                  {selectedTree ? (
+                    <div className="border-b border-ink/[0.07] pb-4">
+                      <TreePopup tree={selectedTree} onClose={() => setSelectedTree(null)} />
+                    </div>
+                  ) : null}
+                  <TreeFilterPanel
+                    totalCount={trees.length}
+                    filteredCount={filteredTrees.length}
+                    filters={treeFilters}
+                    setFilters={setTreeFilters}
+                    domains={axisDomains}
+                    classDefs={heightClassDefs}
+                    setClassDefs={setHeightClassDefs}
+                    showPoints={showTreePoints}
+                    setShowPoints={setShowTreePoints}
+                    showCrowns={showCrowns}
+                    setShowCrowns={setShowCrowns}
+                    crownColourByClass={crownColourByClass}
+                    setCrownColourByClass={setCrownColourByClass}
+                  />
+                  {forestManifest && forestSummary ? (
+                    <div className="border-t border-ink/[0.07] pt-4">
+                      <ForestStatsPanel
+                        manifest={forestManifest}
+                        summary={forestSummary}
+                        confidence={confidence}
+                        trees={trees}
+                      />
+                    </div>
+                  ) : null}
+                  <div className="border-t border-ink/[0.07] pt-4">
+                    <ForestExportPanel
+                      siteSlug={siteSlug}
+                      filters={treeFilters}
+                      matchedCount={filteredTrees.length}
+                      totalCount={trees.length}
+                    />
+                  </div>
+                </div>
               ) : null}
 
               {inspector === "shapefile" ? (

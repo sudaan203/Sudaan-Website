@@ -194,3 +194,39 @@ export const accessChanges = pgTable("access_changes", {
   detail: jsonb("detail"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * A single delta against the precomputed forest inventory (`docs/forest-tools-plan.md`
+ * §6). See drizzle/0005_forest_edits.sql for why `treeId` is a bare text column
+ * rather than a foreign key, and why the site is what everything is scoped to.
+ */
+export const forestEdits = pgTable(
+  "forest_edits",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    /** The durable spatial-hash id from `scripts/forest-run.mjs`, or null for an `add`. */
+    treeId: text("tree_id"),
+    operation: text("operation", {
+      enum: [
+        "add",
+        "delete",
+        "move",
+        "split",
+        "merge",
+        "edit_attributes",
+        "edit_crown",
+        "recalculate",
+      ],
+    }).notNull(),
+    payload: jsonb("payload").notNull().default({}),
+    authorId: uuid("author_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("forest_edits_site_idx").on(table.siteId, table.createdAt),
+    index("forest_edits_site_tree_idx").on(table.siteId, table.treeId),
+  ],
+);

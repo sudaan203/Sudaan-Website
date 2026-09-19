@@ -16,7 +16,8 @@ type PortalEvent =
   | "view_asset"
   | "view_map"
   | "denied"
-  | "admin_change";
+  | "admin_change"
+  | "forest_edit";
 
 export function logPortalEvent(event: PortalEvent, detail: Record<string, unknown>) {
   const line = { at: new Date().toISOString(), event, ...detail };

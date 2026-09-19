@@ -14,6 +14,7 @@
  *
  *   terrain-source.ts    `<slug>/dtm.tif`
  *   hydrology-source.ts  `<slug>/hydrology/<file>`
+ *   forest-source.ts     `<slug>/forest/<file>`
  *   cloud-source.ts      `<slug>/cloud/cloud.json`
  *
  * Map and terrain therefore share the site root, which is why a prune cannot
@@ -56,6 +57,15 @@ export const CLASSES = [
   { name: "map", dir: (slug) => join("portal-data", "map", slug), prefix: "" },
   { name: "terrain", dir: (slug) => join("portal-data", "terrain", slug), prefix: "" },
   { name: "hydrology", dir: (slug) => join("portal-data", "hydrology", slug), prefix: "hydrology" },
+  /*
+   * The fifth class, and the same reasoning as hydrology's: forest-source.ts
+   * reads from sites/<slug>/forest/ rather than the site root because
+   * forest-run.mjs writes its own manifest.json, and the site root already has
+   * one — the published map pyramid's. Uploading forest flat would silently
+   * replace the map's manifest, and the symptom would be the map losing its
+   * layers, with nothing in that symptom mentioning forest.
+   */
+  { name: "forest", dir: (slug) => join("portal-data", "forest", slug), prefix: "forest" },
   { name: "cloud", dir: (slug) => join("portal-data", "cloud", slug), prefix: "cloud" },
   { name: "source", dir: sourceDir, prefix: "source", archive: true },
 ];

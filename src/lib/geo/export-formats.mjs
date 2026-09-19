@@ -58,6 +58,82 @@ export function pointsToCsv(points, { epsg, decimals = 3, label = "Spot levels" 
   return lines.join("\n") + "\n";
 }
 
+/**
+ * Forest inventory CSV — tree points, `docs/forest-tools-plan.md` §12.
+ *
+ * A separate function from `pointsToCsv` rather than an extension of it: a
+ * tree's columns (height class, DBH-or-refusal, confidence) have nothing to
+ * do with a spot level's, and bending one function to both shapes would mean
+ * an `options` bag that silently changes which columns appear. One function
+ * per format-and-shape is this file's own convention already — `pointsToCsv`
+ * and `profileToCsv` are both CSV and both stay separate for the same reason.
+ *
+ * `records` are plain objects (`{ treeId, lat, lon, elevation, height,
+ * crownArea, crownDiameter, dbhOrGirth, heightClass, confidence }`), built by
+ * `forest-export.mjs` from a `crowns.geojson` feature — this function only
+ * formats what it is handed, so it stays usable from a script or a route
+ * without depending on the shape of the raw feature file.
+ */
+export function treePointsToCsv(records, { epsg, decimals = 3 } = {}) {
+  if (!epsg) throw new Error("treePointsToCsv: epsg is required, an unprojected CSV is unusable");
+  const lines = [
+    `# Forest inventory — tree points`,
+    `# Latitude/longitude are WGS84 (EPSG:4326). The survey itself was surveyed in EPSG:${epsg}.`,
+    `# Generated ${new Date().toISOString()}`,
+    "tree_id,latitude,longitude,elevation_m,height_m,crown_area_m2,crown_diameter_m,dbh_or_girth,height_class,confidence",
+  ];
+  for (const t of records) {
+    lines.push(
+      [
+        csvCell(t.treeId),
+        t.lat.toFixed(7),
+        t.lon.toFixed(7),
+        t.elevation === null ? "" : t.elevation.toFixed(decimals),
+        t.height === null ? "" : t.height.toFixed(decimals),
+        t.crownArea === null ? "" : t.crownArea.toFixed(decimals),
+        t.crownDiameter === null ? "" : t.crownDiameter.toFixed(decimals),
+        csvCell(t.dbhOrGirth),
+        csvCell(t.heightClass ?? ""),
+        t.confidence === null ? "" : t.confidence.toFixed(4),
+      ].join(","),
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * Forest inventory CSV — crown polygons, `docs/forest-tools-plan.md` §12.
+ *
+ * No coordinate columns at all: Malhar's own column set for the crown layer
+ * (Tree ID, Crown Area, Crown Diameter, Height, Height Class) carries no
+ * position, because the polygon geometry itself *is* the position, and a CSV
+ * cannot hold a polygon. Stating the projection is still the rule every writer
+ * here follows, so the header says which CRS the shape was measured in even
+ * though this file does not carry the shape.
+ */
+export function crownPolygonsToCsv(records, { epsg, decimals = 3 } = {}) {
+  if (!epsg) throw new Error("crownPolygonsToCsv: epsg is required");
+  const lines = [
+    `# Forest inventory — crown polygons`,
+    `# This CSV has no coordinates (a polygon shape does not fit a row); the crown geometry ` +
+      `itself was measured in EPSG:${epsg}. Use the SHP, GeoJSON or KML export for the shapes.`,
+    `# Generated ${new Date().toISOString()}`,
+    "tree_id,height_m,crown_area_m2,crown_diameter_m,height_class",
+  ];
+  for (const t of records) {
+    lines.push(
+      [
+        csvCell(t.treeId),
+        t.height === null ? "" : t.height.toFixed(decimals),
+        t.crownArea === null ? "" : t.crownArea.toFixed(decimals),
+        t.crownDiameter === null ? "" : t.crownDiameter.toFixed(decimals),
+        csvCell(t.heightClass ?? ""),
+      ].join(","),
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
 /** A profile as CSV: chainage first, which is how a section is read. */
 export function profileToCsv(profileResult, { epsg, decimals = 3 } = {}) {
   if (!epsg) throw new Error("profileToCsv: epsg is required");

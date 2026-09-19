@@ -41,19 +41,31 @@ const H = {
  * come along for free. Formats 6 to 10 moved the classification byte and widened
  * the return fields, which is why they are described separately rather than
  * assumed.
+ *
+ * `returns` is the byte offset of the return-number / number-of-returns field.
+ * It happens to sit at byte 14 in every format here, legacy or not — what
+ * differs between the two families is not *where* the byte is but how many
+ * bits of it mean what: a legacy record packs 3 bits of return number and 3
+ * bits of return count (plus a scan-direction flag and an edge-of-flight-line
+ * flag in the remaining two), while formats 6+ widen both fields to 4 bits
+ * each and move the scan/edge flags to their own byte at 15. Recorded here
+ * anyway, alongside `classification`, so a reader never has to remember "14"
+ * separately from the table that already carries every other format-dependent
+ * offset — the same reason `classification`'s offset is listed per format even
+ * though only two distinct values ever appear.
  */
 const FORMATS = {
-  0: { rgb: null, classification: 15, legacy: true },
-  1: { rgb: null, classification: 15, legacy: true },
-  2: { rgb: 20, classification: 15, legacy: true },
-  3: { rgb: 28, classification: 15, legacy: true },
-  4: { rgb: null, classification: 15, legacy: true },
-  5: { rgb: 28, classification: 15, legacy: true },
-  6: { rgb: null, classification: 16, legacy: false },
-  7: { rgb: 30, classification: 16, legacy: false },
-  8: { rgb: 30, classification: 16, legacy: false },
-  9: { rgb: null, classification: 16, legacy: false },
-  10: { rgb: 30, classification: 16, legacy: false },
+  0: { rgb: null, classification: 15, returns: 14, legacy: true },
+  1: { rgb: null, classification: 15, returns: 14, legacy: true },
+  2: { rgb: 20, classification: 15, returns: 14, legacy: true },
+  3: { rgb: 28, classification: 15, returns: 14, legacy: true },
+  4: { rgb: null, classification: 15, returns: 14, legacy: true },
+  5: { rgb: 28, classification: 15, returns: 14, legacy: true },
+  6: { rgb: null, classification: 16, returns: 14, legacy: false },
+  7: { rgb: 30, classification: 16, returns: 14, legacy: false },
+  8: { rgb: 30, classification: 16, returns: 14, legacy: false },
+  9: { rgb: null, classification: 16, returns: 14, legacy: false },
+  10: { rgb: 30, classification: 16, returns: 14, legacy: false },
 };
 
 /**
@@ -213,12 +225,27 @@ async function readCrs(file, headerSize, count) {
  * numbers rather than an object literal per point, because at fifty million
  * points an allocation per point is the difference between a minute and ten.
  *
- * `onPoint(x, y, z, r, g, b, classification, intensity)` where x, y and z are in
- * the file's own CRS and r, g, b are 0..255. A file with no colour reports r, g
- * and b as -1 rather than as black, so a caller can tell "unlit" from "dark".
+ * `onPoint(x, y, z, r, g, b, classification, intensity, returnNumber,
+ * numberOfReturns)` where x, y and z are in the file's own CRS and r, g, b are
+ * 0..255. A file with no colour reports r, g and b as -1 rather than as
+ * black, so a caller can tell "unlit" from "dark".
+ *
+ * `returnNumber` and `numberOfReturns` were dropped by an earlier version of
+ * this reader — decoded nowhere, silently unavailable to every caller — which
+ * is exactly backwards for a forestry use: canopy porosity (does the pulse
+ * pass through, or stop at a roof?) is read straight off these two fields, and
+ * `docs/forest-tools-plan.md` §1.1 calls the 31% multi-return rate on
+ * Ektanagar 1 "the single most important fact in this document". Both are
+ * `1` for a single-return pulse and count up for foliage the laser penetrates.
+ * Decoded like `classification` already was: the byte offset is the same for
+ * every format (`FORMATS[...].returns`, always 14), but the bit width is not
+ * — a legacy record (0-5) packs 3 bits each; formats 6+ widened both fields to
+ * 4 bits and moved the scan-direction/edge-of-flight-line flags off this byte
+ * entirely, which is why the mask differs by `layout.legacy` exactly the way
+ * `classification`'s mask already does.
  *
  * @param {string} path
- * @param {(x:number,y:number,z:number,r:number,g:number,b:number,classification:number,intensity:number)=>void} onPoint
+ * @param {(x:number,y:number,z:number,r:number,g:number,b:number,classification:number,intensity:number,returnNumber:number,numberOfReturns:number)=>void} onPoint
  * @param {{ chunkBytes?: number, onProgress?: (done:number,total:number)=>void }} [options]
  */
 export async function streamLasPoints(path, onPoint, options = {}) {
@@ -278,7 +305,14 @@ export async function streamLasPoints(path, onPoint, options = {}) {
           g = buffer.readUInt16LE(at + layout.rgb + 2) >> colourShift;
           b = buffer.readUInt16LE(at + layout.rgb + 4) >> colourShift;
         }
-        onPoint(x, y, z, r, g, b, classification, intensity);
+        // Legacy: bits 0-2 return number, bits 3-5 number of returns (bits 6-7
+        // are the scan-direction flag and edge-of-flight-line, not read here).
+        // Formats 6+: the field widened to 4 bits each, occupying the whole
+        // nibble pair, with the scan/edge flags moved to their own byte.
+        const returnByte = buffer[at + layout.returns];
+        const returnNumber = layout.legacy ? returnByte & 0x07 : returnByte & 0x0f;
+        const numberOfReturns = layout.legacy ? (returnByte >> 3) & 0x07 : (returnByte >> 4) & 0x0f;
+        onPoint(x, y, z, r, g, b, classification, intensity, returnNumber, numberOfReturns);
       }
 
       done += got;
