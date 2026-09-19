@@ -125,7 +125,7 @@ export function TreePopup({ tree, onClose }: { tree: CrownProperties; onClose: (
           </tbody>
         </table>
         <p className="text-[10px] leading-snug text-ink/45">
-          A component marked "not available" was not scored for or against this tree — a
+          A component marked &ldquo;not available&rdquo; was not scored for or against this tree — a
           missing sensor (no point cloud, no orthomosaic) rather than a bad reading — and the
           overall score above is the weighted average of only the components that were.
         </p>
