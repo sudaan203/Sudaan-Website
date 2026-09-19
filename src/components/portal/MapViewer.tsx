@@ -547,7 +547,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       shapefileDraw.current = [...shapefileDraw.current, [lon, lat]];
       redrawShapefileDraw();
     },
-    [redrawShapefileFeatures, redrawShapefileDraw],
+    [redrawShapefileFeatures, redrawShapefileDraw, syncDrawnLayers],
   );
   const shapefileClickRef = useRef<(lon: number, lat: number) => void>(() => {});
   shapefileClickRef.current = handleShapefileClick;
@@ -584,7 +584,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     redrawShapefileDraw();
     redrawShapefileFeatures(drawnLayersRef.current);
     syncDrawnLayers();
-  }, [redrawShapefileDraw, redrawShapefileFeatures]);
+  }, [redrawShapefileDraw, redrawShapefileFeatures, syncDrawnLayers]);
   const shapefileDblClickRef = useRef(() => {});
   shapefileDblClickRef.current = finishShapefileDraw;
 
@@ -596,7 +596,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     redrawShapefileFeatures(drawnLayersRef.current);
     syncDrawnLayers();
     redrawShapefileDraw();
-  }, [redrawShapefileFeatures, redrawShapefileDraw]);
+  }, [redrawShapefileFeatures, redrawShapefileDraw, syncDrawnLayers]);
 
   /** Tool download: explicit request, like every other export in this portal. */
   const downloadShapefile = useCallback(async () => {
