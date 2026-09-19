@@ -15,7 +15,7 @@ import {
   snapToChannel,
   watershedFrom,
 } from "@/lib/geo/hydrology.mjs";
-import { groupRingsIntoPolygons, polygonize } from "@/lib/geo/vectorise.mjs";
+import { groupRingsIntoPolygons, polygonize, polygonizeComponents } from "@/lib/geo/vectorise.mjs";
 
 export const runtime = "nodejs";
 
@@ -312,32 +312,92 @@ export async function POST(
       /**
        * Tool 27. Depressions deep enough to matter, from the fill step.
        */
+      /**
+       * Tool 27. Every depression, measured one at a time.
+       *
+       * This used to dissolve the whole mask into a single MultiPolygon and
+       * hang the *totals* on it — so an exported file said every depression
+       * held 4,200 m3, because that was the storage of all of them together.
+       * One feature carrying an aggregate is not a rounder answer than one
+       * feature per depression; it is a wrong number repeated.
+       *
+       * Now the mask is labelled into connected patches first, the per-cell
+       * depths are accumulated per label in one pass, and each patch comes back
+       * as its own feature with its own area, storage and deepest point. The
+       * totals are still reported, beside them, because the panel reads those
+       * and a client asking "how much water does this site pond" is asking
+       * about the sum.
+       */
       case "sinks": {
         const minDepth = Number(body.minDepth) > 0 ? Number(body.minDepth) : 0.25;
         const sinks = await hydro.grid("sinks");
         const mask = sinks.like(Uint8Array, 0, 255);
-        let cells = 0;
-        let volume = 0;
-        let deepest = 0;
         for (let i = 0; i < sinks.length; i += 1) {
           const d = sinks.data[i];
-          if (sinks.isNoData(d) || !(d >= minDepth)) continue;
-          mask.data[i] = 1;
-          cells += 1;
-          volume += d * sinks.cellArea;
-          if (d > deepest) deepest = d;
+          mask.data[i] = !sinks.isNoData(d) && d >= minDepth ? 1 : 0;
         }
+
+        const { labels, components } = polygonizeComponents(mask, sinks);
+
+        // One pass, every depression. Deepest is a max and the rest are sums,
+        // so this is the same shape as every other reduction in the portal.
+        const per = components.map(() => ({ cells: 0, storage: 0, deepest: 0 }));
+        for (let i = 0; i < sinks.length; i += 1) {
+          const label = labels[i];
+          if (label < 0) continue;
+          const d = sinks.data[i];
+          const p = per[label];
+          p.cells += 1;
+          p.storage += d * sinks.cellArea;
+          if (d > p.deepest) p.deepest = d;
+        }
+
+        const features = components.map(({ label, rings }, index) => {
+          const p = per[label];
+          return {
+            type: "Feature" as const,
+            properties: {
+              kind: "depression",
+              depression_id: index + 1,
+              area_m2: Number((p.cells * sinks.cellArea).toFixed(3)),
+              area_ha: Number(((p.cells * sinks.cellArea) / 10000).toFixed(5)),
+              storage_m3: Number(p.storage.toFixed(3)),
+              deepest_m: Number(p.deepest.toFixed(3)),
+              cells: p.cells,
+              /* Carried on every feature because the mask it came from depends
+               * on it: the same survey at 0.10 m and at 0.25 m is a different
+               * set of depressions, and a file that does not say which it is
+               * cannot be compared with another. */
+              minDepth_m: minDepth,
+            },
+            geometry: {
+              type: "Polygon" as const,
+              coordinates: (rings[0] ?? []).map((ring: number[][]) =>
+                ring.map(([x, y]) => unproject([x, y] as [number, number])),
+              ),
+            },
+          };
+        }).filter((f) => f.geometry.coordinates.length > 0);
+
+        // Largest first: a client scanning the table wants the reservoir before
+        // the puddles, and the export keeps whatever order the file has.
+        features.sort(
+          (a, b) => (b.properties.storage_m3 as number) - (a.properties.storage_m3 as number),
+        );
+
+        const cells = per.reduce((n, p) => n + p.cells, 0);
+        const volume = per.reduce((v, p) => v + p.storage, 0);
+        const deepest = per.reduce((d, p) => Math.max(d, p.deepest), 0);
+
         result = {
           minDepth_m: minDepth,
+          depressions: features.length,
           cells,
           area_m2: cells * sinks.cellArea,
           area_ha: (cells * sinks.cellArea) / 10000,
           storage_m3: volume,
           deepest_m: deepest,
-          geojson: ringsToFeature(polygonize(mask, sinks), unproject, {
-            kind: "sinks",
-            minDepth_m: minDepth,
-          }),
+          geojson: { type: "FeatureCollection" as const, features },
         };
         break;
       }

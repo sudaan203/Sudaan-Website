@@ -42,6 +42,10 @@ export const STREAM_ORDER_COLOURS = [
 
 export type HydrologyMode = "off" | "inspect" | "watershed" | "flood";
 
+/** The generated layers that can leave the portal, and in what. */
+export type HydrologyExport = "basins" | "streams" | "depressions";
+export type ExportFormat = "geojson" | "shapefile";
+
 export type HydrologyState = {
   analysis: HydrologyAnalysis | null;
   /** Wording from the route: why hydrology is coarser than the survey. */
@@ -49,6 +53,49 @@ export type HydrologyState = {
   generatedAt: string;
   maxStreamOrder: number;
 };
+
+/**
+ * Two formats, because they are not interchangeable.
+ *
+ * GeoJSON is lossless, opens in everything, and carries attribute names in
+ * full. Shapefile is what most of this client's downstream work actually
+ * consumes, and it truncates field names to ten characters and splits into four
+ * files in a zip. Offering only the tidier one would mean the client converting
+ * it themselves; offering only the expected one would mean losing attribute
+ * names for no reason.
+ */
+function Download({
+  what,
+  label,
+  onDownload,
+  downloading,
+}: {
+  what: HydrologyExport;
+  label: string;
+  onDownload: (layer: HydrologyExport, format: ExportFormat) => void;
+  downloading: string | null;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] text-ink/55">{label}</span>
+      {(["geojson", "shapefile"] as ExportFormat[]).map((format) => {
+        const key = `${what}:${format}`;
+        const busy = downloading === key;
+        return (
+          <button
+            key={format}
+            type="button"
+            disabled={busy}
+            onClick={() => onDownload(what, format)}
+            className="rounded border border-ink/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink/65 hover:border-accent-600 hover:text-accent-700 disabled:opacity-50"
+          >
+            {busy ? "…" : format === "geojson" ? "GeoJSON" : "SHP"}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 export function HydrologyPanel({
   state,
@@ -66,6 +113,8 @@ export function HydrologyPanel({
   sinkDepth,
   setSinkDepth,
   onFindSinks,
+  onDownload,
+  downloading,
   busy,
   error,
   onClear,
@@ -85,6 +134,14 @@ export function HydrologyPanel({
   sinkDepth: number;
   setSinkDepth: (v: number) => void;
   onFindSinks: () => void;
+  /**
+   * Item 7. These layers were computable and drawable but not removable: a
+   * client could see where the site drains and could not take it to their own
+   * GIS, which is where the decision actually gets made.
+   */
+  onDownload: (layer: HydrologyExport, format: ExportFormat) => void;
+  /** Which export is in flight, so its button can say so. */
+  downloading: string | null;
   busy: boolean;
   error: string | null;
   onClear: () => void;
@@ -132,6 +189,19 @@ export function HydrologyPanel({
           hint="Where each part of the survey drains to"
         />
       </fieldset>
+
+      <Download
+        what="basins"
+        label="Basins"
+        onDownload={onDownload}
+        downloading={downloading}
+      />
+      <Download
+        what="streams"
+        label="Channel network"
+        onDownload={onDownload}
+        downloading={downloading}
+      />
 
       {showStreams && state.maxStreamOrder > 0 ? (
         <StreamOrderLegend max={state.maxStreamOrder} />
@@ -191,11 +261,27 @@ export function HydrologyPanel({
           </button>
         </div>
         {sinks ? (
-          <dl className="space-y-1 text-[12px]">
-            <Row label="Area" value={formatArea(sinks.area_m2)} />
-            <Row label="Storage" value={`${Math.round(sinks.storage_m3).toLocaleString("en-GB")} m³`} />
-            <Row label="Deepest" value={formatDistance(sinks.deepest_m)} />
-          </dl>
+          <>
+            <dl className="space-y-1 text-[12px]">
+              {/* The count first, because it is what changed: these used to be
+                  one dissolved shape carrying one set of totals. */}
+              <Row label="Depressions" value={String(sinks.depressions ?? "—")} />
+              <Row label="Area" value={formatArea(sinks.area_m2)} />
+              <Row label="Storage" value={`${Math.round(sinks.storage_m3).toLocaleString("en-GB")} m³`} />
+              <Row label="Deepest" value={formatDistance(sinks.deepest_m)} />
+            </dl>
+            <p className="text-[11px] leading-snug text-ink/55">
+              Totals across every depression {sinks.minDepth_m} m or deeper. The export
+              carries one feature per depression, each with its own area, storage and
+              deepest point.
+            </p>
+            <Download
+              what="depressions"
+              label="Depressions"
+              onDownload={onDownload}
+              downloading={downloading}
+            />
+          </>
         ) : null}
       </fieldset>
 

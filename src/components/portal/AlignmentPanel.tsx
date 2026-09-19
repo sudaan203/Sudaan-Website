@@ -7,6 +7,14 @@ import type {
   CorridorResult,
   CrossSectionsResult,
 } from "@/lib/portal/analysis-client";
+import { filename, saveText } from "@/lib/portal/download";
+import {
+  chainageCsv,
+  sectionsCsv,
+  sectionSamplesCsv,
+  corridorCsv,
+  benchCsv,
+} from "@/lib/portal/alignment-csv";
 import { formatDistance } from "@/lib/portal/geodesy";
 
 /**
@@ -60,6 +68,7 @@ const OPS: { op: AlignmentOp; n: number; label: string; hint: string }[] = [
 const INTERVALS = [5, 10, 20, 25];
 
 export function AlignmentPanel({
+  siteSlug,
   ready,
   length,
   vertices,
@@ -69,6 +78,9 @@ export function AlignmentPanel({
   onCompute,
   onClear,
 }: {
+  /** Names the exported files, so four surveys' sections do not become
+   *  sections.csv, sections (1).csv and sections (2).csv. */
+  siteSlug: string;
   /** True once at least two points have been placed and the line is finished. */
   ready: boolean;
   length: number;
@@ -215,7 +227,7 @@ export function AlignmentPanel({
             {result.state === "loading" ? "Computing…" : "Measure"}
           </button>
 
-          <Result result={result} />
+          <Result result={result} siteSlug={siteSlug} />
         </>
       )}
     </div>
@@ -267,7 +279,7 @@ function Number({
   );
 }
 
-function Result({ result }: { result: AlignmentState }) {
+function Result({ result, siteSlug }: { result: AlignmentState; siteSlug: string }) {
   if (result.state === "idle") return null;
   if (result.state === "loading") {
     return <p className="text-[11px] text-ink/45">Reading the model…</p>;
@@ -288,6 +300,69 @@ function Result({ result }: { result: AlignmentState }) {
         <Sections r={result.data as CrossSectionsResult} />
       ) : null}
       {result.op === "bench" ? <Bench r={result.data as BenchResult} /> : null}
+      <Exports result={result} siteSlug={siteSlug} />
+    </div>
+  );
+}
+
+/**
+ * The result as a file, which is the point of item 5.
+ *
+ * One button per file rather than a format menu: each mode produces exactly one
+ * natural table, except Sections, which produces two genuinely different ones —
+ * a summary at one row per section, and every sample across every cut, which is
+ * what a section drawing is plotted from. At a 25 m interval and a 15 m half
+ * width those are forty rows and five thousand, so offering them as one file
+ * would mean deciding for the client which they meant.
+ */
+function Exports({ result, siteSlug }: { result: AlignmentState; siteSlug: string }) {
+  if (result.state !== "done") return null;
+
+  const save = (body: string, what: string, parts: (string | number)[]) =>
+    saveText(body, filename(siteSlug, what, parts));
+
+  const buttons: { label: string; onClick: () => void }[] = [];
+  if (result.op === "chainage") {
+    const r = result.data as ChainageResult;
+    buttons.push({
+      label: "Stations CSV",
+      onClick: () => save(chainageCsv(r), "chainage", [`${r.interval}m`]),
+    });
+  }
+  if (result.op === "cross-sections") {
+    const r = result.data as CrossSectionsResult;
+    buttons.push({
+      label: "Sections CSV",
+      onClick: () => save(sectionsCsv(r), "sections", [`${r.interval}m`, `hw${r.halfWidth}m`]),
+    });
+    buttons.push({
+      label: "Every sample",
+      onClick: () =>
+        save(sectionSamplesCsv(r), "section-samples", [`${r.interval}m`, `hw${r.halfWidth}m`]),
+    });
+  }
+  if (result.op === "corridor") {
+    const r = result.data as CorridorResult;
+    buttons.push({ label: "Corridor CSV", onClick: () => save(corridorCsv(r), "corridor", []) });
+  }
+  if (result.op === "bench") {
+    const r = result.data as BenchResult;
+    buttons.push({ label: "Benches CSV", onClick: () => save(benchCsv(r), "benches", []) });
+  }
+  if (buttons.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5 border-t border-ink/[0.08] pt-2">
+      {buttons.map((b) => (
+        <button
+          key={b.label}
+          type="button"
+          onClick={b.onClick}
+          className="rounded border border-ink/15 px-2 py-1 text-[11px] font-semibold text-ink/70 hover:border-accent-600 hover:text-accent-700"
+        >
+          {b.label}
+        </button>
+      ))}
     </div>
   );
 }

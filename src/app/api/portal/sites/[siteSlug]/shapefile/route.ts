@@ -15,6 +15,7 @@ import {
   parseShapefilePrj,
 } from "@/lib/geo/shapefile.mjs";
 import { writeZip, readZip } from "@/lib/geo/zip.mjs";
+import { readKml, readKmz } from "@/lib/geo/kml.mjs";
 
 export const runtime = "nodejs";
 
@@ -178,11 +179,62 @@ export async function POST(
       if (!(file instanceof File)) {
         throw new BadRequest("no file was uploaded");
       }
-      if (!file.name.toLowerCase().endsWith(".zip")) {
-        throw new BadRequest("upload a .zip containing .shp, .dbf and .prj");
+      const lower = file.name.toLowerCase();
+      const isKml = lower.endsWith(".kml") || lower.endsWith(".kmz");
+      if (!lower.endsWith(".zip") && !isKml) {
+        throw new BadRequest(
+          "upload a .zip containing .shp, .dbf and .prj, or a .kml or .kmz",
+        );
       }
 
       const bytes = Buffer.from(await file.arrayBuffer());
+
+      /**
+       * KML, which needs none of the projection machinery below.
+       *
+       * The spec fixes KML to WGS84 — there is no projection tag and no
+       * equivalent of a `.prj` — so unlike a shapefile, whose upload is refused
+       * outright when its CRS is unstated, there is nothing here to read and
+       * nothing to guess. The coordinates are already the lon/lat the map
+       * draws in.
+       *
+       * `kind` is the dominant geometry, because a KML is free to mix all three
+       * in one file and the panel names what it drew. The count is features
+       * rather than placemarks: a placemark holding a MultiGeometry becomes
+       * several features, and saying "1 shape" over three drawn shapes would be
+       * wrong about the thing on screen.
+       */
+      if (isKml) {
+        const { featureCollection, counts } = lower.endsWith(".kmz")
+          ? readKmz(bytes)
+          : readKml(bytes);
+        if (featureCollection.features.length === 0) {
+          throw new BadRequest(
+            "that file has no points, lines or polygons in it. A KML of only " +
+              "styling, overlays or network links has nothing to draw.",
+          );
+        }
+        const dominant = (Object.entries(counts) as [string, number][])
+          .sort((a, b) => b[1] - a[1])[0][0];
+        const kind =
+          dominant === "Point" ? "point" : dominant === "Polygon" ? "polygon" : "polyline";
+
+        logPortalEvent("view_map", {
+          userId: session.userId,
+          site: siteSlug,
+          file: `kml:upload:${kind}`,
+        });
+
+        return NextResponse.json(
+          {
+            kind,
+            count: featureCollection.features.length,
+            crs: { epsg: 4326, description: "WGS 84 (KML is always lon/lat)" },
+            featureCollection,
+          },
+          { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+        );
+      }
       const entries = readZip(bytes);
 
       // Matched by extension, case-insensitively, and by whichever base name

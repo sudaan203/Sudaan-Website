@@ -72,7 +72,7 @@ export type AnalysisErrorKind =
  */
 export class AnalysisError extends Error {
   readonly kind: AnalysisErrorKind;
-  /** `TerrainUnavailable.reason` for a 409: missing | too-large | not-projected. */
+  /** `TerrainUnavailable.reason` for a 409: missing | survey-too-large | area-too-large | not-projected. */
   readonly reason?: string;
 
   constructor(kind: AnalysisErrorKind, message: string, reason?: string) {
@@ -378,7 +378,14 @@ export type FloodLevel = {
    * `truncatedBySurveyEdge` is.
    */
   truncated: boolean;
-  geojson: GeoJSON.FeatureCollection;
+  /**
+   * Null for a site-wide run, which is answered by reduction rather than
+   * simulation and has no vector extent — the tiler draws it. Every figure
+   * beside it is exact and at the survey's own resolution either way.
+   */
+  geojson: GeoJSON.FeatureCollection | null;
+  /** Share of the surveyed ground under water. Site-wide runs only. */
+  coverage?: number | null;
 };
 
 export type FloodResult = {
@@ -406,6 +413,21 @@ export type FloodResult = {
     cells: number;
   };
   levels: FloodLevel[];
+  /**
+   * Set when the run covered more ground than one read can hold, and was
+   * therefore answered by reduction rather than by simulation.
+   *
+   * The figures are exact and at the survey's own resolution either way — what
+   * differs is that there are no polygons, because a flood across a full site
+   * has a boundary no browser can hold. `layer` names the tiler layer that
+   * draws it instead, and the panel switches that on rather than drawing
+   * vectors it was not given.
+   */
+  layer?: "flood_level" | "flood_rising" | null;
+  /** Whether this survey has a spill surface, so "rising from outside" can be asked. */
+  risingAvailable?: boolean;
+  resolution_m?: number;
+  note?: string;
 };
 
 /** Every parameter the four alignment ops take, each optional and each defaulted
@@ -624,7 +646,20 @@ export class AnalysisClient {
   flood(
     levels: number[],
     source: { at?: Pair; polygon?: Pair[] } = {},
-    options: { interval?: number; area?: Pair[]; bounds?: [Pair, Pair]; crs?: Crs } = {},
+    /**
+     * `rising` asks the *connected* question over ground too large to traverse:
+     * everything water reaches arriving from outside the survey, rather than
+     * everything below the level. Answered from the precomputed spill surface,
+     * so it is available only where one has been built — the result says
+     * whether it was, and the panel offers the choice accordingly.
+     */
+    options: {
+      interval?: number;
+      area?: Pair[];
+      bounds?: [Pair, Pair];
+      crs?: Crs;
+      rising?: boolean;
+    } = {},
     signal?: AbortSignal,
   ) {
     return this.run<FloodResult>(
@@ -651,8 +686,14 @@ function terrainMessage(reason: string | undefined): string {
   switch (reason) {
     case "missing":
       return "Measurements are not available for this survey yet.";
-    case "too-large":
+    case "survey-too-large":
+      // Our limitation, and not one the client can do anything about, so it
+      // does not pretend to be their problem or ask them to redraw something.
       return "This survey is too large to measure interactively. Ask us for the figures you need.";
+    case "area-too-large":
+      // Theirs to act on, and the action is one gesture away. The old wording
+      // sent this case to the one above and told them to email us instead.
+      return "That area covers more ground than one measurement can read. Draw a smaller area and try again.";
     case "not-projected":
       return "This survey is not in a projected coordinate system, so it cannot be measured.";
     default:

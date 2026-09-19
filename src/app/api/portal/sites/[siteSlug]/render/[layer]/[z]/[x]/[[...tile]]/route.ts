@@ -80,6 +80,32 @@ const LAYERS = {
    * light a quantity that has no surface.
    */
   difference: { source: "difference", kind: "dsm", ramp: "difference", relief: false, label: "Surface minus terrain", unit: "m", signed: true },
+
+  /**
+   * Water depth at a stated level, over as much ground as is asked for.
+   *
+   * These are what a site-wide flood is *drawn* from. The analysis route counts
+   * the same cells to report area and storage, but a flood across a 7 cm survey
+   * has a boundary no browser can hold — Kotba alone vectorises into 207
+   * separate patches over a fraction of that ground — so the picture is a raster
+   * rendered a tile at a time, from the same two rasters the figures came from.
+   *
+   * Both take `?level=` in metres. They differ in one predicate:
+   *
+   *   flood_level    `dem <= level`    everything below the level, whether
+   *                                    water could reach it or not
+   *   flood_rising   `spill <= level`  everything water reaches rising from
+   *                                    outside the survey, connectivity having
+   *                                    been resolved once when the spill
+   *                                    surface was built
+   *
+   * Neither is the other's approximation and the panel names which one is drawn.
+   * A hilltop hollow at the same elevation as the flood plain is wet in the
+   * first and dry in the second, and that difference is the entire question a
+   * client is asking when they pick one.
+   */
+  flood_level: { source: "flood", kind: "dtm", ramp: "water", relief: false, label: "Water depth", unit: "m" },
+  flood_rising: { source: "flood", kind: "spill", ramp: "water", relief: false, label: "Water depth, rising from outside", unit: "m" },
 } as const;
 
 type LayerKey = keyof typeof LAYERS;
@@ -207,6 +233,66 @@ export async function GET(
         else a.data[i] = a.data[i] - b.data[i];
       }
       tileGrid = a;
+    } else if (spec.source === "flood") {
+      /**
+       * Depth under water at `level`, sampled into this tile.
+       *
+       * The arrival surface decides *whether* a pixel is wet and the terrain
+       * decides *how deep*, so both are read. For `flood_level` they are the
+       * same raster and the predicate is the ground's own height; for
+       * `flood_rising` the arrival surface is the spill raster, and the whole
+       * point is that they differ — a hollow whose floor is below the level but
+       * whose rim is above it is dry, and reads as nodata here rather than as
+       * zero depth.
+       */
+      const level = numberParam(new URL(request.url).searchParams, "level");
+      if (level === null) {
+        return NextResponse.json(
+          { error: `${layer} needs ?level=<metres>. A flood without a water level is not a flood.` },
+          { status: 400 },
+        );
+      }
+      const dtm = await openTerrain(siteSlug, "dtm");
+      let arrival;
+      try {
+        arrival = spec.kind === "spill" ? await openTerrain(siteSlug, "spill") : dtm;
+      } catch {
+        // Published without a spill surface. Answering with the threshold
+        // instead would draw a different flood under the same name, so this
+        // draws nothing and the panel does not offer the layer in the first
+        // place.
+        return png(EMPTY);
+      }
+      epsg = dtm.epsg;
+      const zone = dtm.utmZone!;
+      const project = (lon: number, lat: number) =>
+        lonLatToUtm(lon, lat, zone.zone, zone.northern) as [number, number];
+      const bbox = tileBoundsProjected(zoom, tx, ty, project);
+      if (!overlaps(bbox, dtm.bounds)) return png(EMPTY);
+
+      const ground = dtm.windowFor(bbox);
+      const wet = arrival.windowFor(bbox);
+      if (!ground || !wet) return png(EMPTY);
+      if (ground.cols * ground.rows > 40_000_000) return png(EMPTY);
+      const groundGrid = await dtm.readWindow(ground);
+      const wetGrid = arrival === dtm ? groundGrid : await arrival.readWindow(wet);
+      if (!groundGrid || !wetGrid) return png(EMPTY);
+
+      const g = sampleIntoTile(groundGrid, zoom, tx, ty, project, TILE_SIZE);
+      const w = arrival === dtm ? g : sampleIntoTile(wetGrid, zoom, tx, ty, project, TILE_SIZE);
+      for (let i = 0; i < g.data.length; i += 1) {
+        const ground_m = g.data[i];
+        const arrives = w.data[i];
+        if (g.isNoData(ground_m) || w.isNoData(arrives) || arrives > level) {
+          g.data[i] = g.nodata;
+          continue;
+        }
+        const depth = level - ground_m;
+        // Dry ground inside the flooded component: the level reaches it but its
+        // own surface is above the water. Not zero depth — no water at all.
+        g.data[i] = depth > 0 ? depth : g.nodata;
+      }
+      tileGrid = g;
     } else if (spec.source === "terrain") {
       const raster = await openTerrain(siteSlug, spec.kind as "dtm" | "dsm");
       epsg = raster.epsg;

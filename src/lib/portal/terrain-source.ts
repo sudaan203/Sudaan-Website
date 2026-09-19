@@ -56,7 +56,16 @@ function terrainDir(siteSlug: string) {
   return join(base, siteSlug);
 }
 
-export type TerrainKind = "dtm" | "dsm";
+/**
+ * The rasters a site publishes under `terrain/<slug>/`.
+ *
+ * `spill` is derived rather than surveyed: the level water stands at per cell
+ * when it rises from outside the survey, built once by `scripts/spill-run.mjs`.
+ * It lives here rather than with the hydrology bundle because it is at the
+ * survey's *native* resolution — hydrology is deliberately resampled to 1 m for
+ * routing, and a flood at 1 m on a 7 cm survey is a different shoreline.
+ */
+export type TerrainKind = "dtm" | "dsm" | "spill";
 
 /**
  * Grids are cached per process because a client measuring a site will make many
@@ -69,9 +78,28 @@ export type TerrainKind = "dtm" | "dsm";
 type Cached = { grid: ReturnType<typeof readGeoTiff>; loadedAt: number };
 const cache = new Map<string, Cached>();
 
+/**
+ * Why a measurement could not be taken, in the terms the client has to act on.
+ *
+ * `survey-too-large` and `area-too-large` used to be one code, and conflating
+ * them cost more than it looks. They are different facts with different next
+ * actions — one is a survey this reader cannot open at all, the other is a
+ * request for more ground than one read can hold — and the client wording for
+ * the pair was written for the first: "this survey is too large to measure
+ * interactively, ask us for the figures you need." So a client who drew too big
+ * an area was told the survey was the problem and that their next step was to
+ * email us, when the server had already worked out that a smaller area would
+ * answer. Both facts still exist; each now says its own thing.
+ */
+export type TerrainUnavailableReason =
+  | "missing"
+  | "survey-too-large"
+  | "area-too-large"
+  | "not-projected";
+
 export class TerrainUnavailable extends Error {
-  readonly reason: "missing" | "too-large" | "not-projected";
-  constructor(reason: "missing" | "too-large" | "not-projected", message: string) {
+  readonly reason: TerrainUnavailableReason;
+  constructor(reason: TerrainUnavailableReason, message: string) {
     super(message);
     this.reason = reason;
     this.name = "TerrainUnavailable";
@@ -116,7 +144,7 @@ export function loadTerrain(siteSlug: string, kind: TerrainKind = "dtm") {
   }
   if (grid.width * grid.height > MAX_CELLS) {
     throw new TerrainUnavailable(
-      "too-large",
+      "survey-too-large",
       `The ${kind.toUpperCase()} for this site is ${grid.width} x ${grid.height} cells, past ` +
         `what can be read whole. This needs the windowed COG reader.`,
     );
@@ -256,7 +284,7 @@ export async function readTerrainWindow(
 
   if (window.cols * window.rows > MAX_CELLS) {
     throw new TerrainUnavailable(
-      "too-large",
+      "area-too-large",
       `That area covers ${window.cols} x ${window.rows} cells at this survey's ` +
         `${raster.cellSize.toFixed(3)} m resolution, which is past what can be measured in one ` +
         `request. Draw a smaller area.`,
@@ -268,9 +296,26 @@ export async function readTerrainWindow(
 /** Which terrain models a site actually has, for the map to offer. */
 export function availableTerrain(siteSlug: string): TerrainKind[] {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(siteSlug)) return [];
-  return (["dtm", "dsm"] as TerrainKind[]).filter((kind) =>
+  return (["dtm", "dsm", "spill"] as TerrainKind[]).filter((kind) =>
     existsSync(join(terrainDir(siteSlug), `${kind}.tif`)),
   );
+}
+
+/**
+ * Whether this site can answer a flood at any level over its whole extent.
+ *
+ * Which is exactly "has a spill surface been built for it". The flood panel
+ * asks before offering a site-wide run, so a survey without one keeps the
+ * drawn-study-area tool it already had rather than being offered a button that
+ * would refuse.
+ *
+ * Local disk only, deliberately, and it mirrors `availableTerrain`: on a
+ * deployment reading rasters over HTTP this answers false and the site-wide
+ * path stays off until the publish pipeline has actually written one.
+ */
+export function hasSpillSurface(siteSlug: string): boolean {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(siteSlug)) return false;
+  return existsSync(join(terrainDir(siteSlug), "spill.tif"));
 }
 
 /**

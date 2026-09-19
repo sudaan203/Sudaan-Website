@@ -24,11 +24,111 @@ export type ShapefileDownloadState =
   | { state: "loading" }
   | { state: "error"; message: string };
 
+/** A shape the client drew, as a layer they can name and hide. Item 2. */
+export type DrawnLayerView = {
+  id: string;
+  kind: GeometryKind;
+  name: string;
+  visible: boolean;
+};
+
+/** A file the client brought in to compare against. Item 3. */
+export type UploadedLayerView = {
+  id: string;
+  name: string;
+  format: "shapefile" | "kml";
+  kind: string;
+  count: number;
+  crs: { epsg: number; description: string };
+  visible: boolean;
+};
+
 export type ShapefileUploadState =
   | { state: "idle" }
   | { state: "loading" }
   | { state: "done"; data: UploadedShapefile }
   | { state: "error"; message: string };
+
+const GROUP_LABEL: Record<GeometryKind, string> = {
+  polygon: "Polygons",
+  line: "Polylines",
+  point: "Points",
+};
+
+/**
+ * One layer: an eye, an editable name, and what it is.
+ *
+ * The name is an input rather than a click-to-edit affordance. Click-to-edit
+ * hides the fact that a name *can* be changed behind a discovery step, and this
+ * list exists because a client could not name anything; a control nobody finds
+ * is the same as no control. It commits on blur and on Enter, so typing and
+ * clicking away both work.
+ */
+function LayerRow({
+  name,
+  visible,
+  detail,
+  onRename,
+  onToggle,
+  onRemove,
+}: {
+  name: string;
+  visible: boolean;
+  detail?: string;
+  onRename: (name: string) => void;
+  onToggle: (visible: boolean) => void;
+  onRemove?: () => void;
+}) {
+  const [draft, setDraft] = useState(name);
+  // Follow an external rename, but never while the client is mid-edit.
+  const [editing, setEditing] = useState(false);
+  if (!editing && draft !== name) setDraft(name);
+
+  const commit = () => {
+    setEditing(false);
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== name) onRename(trimmed);
+    else setDraft(name);
+  };
+
+  return (
+    <li className="flex items-center gap-1.5 rounded bg-ink/[0.03] px-1.5 py-1">
+      <button
+        type="button"
+        onClick={() => onToggle(!visible)}
+        aria-label={visible ? `Hide ${name}` : `Show ${name}`}
+        aria-pressed={visible}
+        className={`shrink-0 text-[12px] leading-none ${visible ? "text-accent-600" : "text-ink/30"}`}
+      >
+        {visible ? "\u25c9" : "\u25cb"}
+      </button>
+      <span className="min-w-0 flex-1">
+        <input
+          value={draft}
+          onChange={(e) => { setEditing(true); setDraft(e.target.value); }}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") { setDraft(name); setEditing(false); e.currentTarget.blur(); }
+          }}
+          aria-label="Layer name"
+          className="w-full rounded border border-transparent bg-transparent px-1 py-0.5 text-[11px] text-ink-900 hover:border-ink/15 focus:border-accent-600 focus:bg-paper focus:outline-none"
+        />
+        {detail ? <span className="block px-1 text-[10px] text-ink/45">{detail}</span> : null}
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${name}`}
+          className="shrink-0 text-[11px] font-semibold text-ink/40 hover:text-signal-600"
+        >
+          \u00d7
+        </button>
+      ) : null}
+    </li>
+  );
+}
 
 const KINDS: { value: GeometryKind; label: string; hint: string }[] = [
   { value: "point", label: "Point", hint: "One click places one point." },
@@ -45,7 +145,13 @@ export function ShapefilePanel({
   onClearDrawn,
   upload,
   onUpload,
-  onClearUpload,
+  drawnLayers,
+  onRenameDrawn,
+  onToggleDrawn,
+  uploads,
+  onRenameUpload,
+  onToggleUpload,
+  onRemoveUpload,
 }: {
   /** Which geometry the next click on the map will draw, or none. */
   active: GeometryKind | null;
@@ -56,7 +162,15 @@ export function ShapefilePanel({
   onClearDrawn: () => void;
   upload: ShapefileUploadState;
   onUpload: (file: File) => void;
-  onClearUpload: () => void;
+  /** Item 2: what has been drawn, grouped by geometry, named and switchable. */
+  drawnLayers: DrawnLayerView[];
+  onRenameDrawn: (id: string, name: string) => void;
+  onToggleDrawn: (id: string, visible: boolean) => void;
+  /** Item 3: every uploaded file, coexisting and independently switchable. */
+  uploads: UploadedLayerView[];
+  onRenameUpload: (id: string, name: string) => void;
+  onToggleUpload: (id: string, visible: boolean) => void;
+  onRemoveUpload: (id: string) => void;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -136,6 +250,50 @@ export function ShapefilePanel({
         export here uses, with a .prj stating exactly which one.
       </p>
 
+      {drawnLayers.length > 0 ? (
+        <div className="border-t border-ink/[0.08] pt-3">
+          <p className="mb-1.5 text-[11px] font-semibold text-ink/60">Drawn features</p>
+          {/*
+            Grouped by geometry, which is item 2's first line and is also the
+            only grouping that is true without asking: the tool knows a polygon
+            is a polygon, and does not know it is a hotel until someone says so.
+            So the groups are the geometry and the naming is per feature.
+          */}
+          {(["polygon", "line", "point"] as GeometryKind[]).map((kind) => {
+            const group = drawnLayers.filter((l) => l.kind === kind);
+            if (group.length === 0) return null;
+            const allOn = group.every((l) => l.visible);
+            return (
+              <div key={kind} className="mb-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-ink/45">
+                    {GROUP_LABEL[kind]} ({group.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => group.forEach((l) => onToggleDrawn(l.id, !allOn))}
+                    className="text-[10px] font-semibold text-accent-600 hover:text-accent-700"
+                  >
+                    {allOn ? "Hide all" : "Show all"}
+                  </button>
+                </div>
+                <ul className="space-y-1">
+                  {group.map((l) => (
+                    <LayerRow
+                      key={l.id}
+                      name={l.name}
+                      visible={l.visible}
+                      onRename={(name) => onRenameDrawn(l.id, name)}
+                      onToggle={(v) => onToggleDrawn(l.id, v)}
+                    />
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div className="border-t border-ink/[0.08] pt-3">
         <fieldset className="space-y-1.5">
           <legend className="text-[11px] font-semibold text-ink/60">
@@ -145,7 +303,7 @@ export function ShapefilePanel({
           <input
             ref={fileInput}
             type="file"
-            accept=".zip"
+            accept=".zip,.kml,.kmz"
             className="sr-only"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -178,8 +336,8 @@ export function ShapefilePanel({
             }`}
           >
             {upload.state === "loading"
-              ? "Reading the shapefile…"
-              : "Drop a .zip here, or click to choose one"}
+              ? "Reading the file…"
+              : "Drop a .zip, .kml or .kmz here, or click to choose one"}
           </div>
 
           {upload.state === "error" ? (
@@ -188,27 +346,30 @@ export function ShapefilePanel({
             </p>
           ) : null}
 
-          {upload.state === "done" ? (
-            <div className="space-y-1.5 rounded-md bg-ink/[0.04] px-2 py-2">
-              <div className="flex items-baseline justify-between">
-                <p className="text-[11px] font-semibold text-ink-900">
-                  {upload.data.count} {upload.data.kind === "polyline" ? "line" : upload.data.kind}
-                  {upload.data.count === 1 ? "" : "s"}
-                </p>
-                <button
-                  type="button"
-                  onClick={onClearUpload}
-                  className="text-[11px] font-semibold text-accent-600 hover:text-accent-700"
-                >
-                  Remove
-                </button>
-              </div>
-              <p className="text-[10px] leading-snug text-ink/55">
-                Read as {upload.data.crs.description}
-                {upload.data.crs.epsg !== 4326 ? ", reprojected to the map." : "."}
-              </p>
-            </div>
+          {uploads.length > 0 ? (
+            <ul className="space-y-1">
+              {uploads.map((u) => (
+                <LayerRow
+                  key={u.id}
+                  name={u.name}
+                  visible={u.visible}
+                  detail={`${u.count} ${u.kind === "polyline" ? "line" : u.kind}${u.count === 1 ? "" : "s"} · ${
+                    u.format === "kml" ? "KML" : "Shapefile"
+                  } · ${u.crs.description}`}
+                  onRename={(name) => onRenameUpload(u.id, name)}
+                  onToggle={(v) => onToggleUpload(u.id, v)}
+                  onRemove={() => onRemoveUpload(u.id)}
+                />
+              ))}
+            </ul>
           ) : null}
+
+          <p className="text-[10px] leading-snug text-ink/45">
+            A shapefile needs its .prj so its projection is known. KML is always
+            lon/lat by specification, so there is nothing to state and nothing to
+            guess. Uploads sit alongside each other — adding one never removes
+            another.
+          </p>
         </fieldset>
       </div>
     </div>

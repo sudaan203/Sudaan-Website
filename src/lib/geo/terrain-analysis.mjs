@@ -251,41 +251,118 @@ function ringWindow(grid, ring) {
  * elevation the drawing tools are supposed to report alongside them.
  */
 export function polygonStats(grid, ring) {
-  const { col0, col1, row0, row1 } = ringWindow(grid, ring);
-  let min = Infinity;
-  let max = -Infinity;
-  let sum = 0;
-  let weight = 0;
-  let nodataWeight = 0;
+  const acc = newPolygonStats();
+  accumulatePolygonStats(acc, grid, ring);
+  return finalisePolygonStats(acc, ring);
+}
 
+/**
+ * ## Why these three pieces exist instead of one function
+ *
+ * Every quantity `polygonStats` and `cutFill` report is a **reduction**: a sum,
+ * a weight, or a maximum. Reductions compose — the sum over a polygon is the
+ * sum of the sums over any partition of it — and that is the whole reason this
+ * portal can measure a polygon larger than memory.
+ *
+ * Splitting the loop from the arithmetic that finishes it is what makes the
+ * composition expressible. `reduceOverPolygon` in `raster-window.mjs` walks a
+ * polygon in disjoint tiles, calls the accumulate step once per tile against a
+ * windowed read, and finishes once at the end. The answer is not an
+ * approximation of the whole-polygon answer, it is the identical arithmetic in
+ * a different order.
+ *
+ * Two rules keep it identical, and both are easy to break:
+ *
+ * 1. **Tiles must be disjoint in cells, and unpadded.** `cellCoverage` weights
+ *    a cell by the fraction of it inside the ring, so a cell visited by two
+ *    tiles is counted twice and its area is double-reported. The tiling walks
+ *    whole cell-index ranges of the source raster and never `windowFor`'s
+ *    padded windows.
+ * 2. **No raster neighbours.** `cellCoverage` is purely geometric — it reads a
+ *    corner lattice derived from the ring, never an adjacent cell's value — and
+ *    `grid.get` is the only raster access in either loop. So a tile needs no
+ *    halo, which is what makes rule 1 sufficient.
+ *
+ * `mean` is why the accumulator is public rather than an implementation
+ * detail: it needs `sum` and `weight`, and the finished result reports neither.
+ * Merging finished results would have to reconstruct them, and the arithmetic
+ * that reconstructs a weighted mean from a rounded one is exactly the kind of
+ * thing that is right in testing and wrong at the fourth decimal in the field.
+ */
+export function newPolygonStats() {
+  return {
+    min: Infinity,
+    max: -Infinity,
+    sum: 0,
+    weight: 0,
+    nodataWeight: 0,
+    /* Set on first use and asserted thereafter: a partition whose tiles have
+     * different cell sizes is not a partition of one raster, and every area
+     * below would be computed against whichever tile happened to be last. */
+    cellArea: null,
+    epsg: null,
+  };
+}
+
+export function accumulatePolygonStats(acc, grid, ring) {
+  sameRaster(acc, grid);
+  const { col0, col1, row0, row1 } = ringWindow(grid, ring);
   const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
   for (let row = row0; row <= row1; row += 1) {
     for (let col = col0; col <= col1; col += 1) {
       const f = cellCoverage(grid, col, row, ring, lattice);
       if (f === 0) continue;
       const v = grid.get(col, row);
-      if (grid.isNoData(v)) { nodataWeight += f; continue; }
-      if (v < min) min = v;
-      if (v > max) max = v;
-      sum += v * f;
-      weight += f;
+      if (grid.isNoData(v)) { acc.nodataWeight += f; continue; }
+      if (v < acc.min) acc.min = v;
+      if (v > acc.max) acc.max = v;
+      acc.sum += v * f;
+      acc.weight += f;
     }
   }
+  return acc;
+}
 
+export function finalisePolygonStats(acc, ring) {
   const area = polygonArea(ring);
+  const cellArea = acc.cellArea ?? 0;
   return {
     area,
     areaHectares: area / 10000,
     perimeter: polygonPerimeter(ring),
-    min: weight > 0 ? min : null,
-    max: weight > 0 ? max : null,
-    mean: weight > 0 ? sum / weight : null,
-    coveredArea: weight * grid.cellArea,
+    min: acc.weight > 0 ? acc.min : null,
+    max: acc.weight > 0 ? acc.max : null,
+    mean: acc.weight > 0 ? acc.sum / acc.weight : null,
+    coveredArea: acc.weight * cellArea,
     // A polygon straying off the survey is the commonest way a volume comes back
     // confidently wrong, so the gap is reported rather than silently skipped.
-    nodataArea: nodataWeight * grid.cellArea,
-    complete: nodataWeight === 0,
+    nodataArea: acc.nodataWeight * cellArea,
+    complete: acc.nodataWeight === 0,
   };
+}
+
+/**
+ * Bind an accumulator to the raster it is measuring, and refuse a second one.
+ *
+ * Cell area is the unit every area below is quoted in. A tiled reduction that
+ * silently accepted a second raster would report a volume in a mixture of two
+ * cell sizes, which is wrong by a ratio rather than by a rounding, and looks
+ * entirely plausible on screen.
+ */
+function sameRaster(acc, grid) {
+  if (acc.cellArea === null) {
+    acc.cellArea = grid.cellArea;
+    // Carried on the accumulator because every result states the CRS it was
+    // computed in, and after tiling there is no single `grid` left to ask.
+    acc.epsg = grid.epsg;
+    return;
+  }
+  if (Math.abs(acc.cellArea - grid.cellArea) > 1e-9) {
+    throw new Error(
+      `accumulator is measuring ${acc.cellArea} m² cells and was handed ` +
+        `${grid.cellArea} m² ones. A reduction spans one raster, not two.`,
+    );
+  }
 }
 
 /**
@@ -514,60 +591,92 @@ export function cutFill(grid, ring, reference, { rmseZ = null } = {}) {
     );
   }
 
-  const { col0, col1, row0, row1 } = ringWindow(grid, ring);
-  let cut = 0;
-  let fill = 0;
-  let cutArea = 0;
-  let fillArea = 0;
-  let weight = 0;
-  let nodataWeight = 0;
-  let referenceMissing = 0;
-  let maxCut = 0;
-  let maxFill = 0;
+  const acc = newCutFill();
+  accumulateCutFill(acc, grid, ring, reference);
+  return finaliseCutFill(acc, ring, { rmseZ, reference });
+}
 
+/**
+ * The same three-piece split as `polygonStats` above, for the same reason and
+ * under the same two rules. See that comment; it is the one worth reading.
+ *
+ * One addition specific to volumes: `reference.at(x, y)` is asked in **world
+ * coordinates**, so a reference surface is sampled identically no matter which
+ * tile the cell fell in. That is what lets a DSM-against-DTM volume tile at all
+ * when the two rasters do not share an origin or a cell size — which on Kotba
+ * they do not, 0.157 m against 0.241 m.
+ */
+export function newCutFill() {
+  return {
+    cut: 0,
+    fill: 0,
+    cutArea: 0,
+    fillArea: 0,
+    weight: 0,
+    nodataWeight: 0,
+    referenceMissing: 0,
+    maxCut: 0,
+    maxFill: 0,
+    cellArea: null,
+    epsg: null,
+  };
+}
+
+export function accumulateCutFill(acc, grid, ring, reference) {
+  sameRaster(acc, grid);
+  const { col0, col1, row0, row1 } = ringWindow(grid, ring);
   const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
   for (let row = row0; row <= row1; row += 1) {
     for (let col = col0; col <= col1; col += 1) {
       const f = cellCoverage(grid, col, row, ring, lattice);
       if (f === 0) continue;
       const z = grid.get(col, row);
-      if (grid.isNoData(z)) { nodataWeight += f; continue; }
+      if (grid.isNoData(z)) { acc.nodataWeight += f; continue; }
 
       const x = grid.xOf(col);
       const y = grid.yOf(row);
       const ref = reference.at(x, y);
-      if (ref === null || !Number.isFinite(ref)) { referenceMissing += f; continue; }
+      if (ref === null || !Number.isFinite(ref)) { acc.referenceMissing += f; continue; }
 
       const d = z - ref;
       const area = f * grid.cellArea;
-      weight += f;
-      if (d > 0) { cut += d * area; cutArea += area; if (d > maxCut) maxCut = d; }
-      else if (d < 0) { fill += -d * area; fillArea += area; if (-d > maxFill) maxFill = -d; }
+      acc.weight += f;
+      if (d > 0) { acc.cut += d * area; acc.cutArea += area; if (d > acc.maxCut) acc.maxCut = d; }
+      else if (d < 0) { acc.fill += -d * area; acc.fillArea += area; if (-d > acc.maxFill) acc.maxFill = -d; }
     }
   }
+  return acc;
+}
 
-  const measuredArea = weight * grid.cellArea;
+/**
+ * @param {any} acc
+ * @param {number[][]} ring
+ * @param {{ rmseZ?: number|null, reference?: { kind?: string } }} [options]
+ */
+export function finaliseCutFill(acc, ring, { rmseZ = null, reference } = {}) {
+  const cellArea = acc.cellArea ?? 0;
+  const measuredArea = acc.weight * cellArea;
   return {
-    reference: reference.kind,
-    cut,
-    fill,
-    net: cut - fill,
-    cutArea,
-    fillArea,
+    reference: reference?.kind,
+    cut: acc.cut,
+    fill: acc.fill,
+    net: acc.cut - acc.fill,
+    cutArea: acc.cutArea,
+    fillArea: acc.fillArea,
     measuredArea,
     polygonArea: polygonArea(ring),
-    maxCutDepth: maxCut,
-    maxFillDepth: maxFill,
-    meanDepth: measuredArea > 0 ? (cut - fill) / measuredArea : null,
+    maxCutDepth: acc.maxCut,
+    maxFillDepth: acc.maxFill,
+    meanDepth: measuredArea > 0 ? (acc.cut - acc.fill) / measuredArea : null,
     // Both are reported because a partly covered polygon still returns a
     // plausible number, and the client has to be told it is partial.
-    nodataArea: nodataWeight * grid.cellArea,
-    referenceMissingArea: referenceMissing * grid.cellArea,
-    complete: nodataWeight === 0 && referenceMissing === 0,
+    nodataArea: acc.nodataWeight * cellArea,
+    referenceMissingArea: acc.referenceMissing * cellArea,
+    complete: acc.nodataWeight === 0 && acc.referenceMissing === 0,
     // Plus or minus, in cubic metres, from a stated vertical accuracy.
     uncertainty: rmseZ === null ? null : rmseZ * measuredArea,
     rmseZ,
-    computedIn: grid.epsg ? `EPSG:${grid.epsg}` : "projected metres",
+    computedIn: acc.epsg ? `EPSG:${acc.epsg}` : "projected metres",
   };
 }
 
@@ -600,31 +709,57 @@ export function cutFill(grid, ring, reference, { rmseZ = null } = {}) {
  * @param {{ tolerance?: number|null, rmseZ?: number|null }} [options]
  */
 export function compareSurfaces(grid, ring, reference, { tolerance = null, rmseZ = null } = {}) {
+  const acc = newCompare({ tolerance });
+  accumulateCompare(acc, grid, ring, reference);
+  return finaliseCompare(acc, ring, { rmseZ, reference });
+}
+
+/**
+ * The same three-piece split as `polygonStats` and `cutFill`, for the same
+ * reason and under the same two rules.
+ *
+ * The tolerance lives on the accumulator rather than on the finish step,
+ * because the classification happens per cell: whether a deviation is within
+ * tolerance is decided while the cell is in hand, and the areas either side are
+ * themselves sums. Passing it at the end would mean keeping every deviation to
+ * classify later, which is the one thing a reduction exists not to do.
+ */
+/** @param {{ tolerance?: number|null }} [options] */
+export function newCompare({ tolerance = null } = {}) {
+  if (tolerance !== null && !(tolerance > 0)) {
+    throw new Error("compareSurfaces: tolerance must be positive metres");
+  }
+  return {
+    tolerance,
+    weight: 0,
+    nodataWeight: 0,
+    referenceMissing: 0,
+    rise: 0,
+    drop: 0,
+    sum: 0,
+    sumAbs: 0,
+    min: Infinity,
+    max: -Infinity,
+    within: 0,
+    above: 0,
+    below: 0,
+    worstAbove: 0,
+    worstBelow: 0,
+    cellArea: null,
+    epsg: null,
+  };
+}
+
+export function accumulateCompare(acc, grid, ring, reference) {
   if (!reference || typeof reference.at !== "function") {
     throw new Error(
       "compareSurfaces: a reference surface is required. A deviation from an " +
         "unstated reference is not a measurement.",
     );
   }
-  if (tolerance !== null && !(tolerance > 0)) {
-    throw new Error("compareSurfaces: tolerance must be positive metres");
-  }
-
+  sameRaster(acc, grid);
+  const tolerance = acc.tolerance;
   const { col0, col1, row0, row1 } = ringWindow(grid, ring);
-  let weight = 0;
-  let nodataWeight = 0;
-  let referenceMissing = 0;
-  let rise = 0;
-  let drop = 0;
-  let sum = 0;
-  let sumAbs = 0;
-  let min = Infinity;
-  let max = -Infinity;
-  let within = 0;
-  let above = 0;
-  let below = 0;
-  let worstAbove = 0;
-  let worstBelow = 0;
 
   const lattice = cornerLattice(grid, ring, col0, col1, row0, row1);
   for (let row = row0; row <= row1; row += 1) {
@@ -634,39 +769,52 @@ export function compareSurfaces(grid, ring, reference, { tolerance = null, rmseZ
       const f = cellCoverage(grid, col, row, ring, lattice);
       if (f === 0) continue;
       const z = grid.get(col, row);
-      if (grid.isNoData(z)) { nodataWeight += f; continue; }
+      if (grid.isNoData(z)) { acc.nodataWeight += f; continue; }
 
       const x = grid.xOf(col);
       const y = grid.yOf(row);
       const ref = reference.at(x, y);
-      if (ref === null || !Number.isFinite(ref)) { referenceMissing += f; continue; }
+      if (ref === null || !Number.isFinite(ref)) { acc.referenceMissing += f; continue; }
 
       const d = z - ref;
       const area = f * grid.cellArea;
-      weight += f;
-      sum += d * f;
-      sumAbs += Math.abs(d) * f;
-      if (d > 0) rise += d * area; else drop += -d * area;
-      if (d < min) min = d;
-      if (d > max) max = d;
+      acc.weight += f;
+      acc.sum += d * f;
+      acc.sumAbs += Math.abs(d) * f;
+      if (d > 0) acc.rise += d * area; else acc.drop += -d * area;
+      if (d < acc.min) acc.min = d;
+      if (d > acc.max) acc.max = d;
 
       if (tolerance !== null) {
-        if (d > tolerance) { above += area; if (d > worstAbove) worstAbove = d; }
-        else if (d < -tolerance) { below += area; if (-d > worstBelow) worstBelow = -d; }
-        else within += area;
+        if (d > tolerance) { acc.above += area; if (d > acc.worstAbove) acc.worstAbove = d; }
+        else if (d < -tolerance) { acc.below += area; if (-d > acc.worstBelow) acc.worstBelow = -d; }
+        else acc.within += area;
       }
     }
   }
+  return acc;
+}
 
-  const comparedArea = weight * grid.cellArea;
+/**
+ * @param {any} acc
+ * @param {number[][]} ring
+ * @param {{ rmseZ?: number|null, reference?: { kind?: string } }} [options]
+ */
+export function finaliseCompare(acc, ring, { rmseZ = null, reference } = {}) {
+  const {
+    weight, nodataWeight, referenceMissing, rise, drop, sum, sumAbs, min, max,
+    within, above, below, worstAbove, worstBelow, tolerance,
+  } = acc;
+  const cellArea = acc.cellArea ?? 0;
+  const comparedArea = weight * cellArea;
   const classified = within + above + below;
   return {
-    reference: reference.kind,
+    reference: reference?.kind,
     comparedArea,
     polygonArea: polygonArea(ring),
     /** Both reported, because a partly covered polygon still returns a number. */
-    nodataArea: nodataWeight * grid.cellArea,
-    referenceMissingArea: referenceMissing * grid.cellArea,
+    nodataArea: nodataWeight * cellArea,
+    referenceMissingArea: referenceMissing * cellArea,
     complete: nodataWeight === 0 && referenceMissing === 0,
 
     minChange: weight > 0 ? min : null,
@@ -706,7 +854,7 @@ export function compareSurfaces(grid, ring, reference, { tolerance = null, rmseZ
         : null,
     rmseZ,
     uncertainty: rmseZ === null ? null : rmseZ * comparedArea,
-    computedIn: grid.epsg ? `EPSG:${grid.epsg}` : "projected metres",
+    computedIn: acc.epsg ? `EPSG:${acc.epsg}` : "projected metres",
   };
 }
 
