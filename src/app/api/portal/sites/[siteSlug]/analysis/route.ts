@@ -12,6 +12,7 @@ import {
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
 import { boundsOf, reduceOverPolygon, sampleFor } from "@/lib/geo/raster-window.mjs";
+import { loadHypsometry, figuresAt } from "@/lib/portal/hypsometry";
 import { lonLatToUtm, utmToLonLat } from "@/lib/geo/projection.mjs";
 import {
   spotLevel,
@@ -204,6 +205,35 @@ function toProjected(geometry: Geometry, crs: string, zone: number, northern: bo
 }
 
 class BadRequest extends Error {}
+
+/**
+ * The part of a spill surface covering one band of the terrain model.
+ *
+ * Addressed by **world bounds**, never by the terrain's own cell window. The
+ * two rasters were the same grid when the spill surface was built at native
+ * resolution, and on Kotba and Ektanagar 1 they still are — but Ektanagar 2's
+ * is a 0.5 m connectivity grid against a 7.4 cm survey and Kiru's is 2 m
+ * against 25 cm, because Priority-Flood has to see the grid whole and those do
+ * not fit. Reading by cell index would then be off by the ratio between them:
+ * not a rounding, a different part of the site, and one that reads as perfectly
+ * ordinary water in perfectly ordinary places.
+ *
+ * `accumulateFloodExtent` samples what comes back by coordinate too, so the
+ * band handed over here need only *cover* the ground, not match it cell for
+ * cell.
+ */
+async function spillWindowFor(
+  spill: Awaited<ReturnType<typeof openTerrain>>,
+  band: { originX: number; originY: number; width: number; height: number; cellSize: number },
+  _window: unknown,
+) {
+  const minX = band.originX;
+  const maxX = band.originX + band.width * band.cellSize;
+  const maxY = band.originY;
+  const minY = maxY - band.height * band.cellSize;
+  const window = spill.windowFor([minX, minY, maxX, maxY]);
+  return window ? spill.readWindow(window) : null;
+}
 
 /**
  * The read/decode/compute split for one request, as a `Server-Timing` value.
@@ -924,6 +954,65 @@ export async function POST(
           }
           const spillRaster = body.rising === true ? await openTerrain(siteSlug, "spill") : null;
 
+          /**
+           * The precomputed table, where it covers the question being asked.
+           *
+           * Area and volume against water level is a one-dimensional function
+           * of the ground, fixed when the survey was published, so a client
+           * moving a slider is sampling one curve rather than commissioning a
+           * new measurement. Walking the ground instead is 28 s on Ektanagar 2
+           * and 96 s on Kiru before the network is involved, for an answer that
+           * had not changed since the last time it was asked.
+           *
+           * Only for a run over the *whole* survey, though. The table describes
+           * all of the ground, so it cannot answer a question about part of it —
+           * a view, or a drawn study area, still walks what it covers. That is
+           * the right trade: those are bounded by construction and the walk is
+           * proportionate to them.
+           */
+          const table = from === "survey" && !ring ? loadHypsometry(siteSlug) : null;
+          const curve = table
+            ? spillRaster
+              ? table.rising
+              : table.threshold
+            : null;
+
+          if (table && curve) {
+            result = {
+              method: spillRaster ? "rising" : "threshold",
+              cellArea: table.cellArea,
+              surveyedCells: table.surveyedCells,
+              surveyedArea_m2: table.surveyedArea_m2,
+              levels: levels.map((level) => ({
+                ...figuresAt(table, curve, level),
+                truncated: true,
+                geojson: null,
+              })),
+              studyArea: {
+                source: from,
+                width_m: window.cols * raster.cellSize,
+                height_m: window.rows * raster.cellSize,
+                cells: window.cols * window.rows,
+              },
+              geojson: null,
+              layer: spillRaster ? "flood_rising" : "flood_level",
+              risingAvailable: available,
+              resolution_m: raster.cellSize,
+              computedFrom: "table",
+              connectivity_m: spillRaster ? table.spillCellSize : null,
+              note:
+                `Read from this survey's level table, built over all ` +
+                `${(table.surveyedArea_m2 / 10000).toFixed(1)} ha at ` +
+                `${raster.cellSize.toFixed(3)} m when it was published. ` +
+                (spillRaster
+                  ? `Water is connected to ground outside the survey; a hollow with no ` +
+                    `path to it stays dry.`
+                  : `Every cell at or below the level counts, whether water could reach ` +
+                    `it or not.`),
+            };
+            break;
+          }
+
           const acc = newFloodExtent(levels);
           const area = ring ?? [
             [box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]],
@@ -933,15 +1022,15 @@ export async function POST(
             area,
             async (band, cells) => {
               /*
-               * The spill surface is written from this DTM and shares its
-               * geometry exactly, so it is read by the *same cell window*
-               * rather than by world bounds. Matching on coordinates would
-               * introduce a rounding between two rasters that are by
-               * construction the same grid, and a one-cell shift between the
-               * arrival level and the ground it is subtracted from is a depth
-               * error nothing downstream could detect.
+               * Sampled by **world coordinate**, not by cell index.
+               *
+               * The spill surface is generally a coarser grid than the DTM —
+               * that is the whole point of the connectivity cell, and it is why
+               * Ektanagar 2 and Kiru have one at all. Reading it by the DTM's
+               * own window would land on entirely the wrong ground, silently,
+               * by the ratio between the two cell sizes.
                */
-              const spill = spillRaster ? await spillRaster.readWindow(cells) : null;
+              const spill = spillRaster ? await spillWindowFor(spillRaster, band, cells) : null;
               accumulateFloodExtent(acc, band, { spill, ring });
             },
             { signal: request.signal },
@@ -951,6 +1040,7 @@ export async function POST(
             ...finaliseFloodExtent(acc, {
               method: spillRaster ? "rising" : "threshold",
             }),
+            computedFrom: "walk",
             /*
              * The same shape the bounded path returns, deliberately. The panel
              * reports where a simulation was run and over how much ground, and

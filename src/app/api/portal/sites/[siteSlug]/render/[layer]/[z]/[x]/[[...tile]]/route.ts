@@ -92,12 +92,20 @@ const LAYERS = {
    *
    * Both take `?level=` in metres. They differ in one predicate:
    *
-   *   flood_level    `dem <= level`    everything below the level, whether
-   *                                    water could reach it or not
-   *   flood_rising   `spill <= level`  everything water reaches rising from
-   *                                    outside the survey, connectivity having
-   *                                    been resolved once when the spill
-   *                                    surface was built
+   *   flood_level    `dem <= level`                    everything below the
+   *                                                    level, whether water
+   *                                                    could reach it or not
+   *   flood_rising   `spill <= level AND dem <= level`  everything water reaches
+   *                                                    rising from outside the
+   *                                                    survey
+   *
+   * The second predicate is two terms on purpose. `spill` answers *can water
+   * get here*, and on a survey too large to run Priority-Flood over whole it is
+   * a coarser connectivity grid — 0.5 m on Ektanagar 2 against a 7.4 cm survey.
+   * `dem` answers *is the ground under the water*, and it is always native, so
+   * the shoreline and the depth stay at the survey's own resolution however
+   * coarse the connectivity behind them. Both rasters are sampled into this
+   * tile independently, so their geometries never have to agree.
    *
    * Neither is the other's approximation and the panel names which one is drawn.
    * A hilltop hollow at the same elevation as the flood plain is wet in the

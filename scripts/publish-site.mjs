@@ -45,6 +45,8 @@
  *   previews                    make-site-previews.mjs
  *   PDF deliverables            make-site-deliverables.mjs
  *   hydrology                   hydro-run.mjs            (skip: --skip-hydrology)
+ *   flood precomputes           spill-run.mjs,           (skip: --skip-flood)
+ *                               hypsometry-run.mjs
  *   point cloud                 prepare-point-cloud.mjs  (skip: --skip-cloud)
  *   catalogue                   portal-db-publish.mjs    (with --db)
  *
@@ -118,6 +120,7 @@ Usage: node scripts/publish-site.mjs <survey-folder> <site-slug> [options]
   --skip-tiles       reuse the tiles already in portal-data/map/<slug>
   --skip-hydrology   do not derive flow, streams and catchments from the DTM
   --skip-cloud       do not build the point cloud quadtree from the LAS
+  --skip-flood       do not build the spill surface or the level table
   --hydro-cell N     hydrology analysis cell size in metres (default 1)
   --hydro-threshold N  channel initiation threshold in cells (default 500)
   --dry-run          say what would happen, write nothing
@@ -386,6 +389,40 @@ if (dtm && !has("skip-hydrology")) {
   });
 } else if (!dtm && !has("skip-hydrology")) {
   console.log(`  ! no terrain model, so no hydrology. Water runs over bare earth, not over a surface model.`);
+}
+
+/**
+ * The flood precomputes, which are the last two steps that were done by hand.
+ *
+ * Both answer questions the portal used to refuse. The spill surface resolves
+ * *connectivity* once — which ground water can reach rising from outside the
+ * survey — because Priority-Flood cannot be windowed and a whole-survey run at
+ * request time is a traversal of every cell per level. The level table turns
+ * area and volume at a water level into two array reads, because that is a
+ * one-dimensional function of the ground and walking it per request is 28 s on
+ * Ektanagar 2 and 96 s on Kiru for an answer that has not changed.
+ *
+ * Ordered after hydrology and before the cloud on purpose: the spill surface is
+ * minutes and the point cloud is tens of minutes, so a survey that is going to
+ * fail on memory fails before the longest step rather than after it.
+ *
+ * The analysis cell is chosen by `lib/coarsen.mjs` from the survey's own size
+ * rather than passed in. Kiru's 5 m hydrology grid was a hand-made file whose
+ * only record was its own name, and that is the mistake being retired here.
+ */
+if (dtm && !has("skip-flood")) {
+  plan.push({
+    label: "flood: spill surface (connectivity, resolved once)",
+    args: ["scripts/spill-run.mjs", "--slug", slug],
+    optional: true,
+    missing: "but the rising-water flood will be unavailable — the threshold flood still works",
+  });
+  plan.push({
+    label: "flood: level table (area and volume at any level)",
+    args: ["scripts/hypsometry-run.mjs", "--slug", slug],
+    optional: true,
+    missing: "but a site-wide flood will walk the survey each time it is asked",
+  });
 }
 
 if (cloud && !has("skip-cloud")) {

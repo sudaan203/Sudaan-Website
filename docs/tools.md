@@ -1942,3 +1942,82 @@ Both flood predicates being *distinct* is visible in the numbers, which is the
 check worth having: on Ektanagar 1 at the lowest level, rising covers 2.8 ha
 against threshold's 3.7 ha, and the difference is hollows with no path to
 outside.
+
+### 6.9 Both big surveys get the flood, and it answers instantly (#95)
+
+Two things were left open when §6 merged: Ektanagar 2 and Kiru could not have a
+spill surface, and a site-wide flood, while correct, walked the whole survey for
+every answer. Both are closed, and neither needed a bigger machine.
+
+**The spill surface is built on a coarser *connectivity* grid.** Priority-Flood
+cannot be windowed — water arrives from outside whatever box you draw — so it
+has to see the grid whole, and whole is 16.4 GB for Ektanagar 2 and 60.6 for
+Kiru against a laptop's 8. That is the same wall `hydro-run.mjs` hit, and it
+takes the same answer `coarsen-dtm.mjs` already gave it. What is new is that the
+analysis cell is now a **rule** (`lib/coarsen.mjs`) rather than a judgement:
+Kiru's 5 m hydrology grid was made by hand and recorded only as a filename
+inside a manifest, and nothing in the repository could reproduce it.
+
+The rule keeps whatever fits native. Kotba and Ektanagar 1 are unchanged and
+their spill surfaces are still built at the survey's own resolution; Ektanagar 2
+lands on 0.5 m and Kiru on 2 m — finer, as it happens, than the 1 m and 5 m
+their hydrology uses, because routing needed more coarsening than flooding does.
+
+**What that costs is only connectivity, and it is measured.** The portal
+combines the coarse grid with the native DTM at query time:
+
+    flooded(c) = spill_coarse(c) <= L   AND   dem_native(c) <= L
+    depth(c)   = L - dem_native(c)
+
+so the shoreline, the depth, the area and the volume are all still at the
+survey's own resolution. The only thing the analysis cell can get wrong is a
+berm or a channel narrower than itself. Against Ektanagar 1's own native spill
+surface, at 8x coarsening:
+
+| level | wrongly wet | under-reported |
+|---|---|---|
+| 40 m | 0 of 1,941,119 | 0.301% |
+| 57 m | 283 of 20,479,150 (0.0014%) | 0.077% |
+| 78 m | 10 of 27,855,501 (0.00004%) | 0.032% |
+
+The two directions are not equally acceptable and the suite holds them to
+different bounds. Under-reporting flood extent is conservative; putting water on
+ground that is dry is what a client would act on.
+
+**Area and volume at a level come from a table, not a walk.** The reduction was
+1.6 s on Ektanagar 1, about 28 s on Ektanagar 2 and 96 s on Kiru before the
+network — for a question whose answer never changes. Area and volume against
+water level is a one-dimensional function of the ground, so `hypsometry-run.mjs`
+walks it once and bins cells by the level each gets wet at, carrying the count,
+the **sum of native ground elevation**, and the **lowest** ground per bin.
+Prefix-summed, a query is a handful of array reads:
+
+    area(L)   = cellArea * N(L)
+    volume(L) = cellArea * (L * N(L) - S(L))
+    deepest   = L - M(L)
+
+The volume identity is why this is worth doing rather than caching: depth
+separates into `L` times a count minus a sum, so binning the *level* does not
+bin the *depth*. A query is 0.005 ms against 28 s, from a table of under a
+megabyte.
+
+Not exact, and the gap is stated rather than rounded away: a level lands inside
+a bin, so both totals are interpolated across it. Measured against the walk on
+three surveys — area worst 0.0018%, volume worst 0.00002%, deepest within
+0.3 mm of a 10 mm bin. On a 2.2 ha flood the worst area case is 0.4 m², against
+a survey quoted at ±3–4 cm.
+
+**The pipeline reads R2.** `lib/r2-raster.mjs` puts `httpSource` over signed
+range reads, so a precompute runs against the same bytes the portal serves,
+windowed, never downloaded — a machine with four gigabytes free can publish a
+survey it could not store. SigV4 signs only the headers it names, so `Range`
+rides unsigned; verified against Kiru's 2.3 GB BigTIFF.
+
+`spill-run.mjs` and `hypsometry-run.mjs` are now steps in `publish-site.mjs`
+(`--skip-flood` to omit), placed after hydrology and before the point cloud so a
+survey that will fail on memory fails before the longest step. `site-preflight.mjs`
+answers what a survey will get before any of it runs, from the TIFF directory
+alone — Ektanagar 2 in 0.15 s.
+
+Built: Kotba 0.5 s, Ektanagar 1 8.3 s, Ektanagar 2 41.9 s, Kiru 147 s, all on
+the 8 GB machine. `hypsometry-test.mjs` 30/30.
