@@ -67,6 +67,13 @@ export type ElevationState =
       data: ProfileResult;
       cellSize: number;
       computedIn: string;
+      /**
+       * The other elevation model's profile over the same line, present when
+       * both DTM and DSM are switched on in the layer list. Null when only one
+       * is, which is the ordinary case and draws exactly the single line it
+       * always drew.
+       */
+      other?: { surface: Surface; result: ProfileResult } | null;
     }
   | { state: "stats"; data: PolygonStatsResult; cellSize: number; computedIn: string }
   | { state: "error"; message: string };
@@ -77,11 +84,23 @@ export function MeasurePanel({
   surface,
   onClear,
   accuracy,
+  cursor,
+  onCursor,
 }: {
   measurement: Measurement;
   elevation: ElevationState;
   surface: Surface;
   onClear: () => void;
+  /**
+   * Where along the line the cursor is, in metres, shared with the map.
+   *
+   * Item 6 asks for the chart and the map to track each other. Chainage is the
+   * shared coordinate because it is what the profile is indexed by and what the
+   * map can place a marker from, so neither side needs to know how the other
+   * is drawn.
+   */
+  cursor: number | null;
+  onCursor: (chainage: number | null) => void;
   /** Null until the first analysis response says what may be claimed. */
   accuracy: SurveyAccuracy | null;
 }) {
@@ -112,7 +131,13 @@ export function MeasurePanel({
       </dl>
 
       {elevation.state === "profile" && elevation.data.points.length > 2 ? (
-        <Profile result={elevation.data} surface={surface} />
+        <Profile
+          result={elevation.data}
+          surface={surface}
+          other={elevation.other ?? null}
+          cursor={cursor}
+          onCursor={onCursor}
+        />
       ) : null}
 
       <ElevationFootnote elevation={elevation} surface={surface} />
@@ -340,14 +365,46 @@ const SURFACE_LABEL: Record<Surface, string> = {
  * straight across a hole looks like flat ground, which is the one reading the
  * data does not support.
  *
- * Only ever the active surface, never DSM and DTM overlaid on one chart. That
- * was tried and reversed: a client unfamiliar with which dashed line meant
- * which model read the overlay as one ambiguous line rather than two, and
- * "which surface is this" is exactly what the surface toggle already answers
- * without a legend to misread. Switching surfaces re-runs this profile
- * against the other model instead.
+ * ## Two surfaces, when two are switched on
+ *
+ * The overlay was built in #57, removed in #62 on Malhar's instruction to show
+ * one surface at a time, and is back — under a different rule, which is the
+ * part that matters. It is no longer "draw both whenever the survey has both".
+ * It follows the **layer switches**: terrain alone draws the terrain, surface
+ * alone draws the surface, both together draw both. So the graph says what the
+ * map says, and the question #62 was really about — which line am I looking
+ * at — is answered by the same control that answered it before, plus a legend.
+ *
+ * Drawn deliberately asymmetric, which is the lesson #57 recorded and is worth
+ * keeping: the primary surface keeps its filled silhouette, the other is a thin
+ * dashed line beneath it. Two equal fills fight for the same area and make the
+ * reader decide which is "the real one".
+ *
+ * The vertical scale spans whichever surfaces are actually drawn. Fixing it to
+ * the primary's own range clips the other wherever it sits outside — and a
+ * clipped canopy line reads as flat ground.
+ *
+ * ## The cursor
+ *
+ * Item 6: the chart and the map share one cursor. Moving along either shows the
+ * same station on both, with the elevation and the distance along the line
+ * called out. Chainage is the shared coordinate — it is what the profile is
+ * indexed by and what the map can locate a point from — so neither side has to
+ * know how the other is drawn.
  */
-function Profile({ result, surface }: { result: ProfileResult; surface: Surface }) {
+function Profile({
+  result,
+  surface,
+  other,
+  cursor,
+  onCursor,
+}: {
+  result: ProfileResult;
+  surface: Surface;
+  other: { surface: Surface; result: ProfileResult } | null;
+  cursor: number | null;
+  onCursor: (chainage: number | null) => void;
+}) {
   const W = 240;
   const H = 72;
   const pad = { top: 6, right: 2, bottom: 14, left: 2 };
@@ -355,24 +412,99 @@ function Profile({ result, surface }: { result: ProfileResult; surface: Surface 
   const withData = result.points.filter(hasElevation);
   if (withData.length < 2) return null;
 
+  const otherWithData = other ? other.result.points.filter(hasElevation) : [];
+  const hasOverlay = other !== null && otherWithData.length >= 2;
+
   const maxD = result.length || 1;
-  const [lo, hi] = boundsOf(result, withData);
+  const [primaryLo, primaryHi] = boundsOf(result, withData);
+  const [lo, hi] = hasOverlay
+    ? [
+        Math.min(primaryLo, boundsOf(other.result, otherWithData)[0]),
+        Math.max(primaryHi, boundsOf(other.result, otherWithData)[1]),
+      ]
+    : [primaryLo, primaryHi];
   const span = hi - lo || 1;
 
   const x = (d: number) => pad.left + (d / maxD) * (W - pad.left - pad.right);
   const y = (e: number) => pad.top + (1 - (e - lo) / span) * (H - pad.top - pad.bottom);
 
   const runs = runsOf(result.points);
+  const otherRuns = hasOverlay ? runsOf(other.result.points) : [];
   const label = SURFACE_LABEL[surface];
+  const otherLabel = hasOverlay ? SURFACE_LABEL[other.surface] : null;
+
+  /** The sample nearest a chainage, for the readout under the cursor. */
+  const at = (chainage: number) => {
+    let best = withData[0];
+    for (const p of withData) {
+      if (Math.abs(p.chainage - chainage) < Math.abs(best.chainage - chainage)) best = p;
+    }
+    return best;
+  };
+  const marked = cursor === null ? null : at(cursor);
+  const markedOther =
+    cursor === null || !hasOverlay
+      ? null
+      : otherWithData.reduce((b, p) =>
+          Math.abs(p.chainage - cursor) < Math.abs(b.chainage - cursor) ? p : b,
+        );
+
+  /*
+   * Pointer position back to a chainage. `getBoundingClientRect` rather than
+   * the SVG's viewBox units, because the chart is laid out at whatever width
+   * the panel gives it and the two only agree by accident.
+   */
+  const track = (event: React.PointerEvent<SVGSVGElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    if (box.width === 0) return;
+    const fraction = (event.clientX - box.left) / box.width;
+    const usable = (W - pad.left - pad.right) / W;
+    const along = ((fraction - pad.left / W) / usable) * maxD;
+    onCursor(Math.max(0, Math.min(maxD, along)));
+  };
 
   return (
     <figure className="space-y-1">
+      {hasOverlay ? (
+        <div className="flex items-center gap-3 text-[10px] text-ink/55">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-3 rounded-full bg-[#C2410C]" />
+            {label}
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-3 rounded-full bg-[#1D4ED8] opacity-80" />
+            {otherLabel}
+          </span>
+        </div>
+      ) : null}
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="w-full"
+        className="w-full touch-none"
         role="img"
-        aria-label={`Elevation profile, ${label}, ${lo.toFixed(1)} to ${hi.toFixed(1)} metres over ${formatDistance(maxD)}`}
+        onPointerMove={track}
+        onPointerDown={track}
+        onPointerLeave={() => onCursor(null)}
+        aria-label={
+          hasOverlay
+            ? `Elevation profile, ${label} overlaid with ${otherLabel}, ` +
+              `${lo.toFixed(1)} to ${hi.toFixed(1)} metres over ${formatDistance(maxD)}`
+            : `Elevation profile, ${label}, ${lo.toFixed(1)} to ${hi.toFixed(1)} metres over ${formatDistance(maxD)}`
+        }
       >
+        {/* Drawn first, so the primary's fill sits over it. */}
+        {otherRuns.map((segment, index) => (
+          <polyline
+            key={`other-${index}`}
+            points={segment
+              .map((p) => `${x(p.chainage).toFixed(1)},${y(p.elevation).toFixed(1)}`)
+              .join(" ")}
+            fill="none"
+            stroke="#1D4ED8"
+            strokeWidth={1.2}
+            strokeDasharray="3 2"
+            opacity={0.8}
+          />
+        ))}
         {runs.map((segment, index) => {
           const line = segment
             .map((p) => `${x(p.chainage).toFixed(1)},${y(p.elevation).toFixed(1)}`)
@@ -411,10 +543,42 @@ function Profile({ result, surface }: { result: ProfileResult; surface: Surface 
         >
           {formatDistance(maxD)}
         </text>
+        {marked ? (
+          <g>
+            <line
+              x1={x(marked.chainage)}
+              x2={x(marked.chainage)}
+              y1={pad.top}
+              y2={H - pad.bottom}
+              stroke="currentColor"
+              className="text-ink/35"
+              strokeWidth={0.75}
+            />
+            {markedOther ? (
+              <circle cx={x(markedOther.chainage)} cy={y(markedOther.elevation)} r={2} fill="#1D4ED8" />
+            ) : null}
+            <circle cx={x(marked.chainage)} cy={y(marked.elevation)} r={2.5} fill="#C2410C" />
+          </g>
+        ) : null}
       </svg>
       <figcaption className="text-[11px] text-ink/55">
-        {hi.toFixed(1)} m at the top, {lo.toFixed(1)} m at the bottom
-        {runs.length > 1 ? `, in ${runs.length} sections either side of missing data` : ""}.
+        {marked ? (
+          /*
+           * Replaces the range line while the cursor is down rather than
+           * appearing beside it. The panel is 240 px wide and two lines of
+           * numbers that both start with a metre figure are read as one.
+           */
+          <>
+            {formatDistance(marked.chainage)} along · {marked.elevation.toFixed(2)} m
+            {markedOther ? ` · ${otherLabel!.split(" ")[0].toLowerCase()} ${markedOther.elevation.toFixed(2)} m` : ""}
+          </>
+        ) : (
+          <>
+            {hi.toFixed(1)} m at the top, {lo.toFixed(1)} m at the bottom
+            {runs.length > 1 ? `, in ${runs.length} sections either side of missing data` : ""}.
+            {hasOverlay ? ` Dashed line is the ${otherLabel!.toLowerCase()}.` : ""}
+          </>
+        )}
       </figcaption>
     </figure>
   );

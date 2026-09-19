@@ -166,6 +166,68 @@ const HOVER_SETTLE_MS = 140;
 type Group = "Imagery and models" | "Terrain" | "Vectors";
 const GROUPS: readonly Group[] = ["Imagery and models", "Terrain", "Vectors"] as const;
 
+/**
+ * Which elevation model a map layer shows, or null if it is not one.
+ *
+ * Item 8 asks the cross section to follow the layers that are switched on, so
+ * something has to connect a layer in the list to a surface the analysis API
+ * understands. The manifest names them per survey — Kotba publishes
+ * `kotba-dem` and `kotba-dtm` — so the key is what there is to go on.
+ *
+ * "dtm" wins over "dem" deliberately. The keys overlap on three of four letters
+ * and `kotba-dtm` contains neither "dsm" nor a clean word boundary, so testing
+ * for the surface model first would classify every DTM as a DSM and silently
+ * profile the wrong model. Checked in this order, and only against layers that
+ * actually carry elevation.
+ */
+function surfaceOf(layer: MapLayer): Surface | null {
+  if (!layer.elevation) return null;
+  const key = layer.key.toLowerCase();
+  if (key.includes("dtm")) return "dtm";
+  if (key.includes("dsm") || key.includes("dem")) return "dsm";
+  return null;
+}
+
+/** What a drawn shape is called before the client renames it. */
+const DRAWN_LABEL: Record<GeometryKind, string> = {
+  point: "Point",
+  line: "Line",
+  polygon: "Polygon",
+};
+
+/**
+ * A shape the client drew, as a layer they can name and hide.
+ *
+ * `id` is `kind:index` into the geometry ref, so the list and the geometry
+ * cannot drift apart without it being obvious.
+ */
+type DrawnLayer = {
+  id: string;
+  kind: GeometryKind;
+  name: string;
+  visible: boolean;
+};
+
+/**
+ * A file the client uploaded to compare against, as a layer.
+ *
+ * Several coexist, which is the whole of item 3: a shapefile and a KML on the
+ * map at the same time, each switchable, neither forcing the other off. `id`
+ * is minted per upload rather than derived from the filename, because
+ * uploading the same file twice is a reasonable thing to do and would
+ * otherwise collide.
+ */
+type UploadedLayer = {
+  id: string;
+  name: string;
+  format: "shapefile" | "kml";
+  kind: string;
+  count: number;
+  crs: { epsg: number; description: string };
+  featureCollection: GeoJSON.FeatureCollection;
+  visible: boolean;
+};
+
 /** Groups mirror how the deliverables are actually discussed. */
 function groupOf(layer: MapLayer): Group {
   if (layer.kind === "vector") return "Vectors";
@@ -364,23 +426,87 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [shapefileDownload, setShapefileDownload] = useState<ShapefileDownloadState>({
     state: "idle",
   });
+  /**
+   * Items 2 and 3: drawn shapes and uploaded files, as *layers*.
+   *
+   * They were neither before. A drawn feature was an entry in a ref that only a
+   * download ever read, and an upload was a single slot that the next upload
+   * replaced — so a client could not name what they had drawn, could not hide
+   * it, and could not hold a shapefile and a KML on the map at once. The base
+   * rasters had all three and these had none, which is the whole of Malhar's
+   * complaint.
+   *
+   * Kept in state rather than in the existing ref because the panel now renders
+   * them. The ref stays as the source of truth for the map's click handler,
+   * which is registered once and must not be rebuilt mid-gesture; every
+   * mutation writes through to state, and those are user gestures, so the cost
+   * is nothing.
+   */
+  const [drawnLayers, setDrawnLayers] = useState<DrawnLayer[]>([]);
+  /* Read by the redraw, which runs from map handlers that must not be rebuilt. */
+  const drawnLayersRef = useRef<DrawnLayer[]>([]);
+  drawnLayersRef.current = drawnLayers;
+  const [uploads, setUploads] = useState<UploadedLayer[]>([]);
   const [shapefileUpload, setShapefileUpload] = useState<ShapefileUploadState>({ state: "idle" });
 
-  const redrawShapefileFeatures = useCallback(() => {
+  /**
+   * Redraw the drawn shapes, showing only the ones switched on.
+   *
+   * `hidden` is read from the state mirror rather than the ref, because
+   * visibility is a panel concern and the ref carries geometry. A shape that is
+   * hidden is still in the ref, so it still exports — hiding is a view, not a
+   * delete, and a client who hid a layer to see underneath it would otherwise
+   * find it missing from their download.
+   */
+  const redrawShapefileFeatures = useCallback((layers: DrawnLayer[]) => {
     const source = map.current?.getSource("shapefile-features");
     if (!source || !("setData" in source)) return;
-    const all = [
-      ...shapefileFeatures.current.point,
-      ...shapefileFeatures.current.line,
-      ...shapefileFeatures.current.polygon,
-    ];
+    const hidden = new Set(layers.filter((l) => !l.visible).map((l) => l.id));
+    const all: { kind: GeometryKind; feature: DrawnFeature; index: number }[] = [];
+    (["point", "line", "polygon"] as GeometryKind[]).forEach((kind) => {
+      shapefileFeatures.current[kind].forEach((feature, index) =>
+        all.push({ kind, feature, index }),
+      );
+    });
     (source as { setData: (d: unknown) => void }).setData({
       type: "FeatureCollection",
-      features: all.map((f, i) => ({
-        type: "Feature",
-        properties: f.properties ?? { id: i + 1 },
-        geometry: f.geometry,
-      })),
+      features: all
+        .filter(({ kind, index }) => !hidden.has(`${kind}:${index}`))
+        .map(({ feature, index }) => ({
+          type: "Feature",
+          properties: feature.properties ?? { id: index + 1 },
+          geometry: feature.geometry,
+        })),
+    });
+  }, []);
+
+  /**
+   * Rebuild the layer list from the geometry, keeping names and visibility.
+   *
+   * Identity is `kind:index`, which is stable for as long as a shape exists
+   * because shapes are only ever appended or cleared wholesale — there is no
+   * delete-one path that would renumber the ones after it. If one is ever
+   * added, this is where it breaks, and it breaks visibly: a renamed layer
+   * would jump to its neighbour rather than silently mislabelling geometry.
+   */
+  const syncDrawnLayers = useCallback(() => {
+    setDrawnLayers((previous) => {
+      const byId = new Map(previous.map((l) => [l.id, l]));
+      const next: DrawnLayer[] = [];
+      (["point", "line", "polygon"] as GeometryKind[]).forEach((kind) => {
+        shapefileFeatures.current[kind].forEach((_, index) => {
+          const id = `${kind}:${index}`;
+          next.push(
+            byId.get(id) ?? {
+              id,
+              kind,
+              name: `${DRAWN_LABEL[kind]} ${index + 1}`,
+              visible: true,
+            },
+          );
+        });
+      });
+      return next;
     });
   }, []);
 
@@ -414,7 +540,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           point: [...shapefileFeatures.current.point, feature],
         };
         setShapefileCounts((c) => ({ ...c, point: c.point + 1 }));
-        redrawShapefileFeatures();
+        redrawShapefileFeatures(drawnLayersRef.current);
+        syncDrawnLayers();
         return;
       }
       shapefileDraw.current = [...shapefileDraw.current, [lon, lat]];
@@ -455,7 +582,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     setShapefileCounts((c) => ({ ...c, [kind]: c[kind] + 1 }));
     shapefileDraw.current = [];
     redrawShapefileDraw();
-    redrawShapefileFeatures();
+    redrawShapefileFeatures(drawnLayersRef.current);
+    syncDrawnLayers();
   }, [redrawShapefileDraw, redrawShapefileFeatures]);
   const shapefileDblClickRef = useRef(() => {});
   shapefileDblClickRef.current = finishShapefileDraw;
@@ -465,7 +593,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     shapefileDraw.current = [];
     setShapefileCounts({ point: 0, line: 0, polygon: 0 });
     setShapefileDownload({ state: "idle" });
-    redrawShapefileFeatures();
+    redrawShapefileFeatures(drawnLayersRef.current);
+    syncDrawnLayers();
     redrawShapefileDraw();
   }, [redrawShapefileFeatures, redrawShapefileDraw]);
 
@@ -491,31 +620,124 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     }
   }, []);
 
-  const uploadShapefile = useCallback(async (file: File) => {
-    setShapefileUpload({ state: "loading" });
-    try {
-      const data = await shapefileClient.current.upload(file);
-      setShapefileUpload({ state: "done", data });
-      const source = map.current?.getSource("shapefile-uploaded");
-      if (source && "setData" in source) {
-        (source as { setData: (d: unknown) => void }).setData(data.featureCollection);
+  /**
+   * Add an uploaded file to the map as its own layer.
+   *
+   * Each upload gets its own MapLibre source and its own three layers, rather
+   * than sharing one source the way the single-slot version did. That is what
+   * makes independent visibility possible at all — a shared source can only be
+   * shown or hidden as a whole, which is why the old panel had a Remove button
+   * and no eye.
+   *
+   * Sources are added beneath the measurement geometry so a drawn line stays
+   * readable over an uploaded boundary, which is the direction the comparison
+   * is usually made in.
+   */
+  const addUploadToMap = useCallback((layer: UploadedLayer) => {
+    const instance = map.current;
+    if (!instance) return;
+    const id = `upload-${layer.id}`;
+    if (instance.getSource(id)) return;
+    instance.addSource(id, { type: "geojson", data: layer.featureCollection });
+    const before = instance.getLayer("measure-fill") ? "measure-fill" : undefined;
+    instance.addLayer(
+      {
+        id: `${id}-fill`,
+        type: "fill",
+        source: id,
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#2563EB", "fill-opacity": 0.14 },
+      },
+      before,
+    );
+    instance.addLayer(
+      { id: `${id}-line`, type: "line", source: id, paint: { "line-color": "#1D4ED8", "line-width": 1.6 } },
+      before,
+    );
+    instance.addLayer(
+      {
+        id: `${id}-points`,
+        type: "circle",
+        source: id,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": 3.5,
+          "circle-color": "#FFFFFF",
+          "circle-stroke-color": "#1D4ED8",
+          "circle-stroke-width": 1.6,
+        },
+      },
+      before,
+    );
+  }, []);
+
+  const removeUploadFromMap = useCallback((layerId: string) => {
+    const instance = map.current;
+    if (!instance) return;
+    const id = `upload-${layerId}`;
+    for (const suffix of ["-fill", "-line", "-points"]) {
+      if (instance.getLayer(`${id}${suffix}`)) instance.removeLayer(`${id}${suffix}`);
+    }
+    if (instance.getSource(id)) instance.removeSource(id);
+  }, []);
+
+  const uploadShapefile = useCallback(
+    async (file: File) => {
+      setShapefileUpload({ state: "loading" });
+      try {
+        const data = await shapefileClient.current.upload(file);
+        const lower = file.name.toLowerCase();
+        const layer: UploadedLayer = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          // The filename without its extension, which is what the client called
+          // it and the only name they will recognise in a list.
+          name: file.name.replace(/\.[^.]+$/, "") || "Uploaded layer",
+          format: lower.endsWith(".kml") || lower.endsWith(".kmz") ? "kml" : "shapefile",
+          kind: data.kind,
+          count: data.count,
+          crs: data.crs,
+          featureCollection: data.featureCollection,
+          visible: true,
+        };
+        setUploads((current) => [...current, layer]);
+        addUploadToMap(layer);
+        setShapefileUpload({ state: "done", data });
+      } catch (error) {
+        setShapefileUpload({
+          state: "error",
+          message:
+            error instanceof ShapefileError
+              ? error.message
+              : "That file could not be read.",
+        });
       }
-    } catch (error) {
-      setShapefileUpload({
-        state: "error",
-        message:
-          error instanceof ShapefileError ? error.message : "The shapefile could not be read.",
-      });
+    },
+    [addUploadToMap],
+  );
+
+  const setUploadVisible = useCallback((id: string, visible: boolean) => {
+    setUploads((current) => current.map((u) => (u.id === id ? { ...u, visible } : u)));
+    const instance = map.current;
+    for (const suffix of ["-fill", "-line", "-points"]) {
+      const layerId = `upload-${id}${suffix}`;
+      if (instance?.getLayer(layerId)) {
+        instance.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+      }
     }
   }, []);
 
-  const clearShapefileUpload = useCallback(() => {
-    setShapefileUpload({ state: "idle" });
-    const source = map.current?.getSource("shapefile-uploaded");
-    if (source && "setData" in source) {
-      (source as { setData: (d: unknown) => void }).setData({ type: "FeatureCollection", features: [] });
-    }
+  const renameUpload = useCallback((id: string, name: string) => {
+    setUploads((current) => current.map((u) => (u.id === id ? { ...u, name } : u)));
   }, []);
+
+  const removeUpload = useCallback(
+    (id: string) => {
+      setUploads((current) => current.filter((u) => u.id !== id));
+      removeUploadFromMap(id);
+      setShapefileUpload({ state: "idle" });
+    },
+    [removeUploadFromMap],
+  );
 
   /**
    * Turn a shapefile draw tool on or off from its own panel, clearing whichever
@@ -634,6 +856,28 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   volumeOpRef.current = volumeOp;
   const surfaceRef = useRef<Surface>(surface);
   surfaceRef.current = surface;
+  /**
+   * The *other* surface to profile, or null for one line only.
+   *
+   * Malhar's item 8, and the thing that makes it different from #57. That
+   * change drew both surfaces whenever the survey had both, and was reversed a
+   * week later on his instruction to show one at a time. What he is asking for
+   * now is neither: the chart should follow **which elevation layers are
+   * switched on** — DTM alone draws the terrain, DSM alone draws the surface,
+   * and both together draw both.
+   *
+   * So layer visibility decides what is drawn and the Surface toggle decides
+   * which of the two is primary — the filled line, and the one the summary
+   * figures describe. With one layer on, the toggle is redundant and follows
+   * it; with neither on, the tools still need a surface and the toggle is the
+   * only thing left saying which.
+   *
+   * A ref rather than a dependency because the measurement callback is
+   * deliberately not rebuilt on every toggle: it is registered on the map's own
+   * click handler, and rebuilding it there drops the listener mid-gesture.
+   */
+  const secondSurfaceRef = useRef<Surface | null>(null);
+  const [cursorAlong, setCursorAlong] = useState<number | null>(null);
   // The map's handlers are registered once, so anything they read at event time
   // has to come through a ref rather than a closed-over render value.
   const bandRef = useRef<number | null>(null);
@@ -674,16 +918,38 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   );
   const shapeLane = useRef(
     latest(
-      (
+      async (
         signal: AbortSignal,
         points: Pair[],
         closed: boolean,
         model: Surface,
         spacing: number | undefined,
-      ): Promise<ShapeResponse> =>
-        closed
-          ? client.current.polygonStats(points, { surface: model }, signal)
-          : client.current.profile(points, { surface: model, spacing }, signal),
+        second: Surface | null,
+      ): Promise<ShapeResponse & { other: { surface: Surface; result: ProfileResult } | null }> => {
+        if (closed) {
+          const stats = await client.current.polygonStats(points, { surface: model }, signal);
+          return { ...stats, other: null };
+        }
+        /*
+         * Both profiles over the identical line, on the one abort signal this
+         * lane already owns — so a superseding click cancels the pair together
+         * rather than leaving an orphan to resolve into a panel that has moved
+         * on. Restored from #57; what is new is *when* it happens.
+         */
+        const [primary, other] = await Promise.all([
+          client.current.profile(points, { surface: model, spacing }, signal),
+          second
+            ? client.current.profile(points, { surface: second, spacing }, signal)
+            : Promise.resolve(null),
+        ]);
+        return {
+          ...primary,
+          other:
+            other && second
+              ? { surface: second, result: other.result as ProfileResult }
+              : null,
+        };
+      },
     ),
   );
   const alignmentLane = useRef(
@@ -1310,6 +1576,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
           askForStats,
           surfaceRef.current,
           askForStats ? undefined : profileSpacing(ring, utmZone, utmNorthern, cellSizeRef.current),
+          askForStats ? null : secondSurfaceRef.current,
         );
         // Superseded by a newer click. The newer call owns the panel now.
         if (response === null) return;
@@ -2296,6 +2563,31 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         },
       });
 
+      /*
+       * Item 6's other half: where the chart's cursor is, on the ground.
+       *
+       * Its own source rather than a feature in `measure`, because it changes
+       * on every pointer move along the chart and the measurement geometry does
+       * not — rewriting the whole drawn line sixty times a second to move one
+       * dot would redraw the line with it.
+       */
+      instance.addSource("profile-cursor", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      instance.addLayer({
+        id: "profile-cursor",
+        type: "circle",
+        source: "profile-cursor",
+        paint: {
+          "circle-radius": 6,
+          "circle-color": "#C2410C",
+          "circle-opacity": 0.9,
+          "circle-stroke-color": "#FFFFFF",
+          "circle-stroke-width": 2,
+        },
+      });
+
       setReady(true);
     });
 
@@ -2379,6 +2671,89 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       live = false;
     };
   }, [layers, noteEnvelope]);
+
+  /**
+   * The elevation models currently switched on in the layer list.
+   *
+   * Item 8's source of truth. The Surface toggle still decides which of two is
+   * *primary* — the filled line, and the one the summary figures describe — but
+   * what gets drawn at all is now what the map is showing, so the chart and the
+   * map cannot disagree about which surfaces are in play.
+   */
+  const shownSurfaces = useMemo(() => {
+    const on = new Set<Surface>();
+    for (const layer of layers) {
+      const which = surfaceOf(layer);
+      if (which && visible[layer.key]) on.add(which);
+    }
+    return on;
+  }, [layers, visible]);
+
+  /**
+   * With exactly one model on, the toggle is redundant and follows it.
+   *
+   * Otherwise a client who switches the layer list to DSM alone would still get
+   * a DTM profile, because the toggle had been left there — the tool would be
+   * measuring something the map is not drawing, which is the whole complaint.
+   * With both on, or neither, the toggle is the only thing saying which is
+   * primary and is left alone.
+   */
+  useEffect(() => {
+    if (shownSurfaces.size !== 1) return;
+    const only = [...shownSurfaces][0];
+    setSurface((current) => (current === only ? current : only));
+  }, [shownSurfaces]);
+
+  secondSurfaceRef.current =
+    shownSurfaces.size === 2 ? (surface === "dtm" ? "dsm" : "dtm") : null;
+
+  /**
+   * Put the cursor on the map at the chainage the chart is reporting.
+   *
+   * Interpolated along the drawn line rather than looked up in the profile's
+   * samples, so the dot slides continuously instead of snapping between them —
+   * the numbers beside the chart come from the nearest real sample, which is
+   * the honest thing to *quote*, but a marker that jumps in 24 cm steps reads
+   * as broken.
+   */
+  useEffect(() => {
+    const instance = map.current;
+    const source = instance?.getSource("profile-cursor") as
+      | { setData: (d: GeoJSON.FeatureCollection) => void }
+      | undefined;
+    if (!source) return;
+
+    const points = measurement?.points ?? [];
+    const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+    if (cursorAlong === null || points.length < 2) {
+      source.setData(empty);
+      return;
+    }
+
+    // Walk the line to the requested distance. Distances are the same geodesic
+    // ones the length readout uses, so the marker lands where the panel says.
+    let travelled = 0;
+    let at: Pair | null = null;
+    for (let i = 1; i < points.length; i += 1) {
+      const a = points[i - 1];
+      const b = points[i];
+      const segment = pathLength([a, b], utmZone, utmNorthern);
+      if (travelled + segment >= cursorAlong || i === points.length - 1) {
+        const t = segment > 0 ? Math.min(1, (cursorAlong - travelled) / segment) : 0;
+        at = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        break;
+      }
+      travelled += segment;
+    }
+    source.setData(
+      at
+        ? {
+            type: "FeatureCollection",
+            features: [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: at } }],
+          }
+        : empty,
+    );
+  }, [cursorAlong, measurement, utmZone, utmNorthern]);
 
   /** Both models present, so offering a choice between them means something. */
   const hasBothSurfaces = probe.state === "ready" && probe.dtm && probe.dsm;
@@ -3691,6 +4066,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                 <>
                   <ToolPanel
                     siteSlug={siteSlug}
+                    cursor={cursorAlong}
+                    onCursor={setCursorAlong}
                     mode={mode}
                     measurement={measurement}
                     elevation={elevation}
@@ -3820,7 +4197,25 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
                   onClearDrawn={clearShapefileDrawn}
                   upload={shapefileUpload}
                   onUpload={(file) => void uploadShapefile(file)}
-                  onClearUpload={clearShapefileUpload}
+                  drawnLayers={drawnLayers}
+                  onRenameDrawn={(id, name) =>
+                    setDrawnLayers((current) =>
+                      current.map((l) => (l.id === id ? { ...l, name } : l)),
+                    )
+                  }
+                  onToggleDrawn={(id, visible) =>
+                    setDrawnLayers((current) => {
+                      const next = current.map((l) => (l.id === id ? { ...l, visible } : l));
+                      // Redraw from the value being set rather than from the ref,
+                      // which React has not updated yet at this point.
+                      redrawShapefileFeatures(next);
+                      return next;
+                    })
+                  }
+                  uploads={uploads}
+                  onRenameUpload={renameUpload}
+                  onToggleUpload={setUploadVisible}
+                  onRemoveUpload={removeUpload}
                 />
               ) : null}
 
@@ -3876,6 +4271,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       <div className="border-t border-ink/[0.08] p-4 lg:hidden">
         <ToolPanel
           siteSlug={siteSlug}
+          cursor={cursorAlong}
+          onCursor={setCursorAlong}
           mode={mode}
           measurement={measurement}
           elevation={elevation}
@@ -3931,6 +4328,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
  */
 function ToolPanel({
   siteSlug,
+  cursor,
+  onCursor,
   mode,
   measurement,
   elevation,
@@ -3959,6 +4358,9 @@ function ToolPanel({
 }: {
   /** Threaded through only to name exported files after the survey. */
   siteSlug: string;
+  /** Item 6's shared cursor: distance along the drawn line, in metres. */
+  cursor: number | null;
+  onCursor: (chainage: number | null) => void;
   mode: MeasureMode;
   measurement: Measurement | null;
   elevation: ElevationState;
@@ -4046,6 +4448,8 @@ function ToolPanel({
         elevation={elevation}
         surface={surface}
         onClear={onClear}
+        cursor={cursor}
+        onCursor={onCursor}
         accuracy={accuracy}
       />
     ) : null;
