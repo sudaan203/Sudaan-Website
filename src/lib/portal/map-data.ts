@@ -44,6 +44,30 @@ function mapBase(): string | null {
 }
 
 /**
+ * Say once, loudly, when the configured map URL is not answering.
+ *
+ * `PORTAL_MAP_URL` **wins outright** when it is set — there is no quiet fall
+ * back to the files on disk, and that is deliberate for the reason
+ * `storage-config.ts` gives at length: a stated intention that cannot be
+ * honoured should be visible, not papered over. A typo in the variable would
+ * otherwise present as every map on every site being empty, which reads as "the
+ * portal is broken" rather than "one environment variable is wrong".
+ *
+ * Once per distinct reason rather than per tile, because a map pulls dozens and
+ * a log with fifty identical lines in it is a log nobody reads.
+ */
+const warnedRemote = new Set<string>();
+function warnRemote(reason: string) {
+  if (warnedRemote.has(reason)) return;
+  warnedRemote.add(reason);
+  console.warn(
+    `[portal] PORTAL_MAP_URL is set and ${reason}. No map layers will be served. ` +
+      `Check the value points at the tile Worker's base (…/sites), or unset it to ` +
+      `read portal-data/map/ from disk.`,
+  );
+}
+
+/**
  * The bytes of one map file, from wherever this deployment keeps them.
  *
  * Every caller has already validated the slug, rejected traversal, and checked
@@ -72,12 +96,16 @@ async function readMapBytes(siteSlug: string, relative: string): Promise<Buffer 
       headers: { Cookie: `${TILE_GRANT_COOKIE}=${await createTileGrant(siteSlug)}` },
       cache: "no-store",
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      warnRemote(`${base} answered ${response.status} for ${siteSlug}/${relative}`);
+      return null;
+    }
     return Buffer.from(await response.arrayBuffer());
-  } catch {
+  } catch (error) {
     // A network fault reads as "not there", the same as a missing file. The
     // alternative is a 500 on a map tile, and a screenful of them the moment
     // the Worker hiccups.
+    warnRemote(`${base} could not be reached: ${(error as Error).message}`);
     return null;
   }
 }
