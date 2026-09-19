@@ -133,3 +133,14 @@ next-env.d.ts
 # gitignored LAS above. 126 MB for Aektanagar alone, regenerable from one
 # command, and in production they come from object storage like the rest.
 /portal-data/cloud/
+
+# Forest inventory artefacts, written by scripts/forest-run.mjs. Same shape as
+# hydrology: regenerable from one command, tens of megabytes per site (a crown
+# polygon file alone is over 100 MB for Ektanagar 1), and served from object
+# storage in production via PORTAL_FOREST_URL.
+/portal-data/forest/
+
+# pytorch-lightning writes this next to wherever a DeepForest inference is
+# run from (scripts/forest-detect.py) -- hyperparameter logs from a run that
+# trained nothing, pure noise.
+/lightning_logs/

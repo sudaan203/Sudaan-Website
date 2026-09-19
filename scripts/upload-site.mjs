@@ -49,7 +49,7 @@ if (args.help || !args.site) {
 
     --site         site slug. Objects land under sites/<slug>/, the prefix the
                    Worker's grant check enforces.
-    --only CLASS   just one of: map, terrain, hydrology, cloud
+    --only CLASS   just one of: map, terrain, hydrology, forest, cloud, source
     --from DIR     upload this directory instead, at sites/<slug>/ with no
                    prefix. The escape hatch, not the normal path — see below.
     --dry-run      list what would be sent, touch nothing

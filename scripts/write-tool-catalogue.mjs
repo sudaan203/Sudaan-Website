@@ -44,10 +44,12 @@ execFileSync(
 );
 const {
   TOOL_GROUPS,
-  ALL_TOOLS,
+  MASTER_TOOLS,
+  FOREST_TOOLS,
   HYDROLOGY_LAYERS,
   UNSPECIFIED,
   toolsIn,
+  countBy,
 } = await import(path.join(dir, "tool-catalogue.js"));
 
 const STATUS_LABEL = {
@@ -62,36 +64,64 @@ const STATUS_LABEL = {
 const lines = [];
 const w = (s = "") => lines.push(s);
 
-w("# The forty tools, as Malhar grouped them");
+w("# Two specifications: the forty master tools, and the sixteen forest tools");
 w();
 w("*Generated from `src/lib/portal/tool-catalogue.ts` by");
 w("`scripts/write-tool-catalogue.mjs`. Do not edit by hand: the same list drives");
 w("the tool rail on the survey map, and a document that disagrees with the");
 w("dashboard is worse than none.*");
 w();
-w("The specification arrived as five Word documents plus a master prompt. Each");
-w("document is a discipline, and the numbering runs 1..40 across all of them with");
-w("gaps where documents were never sent. The map now presents them the same way:");
-w("one group at a time, every tool shown, and the ones that are not usable shown");
-w("disabled with a line saying what they are waiting on.");
+w("The original specification arrived as five Word documents plus a master prompt.");
+w("Each document is a discipline, and the numbering runs 1..40 across all of them");
+w("with gaps where documents were never sent. Forest arrived later, as its own PDF");
+w("with its own sixteen sections, and it is numbered independently — F1 through");
+w("F16 — rather than taking a slice of the master's unused numbers. **The two are");
+w("never added together into one total.** Forty plus sixteen displayed as fifty-six");
+w("would count Forest against numbers Malhar assigned to other documents, and the");
+w("day a sixth master document turns up describing one of those numbers, that");
+w("fifty-six would be revealed as never having meant anything. So this document");
+w("gives two honest counts instead of one misleading one, and every tool from both");
+w("specifications is shown below, one group at a time, disabled with a line saying");
+w("what it is waiting on where it is not yet usable.");
 w();
 
-const count = (s) => ALL_TOOLS.filter((t) => t.status === s).length;
-w("## Where it stands");
-w();
-w("| | Tools |");
-w("|---|---|");
-for (const key of ["live", "partial", "engine-only", "not-built", "blocked"]) {
-  const which = ALL_TOOLS.filter((t) => t.status === key);
-  if (which.length === 0) continue;
-  w(`| **${STATUS_LABEL[key]}** | ${which.length} — ${which.map((t) => t.n).join(", ")} |`);
+/** A tool's displayed number: Forest's `ref` ("F3") where set, else its `n`. */
+const label = (tool) => tool.ref ?? tool.n;
+
+function whereItStands(scope, { unspecified = false } = {}) {
+  w("| | Tools |");
+  w("|---|---|");
+  for (const key of ["live", "partial", "engine-only", "not-built", "blocked"]) {
+    const which = scope.filter((t) => t.status === key);
+    if (which.length === 0) continue;
+    w(`| **${STATUS_LABEL[key]}** | ${which.length} — ${which.map(label).join(", ")} |`);
+  }
+  if (unspecified) {
+    w(`| **Never specified** | ${UNSPECIFIED.length} — ${UNSPECIFIED.join(", ")} |`);
+  }
+  w();
 }
-w(`| **Never specified** | ${UNSPECIFIED.length} — ${UNSPECIFIED.join(", ")} |`);
+
+w("## Where the forty master tools stand");
 w();
+whereItStands(MASTER_TOOLS, { unspecified: true });
 w(
   `Of the forty numbers Malhar used, **${UNSPECIFIED.length} were never described**. ` +
     "They are listed rather than quietly dropped, so the count of forty is honest " +
     "and the question can be asked once with the numbers in hand.",
+);
+w();
+
+w("## Where the sixteen forest tools stand");
+w();
+whereItStands(FOREST_TOOLS);
+w(
+  "All sixteen sections of the forest PDF are specified — Forest has no numbers " +
+    "reserved for documents that never arrived, unlike the master sequence above. " +
+    `${countBy("not-built", FOREST_TOOLS)} of the sixteen are **not built**: the ` +
+    "catalogue entry, the storage and serving plumbing, the R2 upload class and the " +
+    "CHM render layer exist as of this pass, but no detection has run for any survey " +
+    "yet, so nothing is honestly further along than that.",
 );
 w();
 w("**Live** means a client can use it on the map today. **Engine only** means the");
@@ -101,7 +131,7 @@ w("we hold, whatever we do, and says why.");
 w();
 
 for (const group of TOOL_GROUPS) {
-  w(`## ${group.name} (${group.range})`);
+  w(`## ${group.name} (${group.numbering})`);
   w();
   w(`*${group.source}* — ${group.blurb}`);
   w();
@@ -109,11 +139,11 @@ for (const group of TOOL_GROUPS) {
   w("|---|---|---|---|");
   for (const tool of toolsIn(group.key)) {
     const note = tool.gap ?? tool.blocked ?? "";
-    w(`| ${tool.n} | **${tool.name}** | ${STATUS_LABEL[tool.status]} | ${note} |`);
+    w(`| ${label(tool)} | **${tool.name}** | ${STATUS_LABEL[tool.status]} | ${note} |`);
   }
   w();
   for (const tool of toolsIn(group.key)) {
-    w(`> **${tool.n}. ${tool.name}** — ${tool.spec}`);
+    w(`> **${label(tool)}. ${tool.name}** — ${tool.spec}`);
     w(">");
   }
   lines.pop();

@@ -64,7 +64,27 @@ export type RailAction =
     }
   | { kind: "hydrology"; mode: "inspect" | "watershed" | "flood" }
   | { kind: "sinks" }
-  | { kind: "layer"; layer: string };
+  | { kind: "layer"; layer: string }
+  /**
+   * Forest, tools F1-F16. One rail action per mode rather than one per tool
+   * number, the same shape hydrology already uses: several tools (F1, F3, F4,
+   * F9, F10) all mean "look at the forest inspector segment," and what
+   * changes is only which part of it is already open, not a wholly separate
+   * feature per tool number.
+   *
+   *   "points"  — F1, tree points on the map, click for the popup (F8)
+   *   "crowns"  — F3, crown polygons on the map
+   *   "filter"  — F4's height classes and F9's seven-axis filter panel, which
+   *               are one panel, not two: F4's quick class buttons and class
+   *               editor live inside the same `TreeFilterPanel` F9 opens.
+   *   "stats"   — F10, the statistics dashboard
+   *
+   * F7 (Forest Visualization) is not a mode of its own here: the one part of
+   * it this pass wires up is the CHM raster, and that already fits the
+   * existing `{ kind: "layer", layer: "chm" }` shape every other rendered
+   * layer uses, so it is listed under `ACTIONS` that way instead.
+   */
+  | { kind: "forest"; mode: "points" | "crowns" | "filter" | "stats" };
 
 /**
  * Which tools are wired to something clickable, and to what.
@@ -90,6 +110,19 @@ const ACTIONS: Partial<Record<number, RailAction>> = {
   26: { kind: "hydrology", mode: "watershed" },
   27: { kind: "sinks" },
   28: { kind: "hydrology", mode: "flood" },
+  // Forest, n: 101-116 per docs/forest-tools-plan.md §2.1's own numbering.
+  // F2 (height calculation), F5 (crown metrics), F6 (DBH), F8 (the popup),
+  // F11 (grid analysis), F13 (confidence detail), F15 (tiling) and F16
+  // (the pipeline principle) are not independently clickable: they are
+  // either always-on parts of what F1/F3/F9 already draw (F2, F5, F8, F13),
+  // or not built in this pass (F6, F11, F15, F16 — see tool-catalogue.ts's
+  // own `gap` text for each).
+  101: { kind: "forest", mode: "points" },
+  103: { kind: "forest", mode: "crowns" },
+  104: { kind: "forest", mode: "filter" },
+  107: { kind: "layer", layer: "chm" },
+  109: { kind: "forest", mode: "filter" },
+  110: { kind: "forest", mode: "stats" },
 };
 
 /**
@@ -137,6 +170,22 @@ type Props = {
   probing?: boolean;
   unavailable?: string;
   hasHydrology: boolean;
+  /**
+   * Whether this survey has a *real* forest inventory, not merely a
+   * directory. `forest-run.mjs` has been run against Kotba too, but as a tiny
+   * engine-test fixture (eight candidate boxes total, over a survey the
+   * plan itself is still unsure contains any trees at all) rather than a
+   * genuine DeepForest pass over an orthomosaic — see `MapViewer.tsx`'s own
+   * comment on where this boolean is computed for the exact threshold and
+   * why. Gating on "the manifest parses" would show Kotba's eight test boxes
+   * as a forest inventory, which is a worse failure than showing nothing:
+   * a client would trust a number that was never meant to leave the test
+   * suite.
+   */
+  hasForest: boolean;
+  /** Why not, for a survey with no usable forest inventory — Suigam's "no
+   * DSM" and Kotba's "test fixture, not a real detection" are both this. */
+  forestUnavailableReason?: string;
   renderable: readonly string[];
   /** Rendered to the right of the tabs: the surface switch and relief toggle. */
   children?: React.ReactNode;
@@ -152,6 +201,7 @@ function sameAction(a: RailAction | null, b: RailAction): boolean {
   }
   if (a.kind === "hydrology" && b.kind === "hydrology") return a.mode === b.mode;
   if (a.kind === "layer" && b.kind === "layer") return a.layer === b.layer;
+  if (a.kind === "forest" && b.kind === "forest") return a.mode === b.mode;
   return a.kind === "sinks" && b.kind === "sinks";
 }
 
@@ -164,6 +214,8 @@ export function ToolRail({
   probing = false,
   unavailable,
   hasHydrology,
+  hasForest,
+  forestUnavailableReason,
   renderable,
   children,
   hint,
@@ -211,6 +263,9 @@ export function ToolRail({
     }
     if (action.kind === "layer" && !renderable.includes(action.layer)) {
       return "This layer is not available for this survey.";
+    }
+    if (action.kind === "forest" && !hasForest) {
+      return forestUnavailableReason ?? "No forest inventory has been computed for this survey.";
     }
     return null;
   }

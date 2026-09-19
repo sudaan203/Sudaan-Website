@@ -8,9 +8,11 @@ import {
   loadHydrology,
   type HydrologyLayer,
 } from "@/lib/portal/hydrology-source";
+import { ForestUnavailable, loadForest } from "@/lib/portal/forest-source";
 import { lonLatToUtm } from "@/lib/geo/projection.mjs";
 import { encodePng, transparentPng } from "@/lib/geo/png.mjs";
 import { rampFor } from "@/lib/geo/colour.mjs";
+import { CHM_RAMP } from "@/lib/geo/elevation-image.mjs";
 import { hillshade, renderGrid } from "@/lib/geo/render.mjs";
 import { overlaps, sampleIntoTile, tileBoundsProjected } from "@/lib/geo/tiles.mjs";
 import { clampedParam, numberParam } from "@/lib/portal/numbers";
@@ -80,6 +82,24 @@ const LAYERS = {
    * light a quantity that has no surface.
    */
   difference: { source: "difference", kind: "dsm", ramp: "difference", relief: false, label: "Surface minus terrain", unit: "m", signed: true },
+
+  /**
+   * The forest analysis CHM, from `forest-source.ts`.
+   *
+   * **Not the same layer as `difference` above**, and the plan
+   * (`docs/forest-tools-plan.md` §4) is explicit about it: `difference` is
+   * `dsm.tif − dtm.tif` sampled independently into this tile at whatever
+   * resolution each raster happens to be, with no clipping. The forest CHM is
+   * `forest-run.mjs`'s own output — clipped at zero, pit-filled, and on its own
+   * 0.25 m analysis grid (§2.3) rather than the survey's native grid. Two
+   * different rasters answering a similar-sounding question, so the label says
+   * which one this is rather than leaving a client to assume they match.
+   *
+   * Relief stays on: unlike a signed difference, a CHM is a real height surface
+   * — crown shape is exactly what shading it is for — so it uses the same
+   * unsigned, relief-capable treatment as `dtm`/`dsm` rather than `difference`'s.
+   */
+  chm: { source: "forest", kind: "chm", ramp: CHM_RAMP, relief: true, label: "Canopy height (forest analysis grid)", unit: "m" },
 
   /**
    * Water depth at a stated level, over as much ground as is asked for.
@@ -317,6 +337,28 @@ export async function GET(
       // a request for a low zoom over a very fine survey.
       if (window.cols * window.rows > 40_000_000) return png(EMPTY);
       grid = await raster.readWindow(window);
+    } else if (spec.source === "forest") {
+      /*
+       * `chm.tif` is windowed exactly like a DTM or DSM: `forest-source.ts`
+       * opens it through the same `openRaster`/`raster-window.mjs` path terrain
+       * uses, rather than loading the whole analysis grid, which is the right
+       * call even at Ektanagar 1's 4 million cells and the only workable one at
+       * Ektanagar 2's 62 million.
+       */
+      const forest = await loadForest(siteSlug);
+      const raster = await forest.chm();
+      epsg = raster.epsg;
+      const zone = raster.utmZone!;
+      const project = (lon: number, lat: number) =>
+        lonLatToUtm(lon, lat, zone.zone, zone.northern) as [number, number];
+
+      const bbox = tileBoundsProjected(zoom, tx, ty, project);
+      if (!overlaps(bbox, raster.bounds)) return png(EMPTY);
+
+      const window = raster.windowFor(bbox);
+      if (!window) return png(EMPTY);
+      if (window.cols * window.rows > 40_000_000) return png(EMPTY);
+      grid = await raster.readWindow(window);
     } else {
       const hydro = await loadHydrology(siteSlug);
       grid = await hydro.grid(spec.kind as HydrologyLayer);
@@ -483,7 +525,11 @@ export async function GET(
     // A survey with no such raster is not an error worth a 500, and it is not
     // worth a JSON body either: this endpoint is consumed by an <img>, and a
     // style asking for a layer a site does not have should see empty ground.
-    if (error instanceof TerrainUnavailable || error instanceof HydrologyUnavailable) {
+    if (
+      error instanceof TerrainUnavailable ||
+      error instanceof HydrologyUnavailable ||
+      error instanceof ForestUnavailable
+    ) {
       return png(EMPTY);
     }
     return NextResponse.json({ error: "The tile could not be rendered" }, { status: 500 });

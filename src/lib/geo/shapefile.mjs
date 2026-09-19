@@ -100,7 +100,30 @@ export function writeShapefileGeometry(kind, geometries) {
   if (!shapeType) throw new Error(`writeShapefileGeometry: unknown kind "${kind}"`);
 
   const records = [];
-  let allPoints = [];
+  /*
+   * The file's overall bbox needs only the running min/max, not every point
+   * that produced it — tracked incrementally here rather than accumulated
+   * into one array and handed to `bboxOf` at the end. That used to be
+   * `allPoints = allPoints.concat(points)` inside this loop, which reallocates
+   * and copies the *entire* growing array on every single geometry: with
+   * 26,776 crown polygons (`docs/forest-tools-plan.md`'s forest export, the
+   * first caller to ever hand this function tens of thousands of records at
+   * once) that quadratic behaviour was the whole cost of the export — 24-32 s
+   * for one shapefile, measured, where every other part of the writer
+   * finishes in well under a second. Hand-drawn shapefile-tool exports never
+   * hit this because they are a handful of features; a batch export from a
+   * real inventory does.
+   */
+  let fileMinX = Infinity;
+  let fileMinY = Infinity;
+  let fileMaxX = -Infinity;
+  let fileMaxY = -Infinity;
+  const trackBbox = (x, y) => {
+    if (x < fileMinX) fileMinX = x;
+    if (x > fileMaxX) fileMaxX = x;
+    if (y < fileMinY) fileMinY = y;
+    if (y > fileMaxY) fileMaxY = y;
+  };
 
   for (const geometry of geometries) {
     if (shapeType === 1) {
@@ -112,7 +135,7 @@ export function writeShapefileGeometry(kind, geometries) {
       content.writeDoubleLE(geometry.coordinates[0], 4);
       content.writeDoubleLE(geometry.coordinates[1], 12);
       records.push(content);
-      allPoints.push(geometry.coordinates);
+      trackBbox(geometry.coordinates[0], geometry.coordinates[1]);
       continue;
     }
 
@@ -141,10 +164,13 @@ export function writeShapefileGeometry(kind, geometries) {
       content.writeDoubleLE(y, pointsOffset + i * 16 + 8);
     });
     records.push(content);
-    allPoints = allPoints.concat(points);
+    trackBbox(minX, minY);
+    trackBbox(maxX, maxY);
   }
 
-  const fileBbox = bboxOf(allPoints.length ? allPoints : [[0, 0]]);
+  const fileBbox = Number.isFinite(fileMinX)
+    ? { minX: fileMinX, minY: fileMinY, maxX: fileMaxX, maxY: fileMaxY }
+    : { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
   // ---- lay out .shp, tracking each record's byte offset for .shx ----------
   const shpParts = [];

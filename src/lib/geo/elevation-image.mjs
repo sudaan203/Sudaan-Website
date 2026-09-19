@@ -53,6 +53,27 @@ import { hillshade, renderGrid } from "./render.mjs";
 export const ELEVATION_RAMP = "rainbow";
 
 /**
+ * The ramp for the forest CHM (canopy height model), registered here rather
+ * than as a literal in the render route or `forest-source.ts`, because this
+ * module is the one place a ramp is allowed to be decided — `docs/forest-
+ * tools-plan.md` §4 and the CI check in `colour-consistency-test.mjs` both say
+ * so, and a name defined beside a `LAYERS` table elsewhere is exactly the
+ * "copied correctly, then the original moved" failure that check exists to
+ * catch.
+ *
+ * Deliberately the *same* ramp as `ELEVATION_RAMP` rather than a new one. A CHM
+ * is a height quantity like a DTM or DSM — 0 m at the ground up to Ektanagar
+ * 1's ~26 m canopy rather than 0 m up to a summit — and inventing a second
+ * "height ramp" table would only invite the two to drift the way the five
+ * pre-this-module renderers did. It gets its own name, not a bare reuse of
+ * `ELEVATION_RAMP`, so a reader can tell the choice was made rather than
+ * copied, and so revisiting it later (a CHM is unsigned but arguably wants a
+ * ramp that reads as "vegetation" rather than "terrain") is a one-line change
+ * here rather than a hunt through every caller.
+ */
+export const CHM_RAMP = ELEVATION_RAMP;
+
+/**
  * The sun, everywhere.
  *
  * Upper left is not a preference. The eye reads relief correctly only when the
