@@ -58,8 +58,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SITES = {
   "kotba-survey": {
     rasters: [
-      { key: "dsm", title: "Surface model (DSM)", tif: "DSM/Kotba_DEM.tif" },
-      { key: "dtm", title: "Terrain model (DTM)", tif: "DTM/Kotba_DTM.tif" },
+      { key: "dsm", title: "Surface model (DSM)", tif: "surveys/kotba/DSM/Kotba_DEM.tif" },
+      { key: "dtm", title: "Terrain model (DTM)", tif: "surveys/kotba/DTM/Kotba_DTM.tif" },
     ],
     vectors: [
       { key: "contours", title: "Contours", shapefile: "Contours/Kotba Contours" },
@@ -67,11 +67,11 @@ const SITES = {
   },
   "aektanagar-survey": {
     rasters: [
-      { key: "dsm", title: "Surface model (DSM)", tif: "Aektanagar/Aekatanagar DSM.tif" },
-      { key: "dtm", title: "Terrain model (DTM)", tif: "Aektanagar/Aekatanagar DTM.tif" },
+      { key: "dsm", title: "Surface model (DSM)", tif: "surveys/ektanagar-1/Aekatanagar DSM.tif" },
+      { key: "dtm", title: "Terrain model (DTM)", tif: "surveys/ektanagar-1/Aekatanagar DTM.tif" },
     ],
     vectors: [
-      { key: "contours", title: "Contours", shapefile: "Aektanagar/Contours/Contours/Contours" },
+      { key: "contours", title: "Contours", shapefile: "surveys/ektanagar-1/Contours/Contours/Contours" },
     ],
   },
   /*
@@ -85,8 +85,8 @@ const SITES = {
    */
   "ektanagar-2-survey": {
     rasters: [
-      { key: "dsm", title: "Surface model (DSM)", tif: "ektanagar/Ektanagar 2 DSM.tif" },
-      { key: "dtm", title: "Terrain model (DTM)", tif: "ektanagar/Ektanagar 2 DTM.tif" },
+      { key: "dsm", title: "Surface model (DSM)", tif: "surveys/ektanagar-2/Ektanagar 2 DSM.tif" },
+      { key: "dtm", title: "Terrain model (DTM)", tif: "surveys/ektanagar-2/Ektanagar 2 DTM.tif" },
     ],
     vectors: [],
   },

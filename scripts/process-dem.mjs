@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { denseFloats, renderElevation } from "../src/lib/geo/elevation-image.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const input = process.argv[2] || "DSM/Kotba_DEM.tif";
+const input = process.argv[2] || "surveys/kotba/DSM/Kotba_DEM.tif";
 const outName = process.argv[3] || "kotba-dsm";
 
 // pixel size (m/px): read from the sibling .tfw world file, else fall back

@@ -33,35 +33,31 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# raw geospatial source data (large; processed web outputs live in public/insights)
+# Raw survey deliverables, gathered under surveys/ on 19 Sep 2026.
+#
+# They used to be one folder per delivery at the repository root, named however
+# they arrived -- `Aektanagar/` holding `Aekatanagar DSM.tif`, two different
+# misspellings of Ektanagar in one path; a lowercase `ektanagar/` that was
+# actually Ektanagar *2*; Kotba's files spread across `DSM/`, `DTM/`,
+# `Contours/` and two loose orthomosaics at the root. Each new delivery needed
+# its own ignore rule, and twice one arrived without one and sat untracked and
+# unignored, a single `git add -A` away from staging tens of gigabytes.
+#
+# One rule now, and one place. Folder names here are for humans; the site slugs
+# they correspond to are fixed by R2 keys and are not the same strings
+# (`surveys/ektanagar-1` is `aektanagar-survey` in the bucket).
+/surveys/
+
+# Reference material: Malhar's tool specs and hydrology samples, the request
+# documents behind the tool improvements, and raw screenshots. Inputs to the
+# work rather than anything the site ships; processed copies live in public/.
+/reference/
+
+# Anything raw left at the root, which should now be nothing.
 /*.ecw
 /*.tif
 /*.tiff
-/DSM/
-/DTM/
-/Contours/
-/Aektanagar/
-
-# Ektanagar 2's own delivery folder (DSM/DTM/orthomosaic TIFFs, ECW, and an
-# 11 GB LAS point cloud) and the Kiru hydroelectric delivery. Both arrived
-# after the patterns above and were sitting untracked and unignored -- one
-# `git add -A` away from staging ~27 GB of raw survey data.
-/ektanagar/
-/Kiru hydroelectric project/
-
-# raw project screenshots (processed copies live in public/projects)
-/SS/
-/SS.zip
 *.zip
-
-# raw deliverable screenshots set (processed copies go in public/)
-/Ortho1/
-
-# tool spec and hydrology sample data from Malhar (~87 MB of survey deliverables).
-# The .zip beside it is already caught by *.zip, but the unpacked directory is
-# not, and it is the input to scripts/hydro-validate.mjs rather than something
-# the site ships.
-/Dashbord Tools_Prompt_Datasets/
 
 # reference / demo videos (large, kept locally only)
 *.mp4

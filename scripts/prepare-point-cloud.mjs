@@ -3,7 +3,7 @@
  *
  *   PATH="/opt/homebrew/opt/node@22/bin:$PATH" node scripts/prepare-point-cloud.mjs \
  *     --site aektanagar-survey \
- *     --las "Aektanagar/Aektanagar Lidar Point Cloud.las"
+ *     --las "surveys/ektanagar-1/Aektanagar Lidar Point Cloud.las"
  *
  * ## Why a quadtree and not a viewer
  *

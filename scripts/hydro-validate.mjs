@@ -50,7 +50,7 @@ import {
 import { confusion, rasterizeLines, networkAgreement, pct } from "./lib/hydro-compare.mjs";
 
 const ROOT =
-  "Dashbord Tools_Prompt_Datasets/Hydrology Datasets to check Hydrology Tool/" +
+  "reference/malhar-tool-specs/Hydrology Datasets to check Hydrology Tool/" +
   "Watershed-20250330T094153Z-001 (2)/Watershed-20250330T094153Z-001/Watershed";
 
 // Floors, set from the first measured run and recorded so a regression is loud.
