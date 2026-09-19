@@ -1,0 +1,57 @@
+{
+  "generatedAt": "2026-09-19T10:52:56.110Z",
+  "client": {
+    "id": "9760021e-885d-57be-8bf3-465e9849373a",
+    "slug": "demo-client"
+  },
+  "site": {
+    "id": "b9dce1c4-a126-5d31-9370-397bff2187a5",
+    "client_id": "9760021e-885d-57be-8bf3-465e9849373a",
+    "slug": "suigam-survey",
+    "name": "Suigam Road",
+    "location": "Suigam, Banaskantha, Gujarat",
+    "district": "Banaskantha",
+    "state": "Gujarat",
+    "area_label": null,
+    "industry": "Infrastructure",
+    "status": "delivered",
+    "summary": "Processed survey deliverables for this site: a terrain model spanning 8.13 to 19.85 m and a 1 m elevation grid.",
+    "is_published": true
+  },
+  "survey": {
+    "id": "fe9b6de6-4e1b-5bfb-9bc5-f49c862c6e45",
+    "site_id": "b9dce1c4-a126-5d31-9370-397bff2187a5",
+    "label": "Baseline flight",
+    "flown_on": null
+  },
+  "assets": [
+    {
+      "id": "8ae3b78d-27dd-5dd9-babf-ece223804f92",
+      "site_id": "b9dce1c4-a126-5d31-9370-397bff2187a5",
+      "survey_id": "fe9b6de6-4e1b-5bfb-9bc5-f49c862c6e45",
+      "category": "drawing",
+      "title": "Suigam 5m Grid",
+      "file_name": "Suigam 5m Grid.csv",
+      "storage_key": "demo-client/suigam/drawings/Suigam 5m Grid.csv",
+      "mime_type": "text/csv",
+      "description": "1,07,543 surveyed points, 8.09 to 20.11 m.",
+      "size_bytes": 3955846,
+      "is_published": true,
+      "sort_order": 1
+    },
+    {
+      "id": "2cc572a4-50e6-57ca-8e6e-dd4dc3e21e08",
+      "site_id": "b9dce1c4-a126-5d31-9370-397bff2187a5",
+      "survey_id": "fe9b6de6-4e1b-5bfb-9bc5-f49c862c6e45",
+      "category": "report",
+      "title": "Topographic Survey Report",
+      "file_name": "topographic-survey-report.pdf",
+      "storage_key": "demo-client/suigam/reports/topographic-survey-report.pdf",
+      "mime_type": "application/pdf",
+      "description": null,
+      "size_bytes": 2343,
+      "is_published": true,
+      "sort_order": 1
+    }
+  ]
+}

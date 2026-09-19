@@ -1,0 +1,35 @@
+{
+ "site": "suigam-survey",
+ "layers": [
+  {
+   "key": "dtm-overview",
+   "kind": "raster",
+   "title": "Terrain model (DTM), overview",
+   "file": "dtm-overview.webp",
+   "coordinates": [
+    [
+     71.346103,
+     24.347046
+    ],
+    [
+     71.38787,
+     24.348048
+    ],
+    [
+     71.393315,
+     24.155369
+    ],
+    [
+     71.35161,
+     24.154377
+    ]
+   ],
+   "elevation": {
+    "min": 8.13,
+    "max": 19.85
+   },
+   "note": "decimated overview for the base map; the dynamic tiler and analysis API read the native raster"
+  }
+ ],
+ "generatedAt": "2026-09-19T10:29:11.121Z"
+}
