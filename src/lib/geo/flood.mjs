@@ -350,16 +350,27 @@ export function newFloodExtent(levels) {
  */
 export function accumulateFloodExtent(acc, dtm, { spill = null, ring = null } = {}) {
   if (acc.cellArea === null) acc.cellArea = dtm.cellArea;
-  if (spill && (spill.width !== dtm.width || spill.height !== dtm.height)) {
-    // Read by the same cell window from a raster written off this one, so a
-    // disagreement here is a publishing fault — a spill surface built from a
-    // different DTM than the site now serves — and every depth below it would
-    // be a subtraction between two unrelated surfaces.
-    throw new Error(
-      `flood: spill band is ${spill.width}x${spill.height} against the terrain's ` +
-        `${dtm.width}x${dtm.height}. The spill surface was built from a different raster.`,
-    );
-  }
+
+  /*
+   * The spill surface is sampled by **world coordinate**, and is allowed to be
+   * a coarser grid than the terrain.
+   *
+   * That is not a tolerance, it is the design. Priority-Flood cannot be
+   * windowed, so a survey too large to hold whole gets its connectivity decided
+   * on a coarser analysis cell — 0.5 m for Ektanagar 2 against a 7.4 cm survey,
+   * 2 m for Kiru against 25 cm. What stays native is everything the client
+   * reads: the shoreline comes from `dtm <= level` below, and the depth from
+   * `level - dtm`. The coarse grid only ever answers "can water get here".
+   */
+  const spillAt = spill
+    ? (x, y) => {
+        const col = Math.floor((x - spill.originX) / spill.cellSize);
+        const row = Math.floor((spill.originY - y) / spill.cellSize);
+        if (!spill.inside(col, row)) return null;
+        const v = spill.get(col, row);
+        return spill.isNoData(v) ? null : v;
+      }
+    : null;
 
   const { levels } = acc;
   for (let row = 0; row < dtm.height; row += 1) {
@@ -370,13 +381,21 @@ export function accumulateFloodExtent(acc, dtm, { spill = null, ring = null } = 
       if (ring && !pointInPolygon(dtm.xOf(col), dtm.yOf(row), ring)) continue;
       acc.surveyed += 1;
 
-      // The level at which this cell is wet. Its own ground for a threshold,
-      // the level water arrives at for a rising flood.
+      /*
+       * The level at which this cell is wet: its own ground for a threshold
+       * flood, and for a rising one whichever is higher of the ground and the
+       * level water reaches it at.
+       *
+       * Taking the maximum is what keeps the shoreline native. A cell inside a
+       * basin that fills at 40 m but whose own ground stands at 42 m is dry at
+       * 41 m, and reading the arrival level alone would have called it wet —
+       * flooding the sides of a valley up to the level of its floor.
+       */
       let arrives = z;
-      if (spill) {
-        const s = spill.data[i];
-        if (spill.isNoData(s)) continue;
-        arrives = s;
+      if (spillAt) {
+        const level = spillAt(dtm.xOf(col), dtm.yOf(row));
+        if (level === null) continue;
+        arrives = level > z ? level : z;
       }
 
       /*
