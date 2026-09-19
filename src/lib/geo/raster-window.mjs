@@ -903,11 +903,46 @@ export async function sampleFor(raster, run, options = {}) {
     cornerY: (row) => originY - row * cellSize,
   };
 
-  run(probe);
+  /*
+   * The probe's *result* is thrown away, so a throw during it is not a failure
+   * — but some tools do throw when handed nothing. `REFERENCE.boundaryPlane`
+   * refuses a rim on which fewer than three samples carry elevation, which is
+   * exactly what a probe that answers nodata to everything looks like, and it
+   * turned every boundary-referenced volume into a 500.
+   *
+   * Swallowed here, deliberately and narrowly: if the tool is genuinely broken
+   * it throws again on the real pass below, with real data, and that one
+   * propagates. What this must not hide is a probe that threw *early* and so
+   * under-collected — hence the check after the read.
+   */
+  try {
+    run(probe);
+  } catch {
+    // Collected whatever it asked for before giving up; verified below.
+  }
 
   // Halo zero: the tool already asked for every neighbour its interpolation
   // needs, because `spotLevel` reads all four corners itself. Padding again
   // would read ground nothing is going to look at.
   const grid = await sampleTerrain(raster, wanted, { ...options, halo: 0 });
-  return { result: run(grid), grid };
+  const result = run(grid);
+
+  /*
+   * Every cell the real pass asked for was covered by the probe's.
+   *
+   * This is the assumption the whole approach rests on, and the one failure it
+   * could have hidden. A probe that stopped early asks for fewer cells than the
+   * real run needs; the uncovered ones read as nodata, `spotLevel` turns one
+   * nodata corner into a null elevation, and the answer comes back as a profile
+   * full of holes that looks exactly like a gap in the survey. Loud is the only
+   * safe option.
+   */
+  if (grid.misses > 0) {
+    throw new Error(
+      `sampleFor: ${grid.misses} cells were read that the probe pass did not ask for. ` +
+        `The probe stopped early, so the sampled window is incomplete and the result ` +
+        `would have holes in it that look like missing survey data.`,
+    );
+  }
+  return { result, grid };
 }

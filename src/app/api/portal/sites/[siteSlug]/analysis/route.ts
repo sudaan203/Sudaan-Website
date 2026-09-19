@@ -8,6 +8,7 @@ import {
   openTerrain,
   readTerrainWindow,
   surveyAccuracy,
+  hasSpillSurface,
   TerrainUnavailable,
 } from "@/lib/portal/terrain-source";
 import { boundsOf, reduceOverPolygon, sampleFor } from "@/lib/geo/raster-window.mjs";
@@ -896,8 +897,15 @@ export async function POST(
            * the honest answer is the threshold, said plainly, rather than a
            * connected flood quietly downgraded to a bathtub fill.
            */
-          const wantsRising = body.rising === true;
-          const spillRaster = wantsRising ? await openTerrain(siteSlug, "spill") : null;
+          const available = hasSpillSurface(siteSlug);
+          if (body.rising === true && !available) {
+            throw new BadRequest(
+              "This survey has no spill surface yet, so water cannot be traced from outside " +
+                "it. Ask us to build one, or run the plain level instead — every cell at or " +
+                "below the level, whether water could reach it or not.",
+            );
+          }
+          const spillRaster = body.rising === true ? await openTerrain(siteSlug, "spill") : null;
 
           const acc = newFloodExtent(levels);
           const area = ring ?? [
@@ -926,10 +934,18 @@ export async function POST(
             ...finaliseFloodExtent(acc, {
               method: spillRaster ? "rising" : "threshold",
             }),
+            /*
+             * The same shape the bounded path returns, deliberately. The panel
+             * reports where a simulation was run and over how much ground, and
+             * that sentence is as true of a site-wide answer as of a drawn one;
+             * giving this path its own field names would have meant two code
+             * paths in the panel saying the same thing differently.
+             */
             studyArea: {
-              from,
+              source: from,
+              width_m: window.cols * raster.cellSize,
+              height_m: window.rows * raster.cellSize,
               cells: window.cols * window.rows,
-              cellSize: raster.cellSize,
             },
             /*
              * No polygons. A site-wide flood at 7 cm is hundreds of millions of
@@ -941,6 +957,12 @@ export async function POST(
              */
             geojson: null,
             layer: spillRaster ? "flood_rising" : "flood_level",
+            /*
+             * Whether the *other* mode could have been asked for. The panel
+             * offers the choice only where it can be honoured, rather than
+             * showing a control that answers with a refusal.
+             */
+            risingAvailable: available,
             resolution_m: raster.cellSize,
             note:
               `Computed over ${from === "survey" ? "the whole survey" : "the area shown"} at ` +

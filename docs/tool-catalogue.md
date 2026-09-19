@@ -229,10 +229,15 @@ And one more, from a nine-page prompt of his own:
   hectares and km² beside it. Two modes, never conflated: a **connected**
   flood from a chosen source, and a plain **elevation threshold**. It is
   computed at the survey's own native resolution and never coarsened to go
-  faster: an area too large to simulate at full resolution is refused, with
-  the size that would work named in the refusal. Every level exports as a
-  polygon carrying its water level, interval and area, as GeoJSON or as a
-  real shapefile. See `docs/tools.md`.
+  faster. Past the size one read can hold, a run from a water source you
+  placed still asks for a smaller study area -- that one is a traversal and
+  has to be bounded -- but a plain "everything below this level" run is
+  counted band by band over the whole survey instead, at full resolution,
+  and drawn as a tile layer rather than as polygons. Where a spill surface
+  has been built, the same run can instead trace only water arriving from
+  outside the survey, so a hollow with no path to it stays dry. Every level
+  of a bounded run exports as a polygon carrying its water level, interval
+  and area, as GeoJSON or as a real shapefile. See `docs/tools.md`.
 
 ## Still on Malhar
 

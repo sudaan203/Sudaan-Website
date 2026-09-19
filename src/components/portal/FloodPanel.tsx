@@ -49,6 +49,17 @@ export type FloodControls = {
   maxElevation: number | null;
   interval: number;
   speed: "slow" | "normal" | "fast";
+  /**
+   * Trace water arriving from *outside* the survey, rather than filling every
+   * hollow below the level.
+   *
+   * Only meaningful for a run large enough to be answered from the spill
+   * surface, and only offered where one has been built. The two are genuinely
+   * different questions: a hilltop hollow below the level is wet in the plain
+   * answer and dry in this one, and which of those a client wants is the whole
+   * reason to ask.
+   */
+  rising: boolean;
 };
 
 export type FloodState =
@@ -435,7 +446,8 @@ export function FloodPanel({
                 coarsened — and a promise nobody can check is not one.
               */}
               <p className="text-[10px] leading-snug text-ink/50">
-                Simulated over {Math.round(result.data.studyArea.width_m)} ×{" "}
+                {result.data.layer ? "Computed" : "Simulated"} over{" "}
+                {Math.round(result.data.studyArea.width_m)} ×{" "}
                 {Math.round(result.data.studyArea.height_m)} m of{" "}
                 {result.data.studyArea.source === "area"
                   ? "the study area you drew"
@@ -444,6 +456,22 @@ export function FloodPanel({
                     : "this survey"}
                 , at {result.data.computedAtCellSize_m.toFixed(3)} m — the survey&apos;s own
                 resolution, {(result.data.studyArea.cells / 1_000_000).toFixed(1)} million cells.
+                {result.data.layer ? (
+                  /*
+                    Said plainly because the difference is visible: this run has
+                    no outline to trace and no shapes to export. It is not a
+                    lesser answer — the figures are exact and at full
+                    resolution — but a client who expected a polygon should be
+                    told why there is not one rather than left looking for it.
+                  */
+                  <>
+                    {" "}
+                    Past what one read can hold, so the figures are counted band by band
+                    and the water is drawn as a layer rather than as shapes. Nothing is
+                    coarsened, and there is no outline to export — draw a study area for
+                    that.
+                  </>
+                ) : null}
               </p>
             </>
           ) : null}
@@ -512,6 +540,25 @@ export function FloodPanel({
       ) : null}
 
       <p className="border-t border-ink/[0.08] pt-2 text-[11px] leading-snug text-ink/55">
+        {result.state === "done" && result.data.risingAvailable ? (
+          <label className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug text-ink/65">
+            <input
+              type="checkbox"
+              checked={controls.rising}
+              onChange={(e) => setControls((c) => ({ ...c, rising: e.target.checked }))}
+              className="mt-0.5 accent-accent-600"
+            />
+            <span>
+              Only water arriving from outside the survey
+              <span className="block text-[10px] text-ink/45">
+                A hollow below this level with no path to it stays dry. Costs nothing
+                extra — the connectivity was worked out once, when the survey was
+                published.
+              </span>
+            </span>
+          </label>
+        ) : null}
+
         {result.state === "done" && result.data.method === "connected"
           ? "Flooded from the source you chose: hollows at this level with no path from it stay dry."
           : "Every hollow at or below the level, connected to the source or not."}{" "}
@@ -527,8 +574,12 @@ export function FloodPanel({
         {area
           ? "Computed over the study area you drew, at the survey's full resolution."
           : "No study area drawn, so it is computed over whatever is on screen when you press start, at the survey's full resolution."}{" "}
-        The DTM is never coarsened to make this faster: an area too large to
-        simulate at full resolution is refused, with the size that would fit.
+        The DTM is never coarsened to make this faster. Past the size one read
+        can hold, a flood from a water source you placed still asks for a
+        smaller study area — that one is a traversal and has to be bounded — but
+        a plain &ldquo;everything below this level&rdquo; run is counted over the
+        whole survey instead of refused, at full resolution, and drawn as a
+        layer.
       </p>
     </div>
   );

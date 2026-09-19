@@ -854,7 +854,7 @@ export function finaliseCompare(acc, ring, { rmseZ = null, reference } = {}) {
         : null,
     rmseZ,
     uncertainty: rmseZ === null ? null : rmseZ * comparedArea,
-    computedIn: grid.epsg ? `EPSG:${grid.epsg}` : "projected metres",
+    computedIn: acc.epsg ? `EPSG:${acc.epsg}` : "projected metres",
   };
 }
 

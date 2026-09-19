@@ -405,13 +405,29 @@ export function finaliseFloodExtent(acc, { method }) {
     cellArea,
     surveyedCells: acc.surveyed,
     surveyedArea_m2: acc.surveyed * cellArea,
+    /*
+     * Field for field what the simulated path returns, so the panel reads one
+     * shape. The two differ in exactly one place and it is stated rather than
+     * implied: `geojson` is null, because a flood across a whole survey has a
+     * boundary no browser can hold, and the extent is drawn by the tiler
+     * instead.
+     */
     levels: acc.levels.map((level, k) => ({
-      level,
+      level_m: level,
       cells: acc.cells[k],
       area_m2: acc.cells[k] * cellArea,
       area_ha: (acc.cells[k] * cellArea) / 10000,
+      area_km2: (acc.cells[k] * cellArea) / 1e6,
       volume_m3: acc.volume[k] * cellArea,
       maxDepth_m: acc.deepest[k],
+      /*
+       * Always true, and honestly so. Water at the boundary of a survey may
+       * continue past it, and a site-wide run is by definition up against that
+       * boundary everywhere — so every area here is a lower bound, exactly as
+       * the simulated path's is when the flood reaches the drawn edge.
+       */
+      truncated: true,
+      geojson: null,
       /** Share of the surveyed ground under water at this level. */
       coverage: acc.surveyed > 0 ? acc.cells[k] / acc.surveyed : null,
     })),

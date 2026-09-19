@@ -777,6 +777,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
     maxElevation: null,
     interval: 5,
     speed: "normal",
+    rising: false,
   });
   const [floodResult, setFloodResult] = useState<FloodState>({ state: "idle" });
   const [floodSource, setFloodSource] = useState<
@@ -1007,7 +1008,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         source: { at?: Pair },
         interval: number,
         where: { area?: Pair[]; bounds?: [Pair, Pair] },
-      ) => client.current.flood(levels, source, { interval, ...where }, signal),
+        rising: boolean,
+      ) => client.current.flood(levels, source, { interval, rising, ...where }, signal),
     ),
   );
 
@@ -1056,6 +1058,68 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
       level?.geojson ?? { type: "FeatureCollection", features: [] },
     );
   }, []);
+
+  /**
+   * Draw a site-wide flood, which has no polygons to draw.
+   *
+   * A flood over a whole survey is a raster the width of the survey, so its
+   * extent goes through the tiler — the same path the elevation models take —
+   * rather than through a vector source. The layer is rebuilt on every level
+   * change rather than re-styled, because the water level is part of the tile
+   * URL: it is what the tile *is*, not how it is painted, and MapLibre has no
+   * way to change a raster source's URL in place.
+   *
+   * Removed and re-added rather than left switched off when the client goes
+   * back to a drawn study area, so a stale level cannot sit under a new
+   * simulation looking like part of it.
+   */
+  const drawFloodRaster = useCallback(
+    (layer: "flood_level" | "flood_rising" | null, level: number | null, opacity: number) => {
+      const instance = map.current;
+      if (!instance) return;
+      if (instance.getLayer("flood-raster")) instance.removeLayer("flood-raster");
+      if (instance.getSource("flood-raster")) instance.removeSource("flood-raster");
+      if (!layer || level === null || !Number.isFinite(level)) return;
+
+      instance.addSource("flood-raster", {
+        type: "raster",
+        tiles: [
+          `/api/portal/sites/${encodeURIComponent(siteSlug)}/render/${layer}/{z}/{x}/{y}.png` +
+            `?level=${encodeURIComponent(String(level))}`,
+        ],
+        tileSize: 256,
+      });
+      instance.addLayer(
+        {
+          id: "flood-raster",
+          type: "raster",
+          source: "flood-raster",
+          paint: { "raster-opacity": opacity },
+        },
+        // Under the study-area outline and the measurement geometry, the same
+        // place the vector flood sits.
+        instance.getLayer("flood-outline") ? "flood-outline" : undefined,
+      );
+    },
+    [siteSlug],
+  );
+
+  /**
+   * Keep the site-wide raster in step with whichever level is showing.
+   *
+   * One effect rather than a call beside each `drawFlood`, because the three
+   * things it depends on — which result is loaded, which step the slider is on,
+   * and the opacity — change from four different places, and a missed call
+   * would leave the wrong water level on the map with the right number beside
+   * it.
+   */
+  useEffect(() => {
+    if (!ready) return;
+    const done = floodResult.state === "done" ? floodResult.data : null;
+    const layer = done?.layer ?? null;
+    const level = done?.levels[floodStep]?.level_m ?? null;
+    drawFloodRaster(layer, level, floodOpacity);
+  }, [ready, floodResult, floodStep, floodOpacity, drawFloodRaster]);
 
   /**
    * Draw the study area as it stands: the committed ring, and whatever is
@@ -1365,7 +1429,13 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               ],
             }
           : {};
-      const response = await floodLane.current.call(levels, source, interval, where);
+      const response = await floodLane.current.call(
+        levels,
+        source,
+        interval,
+        where,
+        floodControls.rising,
+      );
       if (response === null) return; // superseded by a newer run
       noteEnvelope(response);
       setFloodResult({ state: "done", data: response.result });
@@ -1434,11 +1504,20 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
         what === "current"
           ? [floodResult.data.levels[floodStep]].filter(Boolean)
           : floodResult.data.levels;
-      const features = chosen.flatMap((l) => l.geojson.features);
+      const features = chosen.flatMap((l) => l.geojson?.features ?? []);
       if (features.length === 0) {
         setFloodResult({
           state: "error",
-          message: "There is no flooded ground at this level, so there is nothing to export.",
+          /*
+           * Two different absences, and a client can act on only one of them.
+           * A site-wide run has no polygons at all — its extent is a raster the
+           * tiler draws — so telling that client there is "no flooded ground"
+           * would be plainly false about a map showing water everywhere.
+           */
+          message: floodResult.data.layer
+            ? "A whole-survey flood is drawn as a layer rather than as shapes, so there " +
+              "is nothing to export as a vector. Draw a study area to export polygons for it."
+            : "There is no flooded ground at this level, so there is nothing to export.",
         });
         return;
       }

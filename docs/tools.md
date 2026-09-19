@@ -1756,3 +1756,189 @@ edge-compute phase turned out to be a four-kilobyte read size; and an
 optimisation that was right for long ladders shipped making short ones four
 times slower. None of those was visible by reasoning about the code, and all
 three were visible within an afternoon of running `bench-geo`.
+
+---
+
+## 6. Malhar's tool-improvement list (General Prompts, 2026-09-18)
+
+Eight requests, delivered as one branch. Three of them turned out not to be what
+they looked like, and saying so is part of the work.
+
+### 6.1 The three that were not what they looked like
+
+**Item 8 asked to undo a reversal.** The DSM/DTM profile overlay was built in
+#57 and removed in #62 *on Malhar's own instruction* to show one surface at a
+time — §3.13 records both. The premise was also wrong: the Surface toggle
+already decided which model every tool read, unambiguously. What he asked for
+this time is neither, and is better than both: the chart follows **the layer
+switches**. Terrain alone draws terrain, surface alone draws surface, both
+together draw both. The toggle still names which is primary, and with exactly
+one layer on it follows that layer — so the tool can no longer measure something
+the map is not drawing, which was the real complaint underneath.
+
+**Item 1 asked for coarsening, which a client had already rejected.** The
+`MAX_FLOOD_CELLS` comment records it: the flood tool used to resample and the
+client said no, because a shoreline computed on 81 cm cells cannot be checked
+against Global Mapper reading the same file. That is still true, so option (a)
+of his request is still refused — and it turned out not to be needed. See 6.2.
+
+**Item 6 said there was no profile chart.** There was, and had been since the
+measure tools shipped: an inline SVG in `MeasurePanel`. What was missing was the
+*interactivity* — a cursor linking the chart to the map — and a chart on the
+**Roads → Sections** tool, which is a different tool from the measure profile
+and is the one he was actually in. Item 5's column names give it away: they are
+Sections' table exactly.
+
+### 6.2 The refusals were reads shaped wrongly, not measurements that were too big
+
+Three of the four "too large" complaints have one cause. None of them needed the
+tool to measure less.
+
+**Cut and fill, polygon statistics and surface comparison are reductions.**
+Every number they report is a sum, a weight or a maximum, and `cellCoverage` is
+purely geometric — it reads a corner lattice derived from the ring, never a
+neighbouring cell's value. So the arithmetic composes over any partition of the
+polygon that is disjoint in cells and carries no margin. `reduceOverPolygon`
+walks a polygon in unpadded bands and carries the accumulator between them. The
+area cap is gone, and not by being raised: this is the identical arithmetic in a
+different order, at the survey's own resolution.
+
+Two rules keep it identical and both are easy to break. Tiles must be disjoint
+in cells and **unpadded** — `windowFor` pads by `MARGIN_CELLS`, which is right
+for sampling a point and wrong for partitioning an area, and a cell visited
+twice is counted twice. And the accumulate step must read no neighbours, which
+is what makes a halo unnecessary and rule one sufficient.
+
+**The alignment tools sample; they were being handed a bounding box.** A profile
+takes at most two thousand samples along a line and needs nothing in between,
+but the reader took the line's bounding box — which for a diagonal is the whole
+survey. `sampleFor` asks the tool which cells it wants, by running it once
+against a façade that records the question and answers nothing, then reads only
+those. No second copy of each tool's sampling rule to drift out of step, and it
+stays exact when a tool changes how it samples, because the tool is the thing
+being asked. Measured on Kotba with a line drawn corner to corner: 4% of the
+survey for a profile, 12% for a corridor, byte-identical results either way.
+
+The probe pass has one sharp edge, found by `analysis-api-test` rather than by
+reasoning: `REFERENCE.boundaryPlane` refuses a rim carrying fewer than three
+elevations, which is exactly what a probe answering nodata looks like, and it
+turned every boundary-referenced volume into a 500. The probe's *result* is
+discarded so its throw is swallowed — but a probe that stopped **early** would
+under-collect, and the uncovered cells would read as nodata and produce a
+profile full of holes that looks like missing survey data. So the real pass
+asserts it read nothing the probe did not ask for, and fails loudly if it did.
+
+**A whole-survey flood was already computed, and thrown away.**
+`fillDepressions` is Priority-Flood seeded from the survey boundary, so its
+`trueLevel` surface is the minimax elevation from outside to each cell:
+
+    water rising from outside at level L covers exactly { c : spill[c] <= L }
+
+It was computed on every hydrology run and used only to derive sink depth.
+`spillLevel` returns it, pinned to epsilon zero — the `filled` surface carries a
+fabricated drainage gradient that would move shorelines by an amount growing
+with distance from the spill point.
+
+But the run Malhar actually screenshotted needed none of that. "Everything at or
+below this level" is a per-cell predicate with no connectivity in it, so it is a
+reduction like the others and answers on **any** survey with no precompute at
+all. A connected flood from a seed the client placed is still bounded by the
+study area drawn around it — that one is a traversal, and placing a seed is
+saying where to look.
+
+Both site-wide paths are drawn by the tiler rather than returned as vectors. A
+flood across a 7 cm survey has a boundary no browser can hold: Kotba alone
+vectorises into 207 separate patches over a fraction of that ground.
+
+### 6.3 What the spill surface cannot do yet, and why
+
+`scripts/spill-run.mjs` refuses Ektanagar 2 and Kiru. Priority-Flood walks the
+grid in heap-pop order, which is random with respect to the grid, so its working
+set must be resident — swapping it is not slow, it is unusable. That is about 24
+bytes a cell:
+
+| survey | cells | resident | |
+|---|---|---|---|
+| kotba | 2.2M | ~53 MB | builds in 0.5 s |
+| ektanagar-1 | 42.8M | ~1.0 GB | builds in 8.3 s |
+| ektanagar-2 | 734.1M | ~16.4 GB | refused |
+| kiru | 2,523.0M | ~60.6 GB | refused |
+
+Against a machine with 8 GB. The refusal is read off the TIFF directory in
+0.15 s rather than by pulling 1.9 GB off disk to discover it does not fit.
+
+Those two need a **tiled Priority-Flood** — per-tile flood, spill levels
+resolved across tile borders, then a second per-tile pass — which never holds
+more than one tile and streams its output. It is deliberately not in this
+branch: it is the riskiest single thing in the list, and it can be validated
+against exact ground truth, because `spillLevel` on the surveys that do fit is
+that ground truth. Until it lands those two surveys keep the threshold flood,
+which is site-wide and full-resolution already, and lose only the
+rising-from-outside variant.
+
+### 6.4 The rest
+
+**Item 7** — basins and streams already carried per-feature attributes and
+needed export, not surgery. Depressions did not: they were dissolved into a
+single MultiPolygon carrying the *totals*, so every depression in an exported
+file claimed the storage of all of them. `polygonizeComponents` labels the mask
+into four-connected patches — matching `polygonize`'s own connectivity, or the
+attributes would describe a shape the file does not contain — accumulates per
+label in one pass, and extracts geometry per patch over that patch's own
+bounding box.
+
+**Items 2 and 3** — drawn shapes and uploaded files were not layers. A drawn
+shape lived in a ref only the download read; an upload was a single slot the
+next upload replaced. Each upload now has its own MapLibre source, which is what
+makes independent visibility possible at all: a shared source can only be shown
+or hidden whole, which is why the old panel had Remove and no eye. Hiding is a
+view, not a delete — a hidden shape still exports.
+
+**KML** is read by hand: there is no DOM in a Node route and no XML parser in
+the standard library, so it was a dependency or a reader for the subset KML uses
+for geometry. `scripts/kml-test.mjs` covers the ways a naive reader goes wrong
+*silently*: altitude is optional per **coordinate** rather than per file, so
+fixed-triple splitting reads the next point's longitude as this point's height;
+longitude comes first; a commented-out placemark is how Google Earth disables
+one; folders nest; and inner boundaries are holes, whose loss overstates area by
+exactly the number a client is most likely to quote.
+
+**Item 5** — all four alignment modes export, not only Sections, because they
+are one tool asked four questions. Sections exports two files: a summary at one
+row per section, and every sample across every cut, which is what a section
+drawing is plotted from. At a 25 m interval and a 15 m half width those are
+forty rows and five thousand.
+
+### 6.5 What this cost in verification
+
+`scripts/reduction-test.mjs` is the one that matters. Both new paths replace an
+implementation that still exists, so the claim is equality with it rather than
+plausibility:
+
+- the spill identity, cell for cell against `connectedFlood`, at five levels
+  spanning each survey's relief
+- the tiled reduction against the whole-grid answer, at partitions from one tile
+  to 5,879
+- both site-wide flood predicates against the simulations they replace
+
+24 checks over two surveys, and the surveys it can check are — by
+construction — exactly the ones that did not need fixing, because the reference
+answer needs the whole grid. That is not the hole it sounds like: both claims are
+structural, not statistical. The spill identity is a property of Priority-Flood's
+pop order and the reduction identity is the associativity of addition, and
+neither can hold on 2 million cells and fail on 500 million. What changes with
+size is cost, not arithmetic.
+
+The tolerance is relative 1e-6 floored at **one cell's area**, and the floor is
+the reasoned part. A windowed read's grid origin drifts by 4.7e-10 m against the
+whole file's — the same drift #79 reconciled — which is enough to flip a lattice
+corner sitting within half a nanometre of the ring. What that costs is a
+fraction of a cell around the perimeter, so the bound is a cell, not a
+proportion. It stays far too tight to hide a partitioning bug: double-counting
+one tile boundary row on Kotba is eighty square metres, three orders of
+magnitude past the floor.
+
+Both flood predicates being *distinct* is visible in the numbers, which is the
+check worth having: on Ektanagar 1 at the lowest level, rising covers 2.8 ha
+against threshold's 3.7 ha, and the difference is hollows with no path to
+outside.
