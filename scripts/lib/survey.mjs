@@ -54,6 +54,9 @@ export const SURVEYS = [
   { slug: "aektanagar-survey", label: "ektanagar-1" },
   { slug: "ektanagar-2-survey", label: "ektanagar-2" },
   { slug: "kiru-hydroelectric-survey", label: "kiru" },
+  // A 21 km road corridor, 13.1 billion cells, and the first survey whose raw
+  // delivery was never kept on this machine.
+  { slug: "suigam-survey", label: "suigam" },
 ];
 
 /** Where a survey's rasters live, honouring the same override the server uses. */

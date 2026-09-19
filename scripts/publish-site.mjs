@@ -49,6 +49,7 @@
  *                               hypsometry-run.mjs
  *   point cloud                 prepare-point-cloud.mjs  (skip: --skip-cloud)
  *   catalogue                   portal-db-publish.mjs    (with --db)
+ *   raw delivery archived       upload-site.mjs          (skip: --skip-source)
  *
  * The last two are the slow ones and run last, so a mistake in --client is
  * caught in minutes rather than after an hour of tiling and streaming.
@@ -123,6 +124,9 @@ Usage: node scripts/publish-site.mjs <survey-folder> <site-slug> [options]
   --skip-hydrology   do not derive flow, streams and catchments from the DTM
   --skip-cloud       do not build the point cloud quadtree from the LAS
   --skip-flood       do not build the spill surface or the level table
+  --skip-source      do not archive the raw delivery folder to R2. Without this,
+                     --publish copies the orthomosaic, LAS and CSVs to
+                     sites/<slug>/source/ so the local folder can be deleted
   --hydro-cell N     hydrology analysis cell size in metres (default 1)
   --hydro-threshold N  channel initiation threshold in cells (default 500)
   --dry-run          say what would happen, write nothing
@@ -688,7 +692,28 @@ if (writeDb) {
  * is what they already believe. The second is the one to be caught in.
  */
 if (publish) {
-  step("upload to R2", ["scripts/upload-site.mjs", "--site", slug]);
+  /**
+   * Every class, which now includes the raw delivery itself.
+   *
+   * `source` archives the folder this command was pointed at — the orthomosaic,
+   * the LAS, the CSVs — to `sites/<slug>/source/`. That is what makes the local
+   * copy disposable: a survey that has been published can be deleted from this
+   * machine and fetched back from R2 if it ever has to be reprocessed at
+   * different settings. R2 charges no egress, so getting it back is free.
+   *
+   * It is the slowest step by a wide margin on a first publish — Ektanagar 2's
+   * delivery is 17 GB — and a no-op on every publish after, because the
+   * uploader skips objects whose remote copy already matches. `--skip-source`
+   * opts out for a survey whose delivery is archived elsewhere.
+   */
+  const args = ["scripts/upload-site.mjs", "--site", slug];
+  if (has("skip-source")) {
+    for (const c of ["map", "terrain", "hydrology", "cloud"]) {
+      step(`upload ${c} to R2`, [...args, "--only", c]);
+    }
+  } else {
+    step("upload to R2, including the raw delivery", args);
+  }
 }
 
 console.log(`\n--- guards ---`);

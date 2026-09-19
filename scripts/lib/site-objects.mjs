@@ -25,13 +25,39 @@
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { SURVEYS } from "./survey.mjs";
 
-/** @type {{ name: string, dir: (slug: string) => string, prefix: string }[]} */
+/**
+ * Where a survey's *raw delivery* sits on this machine.
+ *
+ * Not `portal-data/` — that holds what the pipeline produced. This is what the
+ * surveyor handed over: the orthomosaic, the LAS, the CSVs. The folder is named
+ * for humans (`surveys/ektanagar-1`) and the slug is named for R2
+ * (`aektanagar-survey`), and the two are deliberately different strings, so the
+ * mapping comes from `survey.mjs` rather than from string surgery on the slug.
+ */
+function sourceDir(slug) {
+  const known = SURVEYS.find((s) => s.slug === slug);
+  return join("surveys", known ? known.label : slug.replace(/-survey$/, ""));
+}
+
+/**
+ * @type {{ name: string, dir: (slug: string) => string, prefix: string,
+ *          archive?: boolean }[]}
+ *
+ * `archive` marks a class that exists so the local copy can be *deleted*. The
+ * others are working data the pipeline reads; this one is the delivery itself,
+ * parked where it can be fetched back if a survey ever has to be reprocessed at
+ * different settings. That inverts the usual assumption — for every other class,
+ * missing locally is a state to worry about; for this one it is the goal — which
+ * is why `r2-prune` has to know the difference.
+ */
 export const CLASSES = [
   { name: "map", dir: (slug) => join("portal-data", "map", slug), prefix: "" },
   { name: "terrain", dir: (slug) => join("portal-data", "terrain", slug), prefix: "" },
   { name: "hydrology", dir: (slug) => join("portal-data", "hydrology", slug), prefix: "hydrology" },
   { name: "cloud", dir: (slug) => join("portal-data", "cloud", slug), prefix: "cloud" },
+  { name: "source", dir: sourceDir, prefix: "source", archive: true },
 ];
 
 export const CLASS_NAMES = CLASSES.map((c) => c.name);

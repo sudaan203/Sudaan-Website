@@ -104,6 +104,18 @@ const remote = await listKeys(client, prefix);
  */
 const { absent } = presentClasses(site);
 const blocking = absent.filter((c) => {
+  /*
+   * An archive class is *meant* to be absent locally. `source/` holds the raw
+   * delivery precisely so the folder on this machine can be deleted, so its
+   * absence carries no information about whether the remote objects are
+   * orphaned — it is the expected state, not a half-populated one. Treating it
+   * like working data would make every site unprunable the moment the archive
+   * did its job.
+   *
+   * It is also never pruned *from*: nothing local corresponds to it, so every
+   * object under the prefix would look orphaned. Skipped on both counts below.
+   */
+  if (c.archive) return false;
   if (c.prefix === "") return true; // shares the site root; cannot be reasoned about
   return remote.some((key) => key.startsWith(`${prefix}${c.prefix}/`));
 });
@@ -138,17 +150,37 @@ const local = new Set(localObjects(site).map((o) => o.key));
  * deleting another client's survey, so it is made explicitly rather than
  * assumed.
  */
+/**
+ * Prefixes this tool will not delete from, whatever the local disk says.
+ *
+ * An archive class holds the raw delivery so the local folder can be *deleted*,
+ * so every object under it has no local counterpart by design. Passing those
+ * through the orphan test would delete the entire archive on the first run
+ * after it started working — the tool doing exactly what it was told, and
+ * destroying the one copy the pipeline cannot regenerate.
+ *
+ * Excluded here rather than by fixing up `local`, so the reason is stated at
+ * the point of deletion rather than inferred from an absence somewhere else.
+ */
+const archived = CLASSES.filter((c) => c.archive).map((c) => `${prefix}${c.prefix}/`);
+
 const orphans = remote.filter((key) => {
   if (!key.startsWith(prefix)) {
     throw new Error(`listing returned ${key}, which is outside ${prefix}. Refusing to continue.`);
   }
+  if (archived.some((a) => key.startsWith(a))) return false;
   return !local.has(key);
 });
 
 console.log(`\n${site}`);
 console.log(`  local   ${local.size} objects across ${CLASSES.length - absent.length} classes`);
 console.log(`  remote  ${remote.length} objects under ${prefix}`);
-console.log(`  orphan  ${orphans.length}\n`);
+console.log(`  orphan  ${orphans.length}`);
+if (archived.length > 0) {
+  const kept = remote.filter((k) => archived.some((a) => k.startsWith(a))).length;
+  console.log(`  archive ${kept} objects under ${archived.join(", ")} — never pruned`);
+}
+console.log();
 
 if (orphans.length === 0) {
   console.log("Nothing to prune.\n");
