@@ -59,8 +59,11 @@ import {
   STREAM_ORDER_COLOURS,
   type HydrologyMode,
   type HydrologyState,
+  type HydrologyExport,
+  type ExportFormat,
 } from "./HydrologyPanel";
 import { RenderedLayersPanel, type RenderedLayer } from "./RenderedLayers";
+import { filename, saveBlob, saveText } from "@/lib/portal/download";
 import {
   AlignmentPanel,
   type AlignmentControls,
@@ -2569,6 +2572,61 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
   const [watershed, setWatershed] = useState<WatershedResult | null>(null);
   const [flood, setFlood] = useState<FloodResult | null>(null);
   const [sinks, setSinks] = useState<SinksResult | null>(null);
+  const [hydroDownloading, setHydroDownloading] = useState<string | null>(null);
+
+  /**
+   * Item 7: the generated hydrology layers, out of the portal and into a GIS.
+   *
+   * Basins and the channel network are fetched rather than read off the map's
+   * own sources — the map holds them only once they have been switched on, and
+   * a client should not have to make a layer visible before they can export it.
+   * Depressions come from the result already in hand, because they depend on
+   * the threshold the client chose and re-running it would risk exporting a
+   * different set from the one on screen.
+   *
+   * Shapefile goes through the same route the drawing tool's export already
+   * uses, so attributes land in a real DBF beside a real PRJ, and the CRS is
+   * the survey's own rather than assumed.
+   */
+  const downloadHydrology = useCallback(
+    async (layer: HydrologyExport, format: ExportFormat) => {
+      const key = `${layer}:${format}`;
+      setHydroDownloading(key);
+      try {
+        let data: GeoJSON.FeatureCollection | null = null;
+        if (layer === "depressions") {
+          data = sinks?.geojson ?? null;
+          if (!data) throw new Error("Find the depressions first.");
+        } else {
+          data = (await hydroClient.current.vector(layer)).result.geojson;
+        }
+        const features = data.features ?? [];
+        if (features.length === 0) {
+          throw new Error(`There are no ${layer} to export for this survey.`);
+        }
+
+        if (format === "geojson") {
+          saveText(JSON.stringify(data, null, 2), filename(siteSlug, layer, [], "geojson"),
+            "application/geo+json");
+        } else {
+          // Streams are lines; basins and depressions are polygons. The route
+          // needs telling because a shapefile holds exactly one geometry type.
+          const kind = layer === "streams" ? "line" : "polygon";
+          const { blob, filename: name } = await shapefileClient.current.download(
+            kind,
+            features.map((f) => ({ geometry: f.geometry, properties: f.properties ?? {} })),
+            `${siteSlug}-${layer}`,
+          );
+          saveBlob(blob, name);
+        }
+      } catch (error) {
+        setHydroError(messageFor(error));
+      } finally {
+        setHydroDownloading(null);
+      }
+    },
+    [siteSlug, sinks],
+  );
   const [floodLevel, setFloodLevel] = useState("");
   const [sinkDepth, setSinkDepth] = useState(0.25);
   const [hydroBusy, setHydroBusy] = useState(false);
@@ -3632,6 +3690,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               {inspector === "tool" ? (
                 <>
                   <ToolPanel
+                    siteSlug={siteSlug}
                     mode={mode}
                     measurement={measurement}
                     elevation={elevation}
@@ -3729,6 +3788,8 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
               {inspector === "water" && hydro ? (
                 <HydrologyPanel
                   state={hydro}
+                  onDownload={downloadHydrology}
+                  downloading={hydroDownloading}
                   mode={hydroMode}
                   showStreams={showStreams}
                   setShowStreams={setShowStreams}
@@ -3814,6 +3875,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
 
       <div className="border-t border-ink/[0.08] p-4 lg:hidden">
         <ToolPanel
+          siteSlug={siteSlug}
           mode={mode}
           measurement={measurement}
           elevation={elevation}
@@ -3868,6 +3930,7 @@ export default function MapViewer({ siteSlug, siteName, layers }: Props) {
  * they drifted once already.
  */
 function ToolPanel({
+  siteSlug,
   mode,
   measurement,
   elevation,
@@ -3894,6 +3957,8 @@ function ToolPanel({
   onRemoveSpot,
   onClearSpots,
 }: {
+  /** Threaded through only to name exported files after the survey. */
+  siteSlug: string;
   mode: MeasureMode;
   measurement: Measurement | null;
   elevation: ElevationState;
@@ -3954,6 +4019,7 @@ function ToolPanel({
       />
     ) : mode === "alignment" ? (
       <AlignmentPanel
+        siteSlug={siteSlug}
         ready={(measurement?.points.length ?? 0) > 1}
         length={measurement?.length ?? 0}
         vertices={measurement?.points.length ?? 0}

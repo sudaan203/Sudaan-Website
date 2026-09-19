@@ -92,6 +92,14 @@ export type WatershedResult = {
 
 export type SinksResult = {
   minDepth_m: number;
+  /**
+   * How many separate depressions were found.
+   *
+   * New with the per-depression export: the geojson below is now one feature
+   * each, rather than every patch dissolved into a single MultiPolygon that
+   * carried the totals of all of them as if they were its own.
+   */
+  depressions: number;
   cells: number;
   area_m2: number;
   area_ha: number;
