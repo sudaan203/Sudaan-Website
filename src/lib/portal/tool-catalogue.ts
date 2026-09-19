@@ -454,15 +454,29 @@ export const STANDALONE: readonly Tool[] = [
  * Forest's sixteen tools, F1-F16, one per section of its PDF.
  *
  * `spec` is trimmed from `reference/2. Forest Tree Detection and Inventory
- * Dashboard.pdf`, read directly rather than paraphrased from memory. `status`
- * is `not-built` across the board and deliberately so: this pass (Track C of
- * three, 19 Sep 2026) builds the catalogue entry, the storage and serving
- * plumbing, the R2 upload class and the CHM render layer — the shelf a real
- * inventory will sit on — but no detection has run yet. The Python detector
- * and the JS engine that will actually populate `portal-data/forest/` are
- * separate, parallel tracks and had not landed when this was written. Marking
- * anything `engine-only` or `partial` before that lands would be a guess
- * dressed as a status, which is exactly what this file exists to prevent.
+ * Dashboard.pdf`, read directly rather than paraphrased from memory.
+ *
+ * Scoped to `aektanagar-survey` ("Ektanagar 1") only, per Malhar's own answer
+ * that no other survey was intended (docs/forest-tools-plan.md §0.1). Every
+ * status below describes what is true for that one survey, not a general
+ * claim about the forest engine — a second survey with its own point cloud
+ * could turn several `blocked`/`partial` entries here `live` without a line of
+ * code changing, because the gap is the data, not the pipeline.
+ *
+ * Two things recur across several gaps and are recorded once, here, rather
+ * than in each entry:
+ *
+ *  - Malhar asked for detection from the orthomosaic by image segmentation
+ *    (DeepForest) rather than the LiDAR local-maxima/watershed the PDF's own
+ *    diagram assumes. That is not a shortfall against the spec, it is what
+ *    was asked for instead of it — see §0.2 of the plan for why the other two
+ *    named options (YOLOv8-seg, the QGIS plugins) were not the ones actually
+ *    used.
+ *  - The original 1.71 GB LAS for this survey is unrecoverable — absent from
+ *    local disk and from R2's archive prefix, confirmed by a direct signed
+ *    listing rather than assumed. Every attribute that can only come from a
+ *    point cloud (point density, return porosity, DBH) is honestly blocked by
+ *    that, not by anything unbuilt.
  */
 export const FOREST_TOOLS: readonly Tool[] = [
   {
@@ -477,8 +491,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "area, crown perimeter where technically possible, point density and a detection " +
       "confidence score. Display every tree as a clickable point; clicking opens a " +
       "popup with every attribute.",
-    status: "not-built",
-    gap: "No detection has run for this survey yet: the Python detector and the JS engine that populate portal-data/forest/ are separate, in-progress tracks.",
+    status: "partial",
+    gap: "Live for every attribute except point density, which needs the source LiDAR point cloud. That file is unrecoverable for this survey (absent from both local disk and R2's archive prefix, confirmed by a direct listing) — the attribute is honestly omitted rather than backfilled from the portal's decimated quadtree, which would understate it.",
   },
   {
     n: 102,
@@ -490,7 +504,7 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "the DTM as ground reference and the LiDAR point cloud/DSM to identify the " +
       "canopy — never raw elevation alone. Where possible, generate a Canopy Height " +
       "Model (CHM = DSM − DTM) and use it with the point cloud for detection.",
-    status: "not-built",
+    status: "live",
   },
   {
     n: 103,
@@ -502,7 +516,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "analysis, watershed segmentation, point-cloud clustering and crown boundary " +
       "extraction, adapting to the available point density and forest structure so " +
       "that one tree does not register as several.",
-    status: "not-built",
+    status: "partial",
+    gap: "Segmentation is CHM-threshold-and-connected-component within each detected box, not literally local-maxima/watershed as specified — the seed step is DeepForest's own box detection from the orthomosaic, per Malhar's instruction (docs/forest-tools-plan.md §0.2), not a maxima search over the point cloud. Verified in testing to keep touching, differently-sized crowns separate, but it is a different algorithm from the one named in the spec, not the same one relabeled.",
   },
   {
     n: 104,
@@ -515,8 +530,7 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "add/remove classes, define custom ranges, enable/disable individual classes and " +
       "display each separately on the map, with the tree count updating live as a " +
       "height filter is applied.",
-    status: "not-built",
-    gap: "Needs trees.bin to exist before the client-side filter panel has anything to count; the panel itself is a later wave, queued after the real manifest shape lands.",
+    status: "live",
   },
   {
     n: 105,
@@ -528,7 +542,7 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "crown perimeter, maximum crown diameter, minimum crown diameter and average " +
       "crown diameter. Where the boundary is reliable, store an individual crown " +
       "polygon as its own GIS feature.",
-    status: "not-built",
+    status: "live",
   },
   {
     n: 106,
@@ -541,8 +555,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "detectable' rather than generating a false value. Where an estimate is " +
       "possible, store estimated DBH, estimated girth (= π × DBH) and a DBH " +
       "confidence score, clearly labelled as estimated.",
-    status: "not-built",
-    gap: "Gated on F0.3's point-density measurement (docs/forest-tools-plan.md §11), which has not been run; the spec itself expects most trees to fail this and report 'Not reliably detectable'.",
+    status: "blocked",
+    blocked: "The estimator itself is complete and tested — a Taubin circle fit gated on at least 12 stem-band points spanning at least 180° before it will even attempt a fit, refusing rather than guessing otherwise — but it needs the source LiDAR point cloud, which is unrecoverable for this survey (absent from local disk and from R2's archive prefix, confirmed by a direct listing). Zero attempts were possible in the actual run, not zero successes; it would run today if the original delivery is found.",
   },
   {
     n: 107,
@@ -554,8 +568,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "point cloud, individual tree points, individual crown polygons and height-class " +
       "layers, each independently switchable, with trees styled by graduated symbols " +
       "or height-based colour.",
-    status: "not-built",
-    gap: "This pass wires a chm tile layer through the same render route as terrain and hydrology, so it is ready the moment chm.tif exists. Tree points, crown polygons and height-class styling on the map are not built.",
+    status: "live",
+    gap: "The point cloud is viewable through the portal's existing point-cloud tool rather than as a toggle inside the Forest tab specifically.",
   },
   {
     n: 108,
@@ -567,7 +581,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "elevation, tree-top elevation, tree height, crown area, crown diameter, crown " +
       "perimeter, estimated DBH/girth or 'Not Available', height class, point density " +
       "and detection confidence.",
-    status: "not-built",
+    status: "partial",
+    gap: "Live for every attribute except point density, unavailable for the same reason as F1 — the source point cloud is unrecoverable for this survey. Goes beyond spec with a per-component confidence breakdown (see F13) so a low score is explained, not just shown.",
   },
   {
     n: 109,
@@ -579,7 +594,7 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "diameter, elevation, detection confidence, tree ID and a custom height range, " +
       "plus quick class filters, with the map immediately showing only the matching " +
       "trees.",
-    status: "not-built",
+    status: "live",
   },
   {
     n: 110,
@@ -592,8 +607,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "maximum crown diameter and percentage of area covered by canopy. Charts for " +
       "trees by height class, tree density by hectare, crown-area distribution, tree-" +
       "height distribution and elevation vs tree height.",
-    status: "not-built",
-    gap: "summary.json's schema (§2.5, §4 of docs/forest-tools-plan.md) is fixed as a contract for this pass; nothing populates it yet.",
+    status: "live",
+    gap: "Leads with a confidence callout (median, max, histogram) before the summary cards, and shows the raw candidate count beside the confidence-filtered count rather than only one — neither is in the spec, both exist because the raw count alone would misrepresent this survey's first-pass detections (docs/forest-validation-2026-09-19.md).",
   },
   {
     n: 111,
@@ -607,6 +622,7 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "hectare, average and maximum tree height, average crown area and canopy " +
       "coverage %.",
     status: "not-built",
+    gap: "The density, canopy, height-class and crown-area maps can all be derived from trees.bin/crowns.geojson, which already carry everything each one needs, but no grid-cell (10/25/50 m) aggregation or a dedicated map-generation surface has been built yet.",
   },
   {
     n: 112,
@@ -620,8 +636,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "confidence) and a crown polygon layer (ID, crown area, crown diameter, height, " +
       "height class), plus a PDF forest inventory report with maps, statistics, " +
       "charts and the tree inventory table.",
-    status: "not-built",
-    gap: "The plan scopes GeoPackage as a question for Malhar (several days of work for one line of spec); shapefile, GeoJSON, CSV and KML/KMZ are meant to reuse existing writers, none of which have been pointed at forest data yet.",
+    status: "partial",
+    gap: "Shapefile, GeoJSON, CSV, KML/KMZ and a row-capped PDF inventory report are live for both the tree-point and crown-polygon layers, each stating its own projection. GeoPackage is not built — scoped as a question for Malhar (docs/forest-tools-plan.md §7): it is one line of spec against several days of work for a dependency this codebase does not otherwise need, and QGIS/Global Mapper both already read every format that is live.",
   },
   {
     n: 113,
@@ -634,7 +650,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "score from LiDAR point density, canopy separation, tree-top prominence, crown " +
       "segmentation quality and availability of RGB/orthomosaic data. Flag low-" +
       "confidence trees for manual review.",
-    status: "not-built",
+    status: "partial",
+    gap: "Live for four of the five named inputs (canopy separation, tree-top prominence, crown segmentation quality and RGB availability) plus a sixth the spec did not name — the detector's own model score — folded in as a component, not collapsed into the total. LiDAR point density is absent for the reason given in F1/F6. \"Flag for manual review\" is honoured by defaulting the whole map to confidence ≥ 0.40 rather than a separate flag field, since every tree in this survey's first pass sits at or below that line (median 0.317, none at or above 0.6) and a flag on almost everything would not read as a flag.",
   },
   {
     n: 114,
@@ -645,8 +662,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "Add a tree manually, delete an incorrectly detected tree, move a tree point, " +
       "split incorrectly merged trees, merge duplicate detections, edit tree " +
       "attributes, edit the crown boundary and recalculate crown statistics.",
-    status: "not-built",
-    gap: "This is new write infrastructure — a tree_edits table and a spatial (not ordinal) tree reference so a re-run does not silently reassign a client's edits — and none of it exists yet.",
+    status: "partial",
+    gap: "The write path is complete and tested: a tree_edits table, a tenancy-scoped API for all eight operations, and re-basing against a re-run by each edit's own stored anchor position rather than by tree id, because the id is a one-way hash and cannot be searched from. No UI exists yet to trigger any of it from the map — it is reachable only by calling the API directly.",
   },
   {
     n: 115,
@@ -659,8 +676,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "reference, DSM as surface/canopy reference, CHM for height/canopy analysis and " +
       "the orthomosaic for visual verification. Process large datasets efficiently " +
       "using spatial tiling/chunking where required.",
-    status: "not-built",
-    gap: "Tiling with a halo bounded by the crown radius is specified (docs/forest-tools-plan.md §2.4) so it can run on Kiru's scale later, but the engine that would do it has not been written.",
+    status: "partial",
+    gap: "The detector tiles the orthomosaic with a halo and cross-tile deduplication, proven on this survey's full 27,521×27,199 px image — a tree on a tile boundary appears exactly once. The JS engine that turns candidates into an inventory does not yet tile: Ektanagar 1's ~4M analysis cells fit in memory whole, so it was never forced to. The same halo principle (docs/forest-tools-plan.md §2.4) is designed to extend to it once a survey needs it.",
   },
   {
     n: 116,
@@ -673,7 +690,8 @@ export const FOREST_TOOLS: readonly Tool[] = [
       "→ individual tree segmentation → crown extraction → tree attribute calculation " +
       "→ height classification → GIS visualization, ending in an interactive, " +
       "individual-tree forest inventory map.",
-    status: "not-built",
+    status: "partial",
+    gap: "The detection stage in this diagram — ground/non-ground classification into local tree-top detection — was replaced by detecting from the orthomosaic instead, per Malhar's own instruction (docs/forest-tools-plan.md §0.2). The principle the diagram protects — never call every elevated point a tree — is honoured all the same: six rejection discriminators plus the detector's own confidence score sit between every raw candidate and the inventory, and a visual check against the real orthomosaic (docs/forest-validation-2026-09-19.md) confirmed they remove 82–86% of the false positives found on bare ground and rooftops.",
   },
 ] as const;
 

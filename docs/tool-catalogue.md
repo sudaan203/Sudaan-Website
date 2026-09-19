@@ -35,9 +35,12 @@ Of the forty numbers Malhar used, **12 were never described**. They are listed r
 
 | | Tools |
 |---|---|
-| **Not built** | 16 — F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16 |
+| **Live** | 6 — F2, F4, F5, F7, F9, F10 |
+| **Partly built** | 8 — F1, F3, F8, F12, F13, F14, F15, F16 |
+| **Not built** | 1 — F11 |
+| **Blocked** | 1 — F6 |
 
-All sixteen sections of the forest PDF are specified — Forest has no numbers reserved for documents that never arrived, unlike the master sequence above. 16 of the sixteen are **not built**: the catalogue entry, the storage and serving plumbing, the R2 upload class and the CHM render layer exist as of this pass, but no detection has run for any survey yet, so nothing is honestly further along than that.
+All sixteen sections of the forest PDF are specified — Forest has no numbers reserved for documents that never arrived, unlike the master sequence above. 1 of the sixteen are **not built**: the catalogue entry, the storage and serving plumbing, the R2 upload class and the CHM render layer exist as of this pass, but no detection has run for any survey yet, so nothing is honestly further along than that.
 
 **Live** means a client can use it on the map today. **Engine only** means the
 calculation is written and tested and nothing calls it — usually because there
@@ -169,22 +172,22 @@ we hold, whatever we do, and says why.
 
 | # | Tool | Status | |
 |---|---|---|---|
-| F1 | **Tree Detection & Point Feature Extraction** | Not built | No detection has run for this survey yet: the Python detector and the JS engine that populate portal-data/forest/ are separate, in-progress tracks. |
-| F2 | **Tree Height Calculation** | Not built |  |
-| F3 | **Individual Tree Segmentation** | Not built |  |
-| F4 | **Height-Based Tree Classification** | Not built | Needs trees.bin to exist before the client-side filter panel has anything to count; the panel itself is a later wave, queued after the real manifest shape lands. |
-| F5 | **Crown Area & Crown Diameter** | Not built |  |
-| F6 | **Tree Girth / DBH** | Not built | Gated on F0.3's point-density measurement (docs/forest-tools-plan.md §11), which has not been run; the spec itself expects most trees to fail this and report 'Not reliably detectable'. |
-| F7 | **Forest Visualization** | Not built | This pass wires a chm tile layer through the same render route as terrain and hydrology, so it is ready the moment chm.tif exists. Tree points, crown polygons and height-class styling on the map are not built. |
-| F8 | **Tree Attribute Popup** | Not built |  |
-| F9 | **Interactive Filtering** | Not built |  |
-| F10 | **Forest Statistics Dashboard** | Not built | summary.json's schema (§2.5, §4 of docs/forest-tools-plan.md) is fixed as a contract for this pass; nothing populates it yet. |
-| F11 | **Spatial Analysis** | Not built |  |
-| F12 | **Export Functions** | Not built | The plan scopes GeoPackage as a question for Malhar (several days of work for one line of spec); shapefile, GeoJSON, CSV and KML/KMZ are meant to reuse existing writers, none of which have been pointed at forest data yet. |
-| F13 | **Data Quality & Confidence** | Not built |  |
-| F14 | **Manual Editing** | Not built | This is new write infrastructure — a tree_edits table and a spatial (not ordinal) tree reference so a re-run does not silently reassign a client's edits — and none of it exists yet. |
-| F15 | **Forest Area Optimization** | Not built | Tiling with a halo bounded by the crown radius is specified (docs/forest-tools-plan.md §2.4) so it can run on Kiru's scale later, but the engine that would do it has not been written. |
-| F16 | **Important Technical Principle** | Not built |  |
+| F1 | **Tree Detection & Point Feature Extraction** | Partly built | Live for every attribute except point density, which needs the source LiDAR point cloud. That file is unrecoverable for this survey (absent from both local disk and R2's archive prefix, confirmed by a direct listing) — the attribute is honestly omitted rather than backfilled from the portal's decimated quadtree, which would understate it. |
+| F2 | **Tree Height Calculation** | Live |  |
+| F3 | **Individual Tree Segmentation** | Partly built | Segmentation is CHM-threshold-and-connected-component within each detected box, not literally local-maxima/watershed as specified — the seed step is DeepForest's own box detection from the orthomosaic, per Malhar's instruction (docs/forest-tools-plan.md §0.2), not a maxima search over the point cloud. Verified in testing to keep touching, differently-sized crowns separate, but it is a different algorithm from the one named in the spec, not the same one relabeled. |
+| F4 | **Height-Based Tree Classification** | Live |  |
+| F5 | **Crown Area & Crown Diameter** | Live |  |
+| F6 | **Tree Girth / DBH** | Blocked | The estimator itself is complete and tested — a Taubin circle fit gated on at least 12 stem-band points spanning at least 180° before it will even attempt a fit, refusing rather than guessing otherwise — but it needs the source LiDAR point cloud, which is unrecoverable for this survey (absent from local disk and from R2's archive prefix, confirmed by a direct listing). Zero attempts were possible in the actual run, not zero successes; it would run today if the original delivery is found. |
+| F7 | **Forest Visualization** | Live | The point cloud is viewable through the portal's existing point-cloud tool rather than as a toggle inside the Forest tab specifically. |
+| F8 | **Tree Attribute Popup** | Partly built | Live for every attribute except point density, unavailable for the same reason as F1 — the source point cloud is unrecoverable for this survey. Goes beyond spec with a per-component confidence breakdown (see F13) so a low score is explained, not just shown. |
+| F9 | **Interactive Filtering** | Live |  |
+| F10 | **Forest Statistics Dashboard** | Live | Leads with a confidence callout (median, max, histogram) before the summary cards, and shows the raw candidate count beside the confidence-filtered count rather than only one — neither is in the spec, both exist because the raw count alone would misrepresent this survey's first-pass detections (docs/forest-validation-2026-09-19.md). |
+| F11 | **Spatial Analysis** | Not built | The density, canopy, height-class and crown-area maps can all be derived from trees.bin/crowns.geojson, which already carry everything each one needs, but no grid-cell (10/25/50 m) aggregation or a dedicated map-generation surface has been built yet. |
+| F12 | **Export Functions** | Partly built | Shapefile, GeoJSON, CSV, KML/KMZ and a row-capped PDF inventory report are live for both the tree-point and crown-polygon layers, each stating its own projection. GeoPackage is not built — scoped as a question for Malhar (docs/forest-tools-plan.md §7): it is one line of spec against several days of work for a dependency this codebase does not otherwise need, and QGIS/Global Mapper both already read every format that is live. |
+| F13 | **Data Quality & Confidence** | Partly built | Live for four of the five named inputs (canopy separation, tree-top prominence, crown segmentation quality and RGB availability) plus a sixth the spec did not name — the detector's own model score — folded in as a component, not collapsed into the total. LiDAR point density is absent for the reason given in F1/F6. "Flag for manual review" is honoured by defaulting the whole map to confidence ≥ 0.40 rather than a separate flag field, since every tree in this survey's first pass sits at or below that line (median 0.317, none at or above 0.6) and a flag on almost everything would not read as a flag. |
+| F14 | **Manual Editing** | Partly built | The write path is complete and tested: a tree_edits table, a tenancy-scoped API for all eight operations, and re-basing against a re-run by each edit's own stored anchor position rather than by tree id, because the id is a one-way hash and cannot be searched from. No UI exists yet to trigger any of it from the map — it is reachable only by calling the API directly. |
+| F15 | **Forest Area Optimization** | Partly built | The detector tiles the orthomosaic with a halo and cross-tile deduplication, proven on this survey's full 27,521×27,199 px image — a tree on a tile boundary appears exactly once. The JS engine that turns candidates into an inventory does not yet tile: Ektanagar 1's ~4M analysis cells fit in memory whole, so it was never forced to. The same halo principle (docs/forest-tools-plan.md §2.4) is designed to extend to it once a survey needs it. |
+| F16 | **Important Technical Principle** | Partly built | The detection stage in this diagram — ground/non-ground classification into local tree-top detection — was replaced by detecting from the orthomosaic instead, per Malhar's own instruction (docs/forest-tools-plan.md §0.2). The principle the diagram protects — never call every elevated point a tree — is honoured all the same: six rejection discriminators plus the detector's own confidence score sit between every raw candidate and the inventory, and a visual check against the real orthomosaic (docs/forest-validation-2026-09-19.md) confirmed they remove 82–86% of the false positives found on bare ground and rooftops. |
 
 > **F1. Tree Detection & Point Feature Extraction** — Automatically detect individual trees from the LiDAR point cloud and elevation surfaces. For every tree, create a point feature storing tree ID, latitude, longitude, tree-top and ground elevation, tree height, crown diameter, crown area, crown perimeter where technically possible, point density and a detection confidence score. Display every tree as a clickable point; clicking opens a popup with every attribute.
 >
