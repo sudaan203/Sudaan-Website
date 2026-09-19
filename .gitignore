@@ -97,13 +97,28 @@ next-env.d.ts
 # Source terrain models the analysis API reads, symlinked to the gitignored
 # survey folders above. Local only: in production these come from object storage
 # via PORTAL_TERRAIN_DIR, and committing the symlinks would dangle on Vercel.
-# Test sites. portal-data/map/ and portal-data/files/ are tracked on purpose —
-# the delivered bundles are the canonical copy and upload-site.mjs pushes them
-# from here. That makes any throwaway site published on a developer machine land
-# in the repository, which is how eleven fixture tiles reached a commit on
-# 18 Sep 2026. Publishing under one of these slugs is free.
-/portal-data/map/fixture-site/
-/portal-data/map/test-*/
+# The map bundles left the repository on 19 Sep 2026.
+#
+# They were tracked because there was no other way to get them to production:
+# the portal read them from process.cwd(), so shipping a survey meant committing
+# its rasters. That is the repository acting as a CDN — 156 MB of client data in
+# the pack — and it made publishing impossible to hand to anyone else, because
+# the last step was a commit.
+#
+# PORTAL_MAP_URL ended that. R2 is where production reads them from and where
+# they are backed up; upload-site.mjs pushes them from this directory, which is
+# now a working copy rather than the canonical one. Keep them locally, publish
+# them with `--only map`, and do not commit them.
+/portal-data/map/
+
+# portal-data/files/ is still tracked, and deliberately so: `files.ts` reads it
+# from disk with no URL alternative and upload-site has no class for it, so a
+# deliverable that is not committed cannot be downloaded in production. That is
+# the same migration this one just made, not yet done — until it is, these 21 MB
+# have to ship inside the deployment.
+#
+# Test sites publish for free under these slugs, which is how eleven fixture
+# tiles reached a commit on 18 Sep 2026.
 /portal-data/files/*/fixture-site/
 /portal-data/files/*/test-*/
 
