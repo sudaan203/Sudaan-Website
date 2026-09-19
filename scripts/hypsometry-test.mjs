@@ -118,8 +118,21 @@ for (const { slug, label } of SURVEYS) {
   const tablePath = join("portal-data", "terrain", slug, "hypsometry.json");
   console.log(`\n${label} (${slug})`);
 
-  if (!existsSync(dtmPath) || !existsSync(tablePath)) {
-    console.log(`  skipped — no DTM or no table built`);
+  /*
+   * Two different absences, and conflating them hides a shrinking suite.
+   *
+   * A DTM that is not on this machine is now the ordinary case: the large
+   * surveys live in R2 and their local paths are dangling symlinks, so this
+   * suite checks whatever happens to be on disk. Said plainly, because
+   * "skipped" printed often enough stops being read, and a suite that quietly
+   * went from thirty checks to twelve is how coverage rots.
+   */
+  if (!existsSync(dtmPath)) {
+    console.log(`  skipped — no DTM on this machine (it is in R2; this suite reads local files)`);
+    continue;
+  }
+  if (!existsSync(tablePath)) {
+    console.log(`  skipped — no level table built for this survey yet`);
     continue;
   }
   if (statSync(dtmPath).size > READ_WHOLE_LIMIT_BYTES) {
